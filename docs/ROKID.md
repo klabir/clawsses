@@ -52,7 +52,11 @@ Rokid uses a split SDK architecture for glasses-phone communication:
 
 ### Phone SDK: CXR-M (Client Mobile)
 
-**Maven Artifact:** `com.rokid.cxr:client-m:1.2.2`
+**Maven Artifact:** `com.rokid.cxr:client-m:1.0.9`
+
+Clawsses intentionally pins 1.0.9. Live tests with the current Rokid glasses
+firmware showed that CXR-M 1.2.2 discovers the glasses but immediately tears
+down WiFi P2P group negotiation, preventing APK transfer.
 
 **Key Classes:**
 - `CxrApi` - Main SDK singleton

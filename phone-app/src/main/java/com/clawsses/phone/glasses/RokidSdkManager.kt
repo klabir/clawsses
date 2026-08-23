@@ -142,12 +142,6 @@ object RokidSdkManager {
             onGlassesConnected?.invoke()
         }
 
-        override fun onInActiveConnected(deviceName: String?, macAddress: String?) {
-            // Added in CXR-M 1.2.x. The active connection callback remains onConnected();
-            // retain metadata-only logging and wait for that authoritative state change.
-            Log.i(TAG, "Inactive Bluetooth connection reported by SDK")
-        }
-
         override fun onDisconnected() {
             Log.i(TAG, "=== onDisconnected === Bluetooth disconnected from glasses")
             isBluetoothConnectedState = false
@@ -263,6 +257,7 @@ object RokidSdkManager {
         override fun onQueryAppResult(packageName: String?, installed: Boolean) {
             Log.d(TAG, "Glasses app query result: installed=$installed")
         }
+
     }
 
     /**
