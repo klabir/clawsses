@@ -60,6 +60,9 @@ fun SettingsScreen(
     onWakeOnStreamChange: (Boolean) -> Unit = {},
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
+    scrollMessagesPerStep: Int = 1,
+    onScrollMessagesPerStepChange: (Int) -> Unit = {},
+    onSwitchToHiRokid: () -> Unit = {},
     // Software Update
     installState: ApkInstaller.InstallState,
     sdkConnected: Boolean,
@@ -70,6 +73,12 @@ fun SettingsScreen(
     voiceRecognitionManager: VoiceRecognitionManager? = null,
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
+    liveCaptionsEnabled: Boolean = false,
+    translateCaptions: Boolean = false,
+    captionTargetLanguage: String = "English",
+    onLiveCaptionsChange: (Boolean) -> Unit = {},
+    onTranslateCaptionsChange: (Boolean) -> Unit = {},
+    onCaptionTargetLanguageChange: (String) -> Unit = {},
     // TTS
     ttsSettingsManager: TtsSettingsManager? = null,
     elevenLabsClient: ElevenLabsClient? = null,
@@ -136,6 +145,9 @@ fun SettingsScreen(
                     onWakeOnStreamChange = onWakeOnStreamChange,
                     savePhotosToGallery = savePhotosToGallery,
                     onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
+                    scrollMessagesPerStep = scrollMessagesPerStep,
+                    onScrollMessagesPerStepChange = onScrollMessagesPerStepChange,
+                    onSwitchToHiRokid = onSwitchToHiRokid,
                 )
             }
 
@@ -158,8 +170,17 @@ fun SettingsScreen(
                     voiceRecognitionManager = voiceRecognitionManager,
                     talkModeState = talkModeState,
                     onTalkModeChange = onTalkModeChange,
+                    liveCaptionsEnabled = liveCaptionsEnabled,
+                    translateCaptions = translateCaptions,
+                    captionTargetLanguage = captionTargetLanguage,
+                    onLiveCaptionsChange = onLiveCaptionsChange,
+                    onTranslateCaptionsChange = onTranslateCaptionsChange,
+                    onCaptionTargetLanguageChange = onCaptionTargetLanguageChange,
                 )
             }
+
+            item { SectionHeader("Notifications") }
+            item { NotificationsSection() }
 
             // TTS section
             if (ttsSettingsManager != null && elevenLabsClient != null) {

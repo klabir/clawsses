@@ -6,6 +6,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val clawssesVersionCode = providers.gradleProperty("clawsses.versionCode").get().toInt()
+val clawssesVersionName = providers.gradleProperty("clawsses.versionName").get()
+
 // Load Rokid credentials from local.properties (needed for SN verification)
 val localProperties = Properties().apply {
     val localPropertiesFile = rootProject.file("local.properties")
@@ -22,8 +25,8 @@ android {
         applicationId = "com.clawsses.phone"
         minSdk = 28  // Required by CXR-M SDK
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = clawssesVersionCode
+        versionName = clawssesVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

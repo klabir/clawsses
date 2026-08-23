@@ -19,6 +19,12 @@
 - Agent selection on the phone and Rokid HUD using the read-only `agents.list` gateway method.
 - Targeted cancellation of the active OpenClaw run from the phone or glasses.
 - Persistent hands-free Talk Mode with immediate send, automatic listen-after-reply, and AI-key interruption.
+- Actionable, expiring HUD cards for proactive OpenClaw updates.
+- Privacy-first Android notification cards with an exact package allowlist and notification-listener opt-in.
+- Live microphone captions with optional OpenAI translation and a configurable target language.
+- Vision commands `read this`, `translate this`, `identify this`, and `remember this` (plus German equivalents) that capture and send a photo with a task-specific prompt.
+- A safe Clawsses-to-Hi-Rokid handoff that releases the CXR connection before opening the official app.
+- A persistent phone setting for one to five chat messages per Rokid scroll gesture, defaulting to one.
 
 ### Changed
 
@@ -28,12 +34,16 @@
 - Rokid camera captures now target 1280×720 and only small thumbnails cross the glasses command channel.
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
+- Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
+- Phone and glasses are versioned together as 1.3.2 (build 6).
 
 ### Fixed
 
 - Prevented competing reconnect jobs after Android activity recreation.
 - Disabled Android backup for both companion applications.
 - Updated Rokid CXR-M from 1.0.8 to hardware-verified 1.0.9, moved its Handler-based transfer lifecycle to the Android main thread, added a bounded retry, restored Bluetooth UI state after failures, and ignored non-JSON vendor status commands on the app protocol channel. CXR-M 1.2.2 was rejected because it consistently tore down P2P group negotiation with the current glasses firmware.
+- The Rokid session picker now opens immediately and reports loading or gateway failures instead of appearing unresponsive.
+- New Session now uses the least-privilege `sessions.create` gateway method instead of the admin-only `sessions.reset` method.
 
 ### Removed
 

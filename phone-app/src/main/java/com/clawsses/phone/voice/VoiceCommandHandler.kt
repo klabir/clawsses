@@ -7,6 +7,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -87,7 +88,7 @@ class VoiceCommandHandler(private val context: Context) {
             "navigate mode",
             "scroll mode",
             "command mode"
-        )
+        ) + VisionCommands.phrases
     }
 
     sealed class VoiceResult {

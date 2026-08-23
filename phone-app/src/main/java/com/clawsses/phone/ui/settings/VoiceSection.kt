@@ -60,6 +60,12 @@ fun VoiceSection(
     voiceRecognitionManager: VoiceRecognitionManager? = null,
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
+    liveCaptionsEnabled: Boolean = false,
+    translateCaptions: Boolean = false,
+    captionTargetLanguage: String = "English",
+    onLiveCaptionsChange: (Boolean) -> Unit = {},
+    onTranslateCaptionsChange: (Boolean) -> Unit = {},
+    onCaptionTargetLanguageChange: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val availableLanguages by voiceLanguageManager.availableLanguages.collectAsState()
@@ -75,6 +81,16 @@ fun VoiceSection(
             TalkModeSettings(talkModeState, onTalkModeChange)
             Spacer(Modifier.height(12.dp))
         }
+
+        LiveCaptionSettings(
+            enabled = liveCaptionsEnabled,
+            translate = translateCaptions,
+            targetLanguage = captionTargetLanguage,
+            onEnabledChange = onLiveCaptionsChange,
+            onTranslateChange = onTranslateCaptionsChange,
+            onTargetLanguageChange = onCaptionTargetLanguageChange,
+        )
+        Spacer(Modifier.height(12.dp))
 
         // OpenAI Voice Recognition settings
         if (voiceRecognitionManager != null) {
@@ -135,6 +151,47 @@ fun VoiceSection(
             },
             onDismiss = { showSheet = false },
         )
+    }
+}
+
+@Composable
+private fun LiveCaptionSettings(
+    enabled: Boolean,
+    translate: Boolean,
+    targetLanguage: String,
+    onEnabledChange: (Boolean) -> Unit,
+    onTranslateChange: (Boolean) -> Unit,
+    onTargetLanguageChange: (String) -> Unit,
+) {
+    Surface(shape = RoundedCornerShape(12.dp), tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Live captions", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Continuous short speech segments on the glasses HUD",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Translate", modifier = Modifier.weight(1f))
+                Switch(checked = translate, onCheckedChange = onTranslateChange, enabled = enabled)
+            }
+            if (translate) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = targetLanguage,
+                    onValueChange = onTargetLanguageChange,
+                    label = { Text("Target language") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            }
+        }
     }
 }
 

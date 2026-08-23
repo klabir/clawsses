@@ -74,6 +74,7 @@ class OpenClawClient(
     var onChatStream: ((ChatStream) -> Unit)? = null
     var onChatStreamEnd: ((ChatStreamEnd) -> Unit)? = null
     var onSessionList: ((SessionListUpdate) -> Unit)? = null
+    var onSessionOperation: ((SessionOperationUpdate) -> Unit)? = null
     var onAgentList: ((AgentListUpdate) -> Unit)? = null
     var onConnectionUpdate: ((ConnectionUpdate) -> Unit)? = null
     /** Fired after loadMoreHistory completes. Args: (prependedCount, hasMore) */
@@ -342,7 +343,12 @@ class OpenClawClient(
      * The server returns GatewaySessionRow objects with key, displayName, label,
      * derivedTitle, updatedAt, kind, etc.
      */
-    fun requestSessions() {
+    fun requestSessions(reportOperation: Boolean = false) {
+        if (reportOperation) {
+            onSessionOperation?.invoke(
+                SessionOperationUpdate(operation = "list", state = "loading")
+            )
+        }
         scope.launch {
             try {
                 val params = JsonObject().apply {
@@ -372,9 +378,27 @@ class OpenClawClient(
                     ))
                 } else {
                     Log.e(TAG, "Session list request failed")
+                    if (reportOperation) {
+                        onSessionOperation?.invoke(
+                            SessionOperationUpdate(
+                                operation = "list",
+                                state = "error",
+                                error = responseErrorMessage(response, "Could not load sessions")
+                            )
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting sessions", e)
+                if (reportOperation) {
+                    onSessionOperation?.invoke(
+                        SessionOperationUpdate(
+                            operation = "list",
+                            state = "error",
+                            error = "Could not load sessions"
+                        )
+                    )
+                }
             }
         }
     }
@@ -457,40 +481,79 @@ class OpenClawClient(
     }
 
     fun agentIdFromSessionKey(sessionKey: String?): String? {
-        if (sessionKey.isNullOrBlank()) return null
-        val parts = sessionKey.split(':')
-        return parts.getOrNull(1)?.takeIf { parts.firstOrNull() == "agent" && it.isNotBlank() }
+        return SessionRequestFactory.agentIdFromSessionKey(sessionKey)
     }
 
     /**
-     * Create a new session by resetting the current session key via sessions.reset.
-     * The server generates a fresh session ID while preserving settings.
-     * After reset, reloads history (which will be empty) and notifies glasses.
+     * Create a distinct root session for the active agent.
+     * Supplying only agentId keeps this operation within operator.write scope.
      */
     fun createSession() {
+        onSessionOperation?.invoke(
+            SessionOperationUpdate(operation = "create", state = "loading")
+        )
         scope.launch {
             try {
-                val key = _currentSessionKey.value ?: "main"
                 Log.d(TAG, "Creating new session")
-                val params = JsonObject().apply {
-                    addProperty("key", key)
-                }
-                val response = sendRequest(OpenClawMethods.SESSION_RESET, params)
+                val response = sendRequest(
+                    OpenClawMethods.SESSION_CREATE,
+                    SessionRequestFactory.createParams(_currentSessionKey.value)
+                )
                 if (response.ok) {
-                    val newKey = response.payload?.get("key")?.asString ?: key
-                    Log.i(TAG, "Session reset completed")
+                    val newKey = response.payload?.get("key")?.asString
+                    if (newKey.isNullOrBlank()) {
+                        Log.e(TAG, "Session create returned no key")
+                        onSessionOperation?.invoke(
+                            SessionOperationUpdate(
+                                operation = "create",
+                                state = "error",
+                                error = "Session was created without a key"
+                            )
+                        )
+                        return@launch
+                    }
+                    Log.i(TAG, "Session creation completed")
                     _currentSessionKey.value = newKey
                     _chatMessages.value = emptyList()
+                    currentHistoryLimit = 50
+                    _unreadSessions.value = _unreadSessions.value - newKey
                     notifyConnectionUpdate(true, newKey)
                     onChatHistory?.invoke(emptyList())
+                    onSessionOperation?.invoke(
+                        SessionOperationUpdate(operation = "create", state = "success")
+                    )
+                    requestSessions()
                 } else {
-                    val errorMsg = response.error?.get("message")?.asString ?: "Session reset failed"
-                    Log.e(TAG, "Session reset failed")
+                    Log.e(TAG, "Session creation failed")
+                    onSessionOperation?.invoke(
+                        SessionOperationUpdate(
+                            operation = "create",
+                            state = "error",
+                            error = responseErrorMessage(response, "Could not create session")
+                        )
+                    )
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error creating session", e)
+                onSessionOperation?.invoke(
+                    SessionOperationUpdate(
+                        operation = "create",
+                        state = "error",
+                        error = "Could not create session"
+                    )
+                )
             }
         }
+    }
+
+    private fun responseErrorMessage(response: OpenClawResponse, fallback: String): String {
+        return response.error
+            ?.get("message")
+            ?.takeIf { it.isJsonPrimitive }
+            ?.asString
+            ?.takeIf { it.isNotBlank() }
+            ?.take(160)
+            ?: fallback
     }
 
     /**

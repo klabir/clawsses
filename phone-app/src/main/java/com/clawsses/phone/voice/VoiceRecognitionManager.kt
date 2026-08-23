@@ -3,6 +3,7 @@ package com.clawsses.phone.voice
 import android.content.Context
 import android.util.Log
 import com.clawsses.phone.util.SecurePreferences
+import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -210,7 +211,7 @@ class VoiceRecognitionManager(private val context: Context) {
             "foto aufnehmen und senden", "stop talk mode", "talk mode off",
             "talk modus stoppen", "talk modus aus", "switch mode",
             "navigate mode", "scroll mode", "command mode"
-        )
+        ) + VisionCommands.phrases
         for (command in commands) {
             if (lowerText == command || lowerText.startsWith("$command ")) {
                 return VoiceCommandHandler.VoiceResult.Command(command)

@@ -1,5 +1,9 @@
 package com.clawsses.phone.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -62,6 +66,7 @@ import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.MediaStoreSaver
+import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.talk.TalkModeManager
@@ -75,16 +80,23 @@ import com.clawsses.phone.tts.TtsPlaybackManager
 import com.clawsses.phone.tts.TtsSettingsManager
 import com.clawsses.phone.voice.VoiceCommandHandler
 import com.clawsses.phone.voice.VoiceLanguageManager
+import com.clawsses.phone.voice.LiveCaptionManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
 import com.clawsses.shared.AgentInfo
 import com.clawsses.shared.AgentListUpdate
 import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
+import com.clawsses.shared.HudCard
+import com.clawsses.shared.HudCardAction
+import com.clawsses.shared.LiveCaptionUpdate
 import com.clawsses.shared.RunStateUpdate
+import com.clawsses.shared.ScrollSettings
+import com.clawsses.shared.ScrollSettingsUpdate
 import com.clawsses.shared.TalkModeStateUpdate
 import com.clawsses.shared.SessionInfo
 import com.clawsses.shared.TtsState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -103,6 +115,7 @@ fun MainScreen() {
     val voiceHandler = remember { VoiceCommandHandler(context) }
     val voiceLanguageManager = remember { VoiceLanguageManager(context) }
     val voiceRecognitionManager = remember { VoiceRecognitionManager(context) }
+    val liveCaptionManager = remember { LiveCaptionManager(context) }
     val talkModeManager = remember { TalkModeManager(context) }
     val apkInstaller = remember { ApkInstaller(context) }
     val ttsSettingsManager = remember { TtsSettingsManager(context) }
@@ -133,6 +146,7 @@ fun MainScreen() {
     val ttsProvider by ttsSettingsManager.provider.collectAsState()
     val ttsPlaybackState by ttsPlaybackManager.state.collectAsState()
     val ttsCanReplay by ttsPlaybackManager.canReplay.collectAsState()
+    val liveCaptionState by liveCaptionManager.state.collectAsState()
 
     // Persist OpenClaw settings in Android Keystore-backed encrypted preferences.
     val prefs = remember { SecurePreferences.create(context, "clawsses") }
@@ -148,6 +162,20 @@ fun MainScreen() {
     var savePhotosToGallery by remember {
         mutableStateOf(prefs.getBoolean("save_photos_to_gallery", false))
     }
+    var scrollMessagesPerStep by remember {
+        mutableIntStateOf(
+            ScrollSettings.normalizeMessagesPerStep(
+                prefs.getInt("scroll_messages_per_step", ScrollSettings.DEFAULT_MESSAGES_PER_STEP)
+            )
+        )
+    }
+    var translateCaptions by remember {
+        mutableStateOf(prefs.getBoolean("translate_captions", false))
+    }
+    var captionTargetLanguage by remember {
+        mutableStateOf(prefs.getString("caption_target_language", "English") ?: "English")
+    }
+    val hudCardBodies = remember { mutableStateMapOf<String, String>() }
     val phoneLoadingMore by openClawClient.isLoadingMoreHistory.collectAsState()
     var inputText by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
@@ -179,6 +207,22 @@ fun MainScreen() {
         }
     }
 
+    fun syncScrollSettingsToGlasses(messagesPerStep: Int = scrollMessagesPerStep) {
+        if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
+            glassesManager.sendRawMessage(
+                ScrollSettingsUpdate(
+                    messagesPerStep = ScrollSettings.normalizeMessagesPerStep(messagesPerStep)
+                ).toJson()
+            )
+        }
+    }
+
+    fun sendHudCard(card: HudCard) {
+        if (hudCardBodies.size >= 20) hudCardBodies.keys.firstOrNull()?.let(hudCardBodies::remove)
+        hudCardBodies[card.id] = "${card.title}: ${card.body}"
+        glassesManager.sendRawMessage(card.toJson(), isNewMessage = true)
+    }
+
     fun sendTalkVoiceState(state: String, mode: String? = null, text: String? = null) {
         if (latestGlassesState.value !is GlassesConnectionManager.ConnectionState.Connected) return
         glassesManager.sendRawMessage(
@@ -202,6 +246,46 @@ fun MainScreen() {
         if (disable) talkModeManager.setEnabled(false) else talkModeManager.resetToIdle()
         sendTalkVoiceState("idle")
         syncTalkModeStateToGlasses()
+    }
+
+    fun setLiveCaptionsEnabled(enabled: Boolean) {
+        if (enabled) {
+            if (talkModeManager.state.value.enabled) stopTalkMode(disable = true)
+            voiceRecognitionManager.stopListening()
+            RokidSdkManager.setCommunicationDevice()
+            liveCaptionManager.start(
+                sourceLanguage = voiceLanguageManager.getActiveLanguageTag(),
+                targetLanguage = captionTargetLanguage,
+                translate = translateCaptions,
+            )
+        } else {
+            liveCaptionManager.stop()
+            RokidSdkManager.clearCommunicationDevice()
+        }
+    }
+
+    fun switchToHiRokid() {
+        if (talkModeManager.state.value.enabled) stopTalkMode(disable = true)
+        setLiveCaptionsEnabled(false)
+        voiceRecognitionManager.stopListening()
+        ttsPlaybackManager.stop()
+        glassesManager.disconnect()
+        com.clawsses.phone.service.GlassesConnectionService.stop(context)
+        mainHandler.postDelayed({
+            val packageName = "com.rokid.sprite.global.aiapp"
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
+            val launched = launchIntent != null && runCatching {
+                context.startActivity(launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+            if (!launched) {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$packageName"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                Toast.makeText(context, "Enable or install Hi Rokid, then open it", Toast.LENGTH_LONG).show()
+            }
+        }, 900L)
     }
 
     lateinit var scheduleTalkRestart: (Long) -> Unit
@@ -408,6 +492,42 @@ fun MainScreen() {
         syncTalkModeStateToGlasses()
     }
 
+    LaunchedEffect(liveCaptionState, glassesState) {
+        if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
+            glassesManager.sendRawMessage(
+                LiveCaptionUpdate(
+                    enabled = liveCaptionState.enabled,
+                    sourceText = liveCaptionState.sourceText,
+                    translatedText = liveCaptionState.translatedText,
+                    sourceLanguage = liveCaptionState.sourceLanguage,
+                    targetLanguage = liveCaptionState.targetLanguage,
+                    error = liveCaptionState.error,
+                ).toJson()
+            )
+        }
+    }
+
+    LaunchedEffect(glassesState) {
+        if (glassesState !is GlassesConnectionManager.ConnectionState.Connected) return@LaunchedEffect
+        NotificationRelay.pending.collect { pending ->
+            pending.forEach { notification ->
+                val card = HudCard(
+                    id = notification.id,
+                    source = notification.appName,
+                    title = notification.title,
+                    body = notification.body.take(420),
+                    expiresAt = System.currentTimeMillis() + 90_000L,
+                    actions = listOf(
+                        HudCardAction("summarize", "Summarize"),
+                        HudCardAction("dismiss", "Dismiss"),
+                    ),
+                )
+                sendHudCard(card)
+                NotificationRelay.consume(notification.id)
+            }
+        }
+    }
+
     // Resume the durable mode only when its selected audio endpoint and OpenClaw are ready.
     LaunchedEffect(openClawState, glassesState, talkModeState.enabled, talkModeState.phase) {
         val sourceReady = talkModeState.source != TalkModeSource.GLASSES ||
@@ -537,6 +657,7 @@ fun MainScreen() {
                         error = openClawClient.runError.value
                     ).toJson()
                 )
+                syncScrollSettingsToGlasses()
             }
             is GlassesConnectionManager.ConnectionState.Disconnected -> {
                 val talk = talkModeManager.state.value
@@ -607,6 +728,22 @@ fun MainScreen() {
                 it is WakeSignalManager.WakeState.Awake || it is WakeSignalManager.WakeState.WakingUp
             }
             glassesManager.sendRawMessage(buildGlassesChatMessageJson(msg), isNewMessage = isNewMessage)
+            if (isNewMessage && msg.content.isNotBlank()) {
+                sendHudCard(
+                    HudCard(
+                        id = "openclaw:${msg.id}",
+                        source = "OpenClaw",
+                        title = "New assistant update",
+                        body = msg.content.take(420),
+                        priority = "high",
+                        expiresAt = System.currentTimeMillis() + 120_000L,
+                        actions = listOf(
+                            HudCardAction("reply", "Reply"),
+                            HudCardAction("dismiss", "Dismiss"),
+                        ),
+                    )
+                )
+            }
         }
         openClawClient.onChatHistory = { messages ->
             // Full history reload (initial load or session switch) — reset glasses limit
@@ -661,6 +798,9 @@ fun MainScreen() {
         openClawClient.onSessionList = { msg ->
             glassesManager.sendRawMessage(msg.toJson())
         }
+        openClawClient.onSessionOperation = { msg ->
+            glassesManager.sendRawMessage(msg.toJson())
+        }
         openClawClient.onAgentList = { msg ->
             glassesManager.sendRawMessage(msg.toJson())
         }
@@ -681,7 +821,7 @@ fun MainScreen() {
     }
 
     // Handle AI scene events (glasses long-press triggers voice input)
-    fun capturePhoto(sendAfterCapture: Boolean) {
+    fun capturePhoto(sendAfterCapture: Boolean, visionPrompt: String? = null) {
         RokidSdkManager.onPhotoResult = { status, photoBytes ->
             mainHandler.post {
                 if (photoBytes != null && photoBytes.isNotEmpty()) {
@@ -695,7 +835,7 @@ fun MainScreen() {
                         android.util.Base64.NO_WRAP
                     )
                     if (sendAfterCapture) {
-                        openClawClient.sendMessage("", listOf(base64))
+                        openClawClient.sendMessage(visionPrompt.orEmpty(), listOf(base64))
                     } else {
                         pendingPhotos = pendingPhotos + base64
                         val resultMsg = org.json.JSONObject().apply {
@@ -724,6 +864,7 @@ fun MainScreen() {
         glassesManager.onAiKeyDown = {
             android.util.Log.i("MainScreen", ">>> AI key down from glasses - starting voice recognition")
             mainHandler.post {
+                if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                 val talk = talkModeManager.state.value
                 if (talk.enabled) {
                     startTalkListening(
@@ -774,6 +915,7 @@ fun MainScreen() {
                     }
                     "start_voice" -> {
                         android.util.Log.d("MainScreen", "Glasses requested voice recognition start")
+                        if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                         val talk = talkModeManager.state.value
                         if (talk.enabled) {
                             startTalkListening(
@@ -854,7 +996,7 @@ fun MainScreen() {
                     }
                     "list_sessions" -> {
                         android.util.Log.d("MainScreen", "Requesting session list for glasses")
-                        openClawClient.requestSessions()
+                        openClawClient.requestSessions(reportOperation = true)
                     }
                     "switch_session" -> {
                         val sessionKey = json.optString("sessionKey", "")
@@ -944,6 +1086,17 @@ fun MainScreen() {
                             ).toJson()
                         )
                         syncTalkModeStateToGlasses()
+                        glassesManager.sendRawMessage(
+                            LiveCaptionUpdate(
+                                enabled = liveCaptionManager.state.value.enabled,
+                                sourceText = liveCaptionManager.state.value.sourceText,
+                                translatedText = liveCaptionManager.state.value.translatedText,
+                                sourceLanguage = liveCaptionManager.state.value.sourceLanguage,
+                                targetLanguage = liveCaptionManager.state.value.targetLanguage,
+                                error = liveCaptionManager.state.value.error,
+                            ).toJson()
+                        )
+                        syncScrollSettingsToGlasses()
                     }
                     "tts_toggle" -> {
                         val enabled = json.optBoolean("enabled", false)
@@ -969,6 +1122,7 @@ fun MainScreen() {
                     "talk_mode_toggle" -> {
                         val enabled = json.optBoolean("enabled", false)
                         if (enabled) {
+                            if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                             talkModeManager.setEnabled(true, TalkModeSource.GLASSES)
                             startTalkListening(TalkModeSource.GLASSES, false)
                         } else {
@@ -976,9 +1130,38 @@ fun MainScreen() {
                         }
                         syncTalkModeStateToGlasses()
                     }
+                    "live_caption_toggle" -> {
+                        setLiveCaptionsEnabled(json.optBoolean("enabled", false))
+                    }
+                    "hud_card_action" -> {
+                        val cardId = json.optString("cardId")
+                        when (json.optString("actionId")) {
+                            "summarize" -> hudCardBodies[cardId]?.let { body ->
+                                openClawClient.sendMessage("Summarize this notification concisely and identify any action needed: $body")
+                            }
+                            "reply" -> {
+                                RokidSdkManager.setCommunicationDevice()
+                                startVoiceRecognitionWithManager(
+                                    voiceRecognitionManager = voiceRecognitionManager,
+                                    voiceHandler = voiceHandler,
+                                    openClawClient = openClawClient,
+                                    glassesManager = glassesManager,
+                                    mainHandler = mainHandler,
+                                    isRetry = false,
+                                    languageTag = voiceLanguageManager.getActiveLanguageTag(),
+                                    pendingPhotos = { pendingPhotos },
+                                    onPhotosConsumed = { pendingPhotos = emptyList() },
+                                )
+                            }
+                        }
+                        hudCardBodies.remove(cardId)
+                    }
                     "take_photo" -> {
                         android.util.Log.d("MainScreen", "Glasses requested photo capture")
-                        capturePhoto(json.optBoolean("sendAfterCapture", false))
+                        capturePhoto(
+                            sendAfterCapture = json.optBoolean("sendAfterCapture", false),
+                            visionPrompt = json.optString("visionPrompt").takeIf { it.isNotBlank() },
+                        )
                     }
                     "remove_photo" -> {
                         val all = json.optBoolean("all", false)
@@ -1024,6 +1207,7 @@ fun MainScreen() {
             openClawClient.cleanup()
             voiceHandler.cleanup()
             voiceRecognitionManager.cleanup()
+            liveCaptionManager.cleanup()
             ttsPlaybackManager.dispose()
         }
     }
@@ -1364,6 +1548,14 @@ fun MainScreen() {
                 savePhotosToGallery = enabled
                 prefs.edit().putBoolean("save_photos_to_gallery", enabled).apply()
             },
+            scrollMessagesPerStep = scrollMessagesPerStep,
+            onScrollMessagesPerStepChange = { requestedStep ->
+                val normalizedStep = ScrollSettings.normalizeMessagesPerStep(requestedStep)
+                scrollMessagesPerStep = normalizedStep
+                prefs.edit().putInt("scroll_messages_per_step", normalizedStep).apply()
+                syncScrollSettingsToGlasses(normalizedStep)
+            },
+            onSwitchToHiRokid = { switchToHiRokid() },
             // Software Update
             installState = installState,
             sdkConnected = sdkConnected,
@@ -1375,6 +1567,7 @@ fun MainScreen() {
             talkModeState = talkModeState,
             onTalkModeChange = { enabled ->
                 if (enabled) {
+                    if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                     val source = if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
                         TalkModeSource.GLASSES
                     } else {
@@ -1385,6 +1578,20 @@ fun MainScreen() {
                 } else {
                     stopTalkMode(disable = true)
                 }
+            },
+            liveCaptionsEnabled = liveCaptionState.enabled,
+            translateCaptions = translateCaptions,
+            captionTargetLanguage = captionTargetLanguage,
+            onLiveCaptionsChange = { enabled -> setLiveCaptionsEnabled(enabled) },
+            onTranslateCaptionsChange = { enabled ->
+                translateCaptions = enabled
+                prefs.edit().putBoolean("translate_captions", enabled).apply()
+                liveCaptionManager.updateTranslationConfig(captionTargetLanguage, enabled)
+            },
+            onCaptionTargetLanguageChange = { language ->
+                captionTargetLanguage = language
+                prefs.edit().putString("caption_target_language", language).apply()
+                liveCaptionManager.updateTranslationConfig(language, translateCaptions)
             },
             // TTS
             ttsSettingsManager = ttsSettingsManager,

@@ -29,6 +29,8 @@ import com.clawsses.glasses.ui.ChatFocusArea
 import com.clawsses.glasses.ui.ChatHudState
 import com.clawsses.glasses.ui.DisplayMessage
 import com.clawsses.glasses.ui.HudDisplaySize
+import com.clawsses.glasses.ui.HudCardActionDisplay
+import com.clawsses.glasses.ui.HudCardDisplay
 import com.clawsses.glasses.ui.HudPosition
 import com.clawsses.glasses.ui.HudScreen
 import com.clawsses.glasses.ui.InputActionItem
@@ -39,9 +41,12 @@ import com.clawsses.glasses.ui.MAX_PHOTOS
 import com.clawsses.glasses.ui.SLASH_COMMANDS
 import com.clawsses.glasses.ui.VoiceInputState
 import com.clawsses.glasses.ui.RecognitionMode
+import com.clawsses.glasses.ui.LiveCaptionDisplay
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesStateRequest
+import com.clawsses.shared.ScrollSettings
+import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +97,7 @@ class HudActivity : ComponentActivity() {
     // ensure pickers open only after an explicit menu action.
     private var sessionPickerRequested = false
     private var agentPickerRequested = false
+    private var scrollMessagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
 
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
@@ -102,6 +108,7 @@ class HudActivity : ComponentActivity() {
 
     // Wake signal handling
     private var clearWakeNotificationJob: Job? = null
+    private var cardExpiryJob: Job? = null
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -424,6 +431,15 @@ class HudActivity : ComponentActivity() {
         Log.d(GlassesApp.TAG, "Gesture: $gesture, Area: ${current.focusedArea}")
 
         // If overlays are open, handle gestures for them
+        if (current.hudCards.isNotEmpty()) {
+            handleHudCardGesture(gesture)
+            return
+        }
+        if (current.liveCaptionEnabled && gesture == Gesture.DOUBLE_TAP) {
+            phoneConnection.sendToPhone("""{"type":"live_caption_toggle","enabled":false}""")
+            hudState.value = current.copy(liveCaptionEnabled = false, liveCaption = null)
+            return
+        }
         if (current.showExitConfirm) {
             handleExitConfirmGesture(gesture)
             return
@@ -692,7 +708,7 @@ class HudActivity : ComponentActivity() {
         }
     }
 
-    private fun requestPhotoCapture(sendAfterCapture: Boolean) {
+    private fun requestPhotoCapture(sendAfterCapture: Boolean, visionPrompt: String? = null) {
         val current = hudState.value
         if (!sendAfterCapture && current.photoThumbnails.size >= MAX_PHOTOS) {
             Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring photo request")
@@ -711,6 +727,7 @@ class HudActivity : ComponentActivity() {
         val request = JSONObject().apply {
             put("type", "take_photo")
             put("sendAfterCapture", sendAfterCapture)
+            visionPrompt?.let { put("visionPrompt", it) }
         }
         phoneConnection.sendToPhone(request.toString())
         Log.d(GlassesApp.TAG, "Requested photo capture from phone (autoSend=$sendAfterCapture)")
@@ -766,36 +783,58 @@ class HudActivity : ComponentActivity() {
         val current = hudState.value
         val totalOptions = current.availableSessions.size
 
+        if (current.isSessionOperationPending) {
+            if (gesture == Gesture.DOUBLE_TAP) {
+                sessionPickerRequested = false
+                hudState.value = current.copy(
+                    showSessionPicker = false,
+                    isSessionOperationPending = false,
+                    sessionOperationMessage = null,
+                    sessionOperationError = null
+                )
+            }
+            return
+        }
+
         when (gesture) {
             Gesture.SWIPE_FORWARD -> {
                 val newIndex = maxOf(0, current.selectedSessionIndex - 1)
                 hudState.value = current.copy(selectedSessionIndex = newIndex)
             }
             Gesture.SWIPE_BACKWARD -> {
-                val newIndex = minOf(totalOptions - 1, current.selectedSessionIndex + 1)
-                hudState.value = current.copy(selectedSessionIndex = newIndex)
+                if (totalOptions > 0) {
+                    val newIndex = minOf(totalOptions - 1, current.selectedSessionIndex + 1)
+                    hudState.value = current.copy(selectedSessionIndex = newIndex)
+                }
             }
             Gesture.TAP -> {
                 if (totalOptions > 0) {
                     val selected = current.availableSessions[current.selectedSessionIndex]
                     if (selected.key == NEW_SESSION_KEY) {
+                        sessionPickerRequested = false
                         createNewSession()
                         hudState.value = current.copy(
-                            showSessionPicker = false,
-                            currentSessionName = null
+                            showSessionPicker = true,
+                            currentSessionName = null,
+                            isSessionOperationPending = true,
+                            sessionOperationMessage = "Creating session...",
+                            sessionOperationError = null
                         )
                     } else {
                         switchToSession(selected.key)
                         hudState.value = current.copy(
                             showSessionPicker = false,
-                            currentSessionName = selected.name
+                            currentSessionName = selected.name,
+                            sessionOperationError = null
                         )
                     }
                 } else {
+                    sessionPickerRequested = false
                     hudState.value = current.copy(showSessionPicker = false)
                 }
             }
             Gesture.DOUBLE_TAP -> {
+                sessionPickerRequested = false
                 hudState.value = current.copy(showSessionPicker = false)
             }
             Gesture.LONG_PRESS -> {}
@@ -924,6 +963,19 @@ class HudActivity : ComponentActivity() {
                     }.toString()
                 )
             }
+            MoreMenuItem.CAPTIONS -> {
+                val enabled = !current.liveCaptionEnabled
+                hudState.value = current.copy(
+                    liveCaptionEnabled = enabled,
+                    liveCaption = if (enabled) LiveCaptionDisplay() else null,
+                )
+                phoneConnection.sendToPhone(
+                    JSONObject().apply {
+                        put("type", "live_caption_toggle")
+                        put("enabled", enabled)
+                    }.toString()
+                )
+            }
             MoreMenuItem.TTS_STOP -> {
                 phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
             }
@@ -1008,7 +1060,7 @@ class HudActivity : ComponentActivity() {
             hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
             return
         }
-        val newPosition = maxOf(0, current.scrollPosition - 5) // scroll by 5 messages
+        val newPosition = maxOf(0, current.scrollPosition - scrollMessagesPerStep)
         hudState.value = current.copy(
             scrollPosition = newPosition,
             scrollTrigger = current.scrollTrigger + 1,
@@ -1036,7 +1088,7 @@ class HudActivity : ComponentActivity() {
             hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
             return
         }
-        val newPosition = minOf(maxScroll, current.scrollPosition + 5)
+        val newPosition = minOf(maxScroll, current.scrollPosition + scrollMessagesPerStep)
         hudState.value = current.copy(
             scrollPosition = newPosition,
             scrollTrigger = current.scrollTrigger + 1,
@@ -1111,6 +1163,10 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun handleVoiceCommand(command: String) {
+        VisionCommands.promptFor(command)?.let { prompt ->
+            requestPhotoCapture(sendAfterCapture = true, visionPrompt = prompt)
+            return
+        }
         when (command) {
             "scroll up" -> scrollUp()
             "scroll down" -> scrollDown()
@@ -1159,6 +1215,59 @@ class HudActivity : ComponentActivity() {
         }
     }
 
+    private fun handleHudCardGesture(gesture: Gesture) {
+        val current = hudState.value
+        val card = current.hudCards.firstOrNull() ?: return
+        val actions = card.actions.ifEmpty { listOf(HudCardActionDisplay("dismiss", "Dismiss")) }
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> hudState.value = current.copy(
+                selectedHudCardActionIndex = if (current.selectedHudCardActionIndex > 0) {
+                    current.selectedHudCardActionIndex - 1
+                } else {
+                    actions.lastIndex
+                }
+            )
+            Gesture.SWIPE_BACKWARD -> hudState.value = current.copy(
+                selectedHudCardActionIndex = if (current.selectedHudCardActionIndex < actions.lastIndex) {
+                    current.selectedHudCardActionIndex + 1
+                } else {
+                    0
+                }
+            )
+            Gesture.TAP -> dismissHudCard(card, actions[current.selectedHudCardActionIndex.coerceIn(actions.indices)])
+            Gesture.DOUBLE_TAP -> dismissHudCard(card, HudCardActionDisplay("dismiss", "Dismiss"))
+            Gesture.LONG_PRESS -> {}
+        }
+    }
+
+    private fun dismissHudCard(card: HudCardDisplay, action: HudCardActionDisplay) {
+        phoneConnection.sendToPhone(
+            JSONObject().apply {
+                put("type", "hud_card_action")
+                put("cardId", card.id)
+                put("actionId", action.id)
+            }.toString()
+        )
+        hudState.update { current ->
+            current.copy(
+                hudCards = current.hudCards.filterNot { it.id == card.id },
+                selectedHudCardActionIndex = 0,
+            )
+        }
+        scheduleActiveCardExpiry()
+    }
+
+    private fun scheduleActiveCardExpiry() {
+        cardExpiryJob?.cancel()
+        val card = hudState.value.hudCards.firstOrNull() ?: return
+        val expiresAt = card.expiresAt ?: return
+        cardExpiryJob = lifecycleScope.launch {
+            delay((expiresAt - System.currentTimeMillis()).coerceAtLeast(0L))
+            hudState.update { current -> current.copy(hudCards = current.hudCards.filterNot { it.id == card.id }) }
+            scheduleActiveCardExpiry()
+        }
+    }
+
     // ============== Wake Signal Handling ==============
     // The Rokid micro-LED display is woken from the PHONE side via CXR-M SDK
     // (setGlassBrightness + setScreenOffTimeout). Android PowerManager on the
@@ -1195,6 +1304,21 @@ class HudActivity : ComponentActivity() {
 
     private fun requestSessionList() {
         sessionPickerRequested = true
+        hudState.update { current ->
+            val options = if (current.availableSessions.any { it.key == NEW_SESSION_KEY }) {
+                current.availableSessions
+            } else {
+                listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) + current.availableSessions
+            }
+            current.copy(
+                showSessionPicker = true,
+                availableSessions = options,
+                selectedSessionIndex = current.selectedSessionIndex.coerceIn(options.indices),
+                isSessionOperationPending = true,
+                sessionOperationMessage = "Loading sessions...",
+                sessionOperationError = null
+            )
+        }
         phoneConnection.sendToPhone("""{"type":"list_sessions"}""")
     }
 
@@ -1465,10 +1589,20 @@ class HudActivity : ComponentActivity() {
                         currentAgentId = agentIdFromSessionKey(newSessionKey) ?: current.currentAgentId,
                         currentAgentName = newSessionName?.takeIf { it.isNotBlank() }
                             ?: current.currentAgentName,
-                        showSessionPicker = if (sessionChanged) false else current.showSessionPicker
+                        showSessionPicker = if (sessionChanged) false else current.showSessionPicker,
+                        isSessionOperationPending = if (sessionChanged) false else current.isSessionOperationPending,
+                        sessionOperationMessage = if (sessionChanged) null else current.sessionOperationMessage,
+                        sessionOperationError = if (sessionChanged) null else current.sessionOperationError
                     )
 
                     Log.d(GlassesApp.TAG, "Connection update: connected=$connected, sessionChanged=$sessionChanged")
+                }
+
+                "scroll_settings" -> {
+                    scrollMessagesPerStep = ScrollSettings.normalizeMessagesPerStep(
+                        msg.optInt("messagesPerStep", ScrollSettings.DEFAULT_MESSAGES_PER_STEP)
+                    )
+                    Log.d(GlassesApp.TAG, "Scroll step updated: $scrollMessagesPerStep")
                 }
 
                 "session_list" -> {
@@ -1523,15 +1657,62 @@ class HudActivity : ComponentActivity() {
                     val resolvedSessionName = sessions.firstOrNull { it.key == currentSessionKey }?.name
                         ?: current.currentSessionName
                     hudState.value = current.copy(
-                        showSessionPicker = sessionPickerRequested,
+                        showSessionPicker = current.showSessionPicker,
                         availableSessions = sessionsWithNew,
                         currentSessionKey = currentSessionKey.ifEmpty { current.currentSessionKey },
                         currentSessionName = resolvedSessionName,
-                        selectedSessionIndex = currentIndex
+                        selectedSessionIndex = currentIndex,
+                        isSessionOperationPending = false,
+                        sessionOperationMessage = null,
+                        sessionOperationError = null
                     )
                     sessionPickerRequested = false
 
                     Log.d(GlassesApp.TAG, "Session list received (${sessions.size} entries)")
+                }
+
+                "session_operation" -> {
+                    val operation = msg.optString("operation")
+                    val state = msg.optString("state")
+                    val error = msg.optString("error").takeIf { it.isNotBlank() }
+                    hudState.update { current ->
+                        when (state) {
+                            "loading" -> current.copy(
+                                showSessionPicker = true,
+                                isSessionOperationPending = true,
+                                sessionOperationMessage = if (operation == "create") {
+                                    "Creating session..."
+                                } else {
+                                    "Loading sessions..."
+                                },
+                                sessionOperationError = null
+                            )
+                            "success" -> current.copy(
+                                showSessionPicker = if (operation == "create") false else current.showSessionPicker,
+                                isSessionOperationPending = false,
+                                sessionOperationMessage = null,
+                                sessionOperationError = null
+                            )
+                            "error" -> {
+                                val options = if (current.availableSessions.any { it.key == NEW_SESSION_KEY }) {
+                                    current.availableSessions
+                                } else {
+                                    listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) + current.availableSessions
+                                }
+                                current.copy(
+                                    showSessionPicker = true,
+                                    availableSessions = options,
+                                    selectedSessionIndex = current.selectedSessionIndex.coerceIn(options.indices),
+                                    isSessionOperationPending = false,
+                                    sessionOperationMessage = null,
+                                    sessionOperationError = error ?: "Session operation failed"
+                                )
+                            }
+                            else -> current
+                        }
+                    }
+                    if (state != "loading") sessionPickerRequested = false
+                    Log.d(GlassesApp.TAG, "Session operation: $operation/$state")
                 }
 
                 "agent_list" -> {
@@ -1697,6 +1878,56 @@ class HudActivity : ComponentActivity() {
                     }
                 }
 
+                "hud_card" -> {
+                    val actionsJson = msg.optJSONArray("actions")
+                    val actions = buildList {
+                        if (actionsJson != null) {
+                            for (index in 0 until actionsJson.length()) {
+                                val action = actionsJson.optJSONObject(index) ?: continue
+                                add(HudCardActionDisplay(action.optString("id"), action.optString("label")))
+                            }
+                        }
+                    }.filter { it.id.isNotBlank() && it.label.isNotBlank() }
+                    val card = HudCardDisplay(
+                        id = msg.optString("id"),
+                        source = msg.optString("source", "Clawsses"),
+                        title = msg.optString("title", "Update"),
+                        body = msg.optString("body"),
+                        priority = msg.optString("priority", "normal"),
+                        expiresAt = msg.optLong("expiresAt", 0L).takeIf { it > 0L },
+                        actions = actions,
+                    )
+                    if (card.id.isNotBlank() && card.body.isNotBlank()) {
+                        hudState.update { current ->
+                            current.copy(
+                                hudCards = (current.hudCards.filterNot { it.id == card.id } + card).takeLast(5),
+                                selectedHudCardActionIndex = 0,
+                            )
+                        }
+                        scheduleActiveCardExpiry()
+                    }
+                }
+
+                "live_caption" -> {
+                    val enabled = msg.optBoolean("enabled", false)
+                    hudState.update { current ->
+                        current.copy(
+                            liveCaptionEnabled = enabled,
+                            liveCaption = if (enabled) {
+                                LiveCaptionDisplay(
+                                    sourceText = msg.optString("sourceText"),
+                                    translatedText = msg.optString("translatedText").takeIf { it.isNotBlank() },
+                                    sourceLanguage = msg.optString("sourceLanguage").takeIf { it.isNotBlank() },
+                                    targetLanguage = msg.optString("targetLanguage").takeIf { it.isNotBlank() },
+                                    error = msg.optString("error").takeIf { it.isNotBlank() },
+                                )
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                }
+
                 else -> {
                     Log.d(GlassesApp.TAG, "Unknown message type: $type")
                 }
@@ -1774,6 +2005,7 @@ class HudActivity : ComponentActivity() {
         voiceHandler.cleanup()
         phoneConnection.stop()
         clearWakeNotificationJob?.cancel()
+        cardExpiryJob?.cancel()
         // Kill the process so the next launch starts completely fresh.
         // The CXR native layer may hold global state from the previous
         // CXRServiceBridge that prevents a second bridge in the same process

@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.glasses.ApkInstaller
 
 @Composable
@@ -35,6 +36,9 @@ fun SoftwareUpdateSection(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.padding(horizontal = 16.dp)) {
+        VersionContent()
+        Spacer(Modifier.height(16.dp))
+
         if (!sdkConnected) {
             UnavailableContent()
             return
@@ -66,6 +70,19 @@ fun SoftwareUpdateSection(
                 ErrorContent(installState.message, installState.canRetry, onInstall)
         }
     }
+}
+
+@Composable
+private fun VersionContent() {
+    Text(
+        "Phone App ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+        style = MaterialTheme.typography.bodyLarge,
+    )
+    Text(
+        "Bundled Glasses App ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
