@@ -266,6 +266,18 @@ data class AgentInfo(
 // ============================================
 
 /**
+ * Requests the current phone/OpenClaw state and identifies the running glasses build.
+ * Version fields are nullable so phones remain compatible with older glasses builds.
+ */
+data class GlassesStateRequest(
+    @SerializedName("type") val type: String = "request_state",
+    @SerializedName("versionName") val versionName: String? = null,
+    @SerializedName("versionCode") val versionCode: Int? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+/**
  * User input from glasses (text and optional photo).
  */
 data class UserInput(

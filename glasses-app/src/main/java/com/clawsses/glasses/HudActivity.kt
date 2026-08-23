@@ -41,6 +41,7 @@ import com.clawsses.glasses.ui.VoiceInputState
 import com.clawsses.glasses.ui.RecognitionMode
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
+import com.clawsses.shared.GlassesStateRequest
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -244,7 +245,12 @@ class HudActivity : ComponentActivity() {
                 if (current.isConnected != isConnected) {
                     hudState.value = current.copy(isConnected = isConnected)
                     if (isConnected) {
-                        phoneConnection.sendToPhone("""{"type":"request_state"}""")
+                        phoneConnection.sendToPhone(
+                            GlassesStateRequest(
+                                versionName = BuildConfig.VERSION_NAME,
+                                versionCode = BuildConfig.VERSION_CODE,
+                            ).toJson()
+                        )
                     }
                 }
             }

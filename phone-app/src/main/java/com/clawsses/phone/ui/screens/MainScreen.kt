@@ -890,7 +890,16 @@ fun MainScreen() {
                         }
                     }
                     "request_state" -> {
-                        android.util.Log.d("MainScreen", "Glasses requested current state")
+                        val glassesVersionName = json.optString("versionName").takeIf { it.isNotBlank() }
+                        val glassesVersionCode = json.optInt("versionCode", -1).takeIf { it >= 0 }
+                        android.util.Log.d(
+                            "MainScreen",
+                            if (glassesVersionName != null && glassesVersionCode != null) {
+                                "Glasses requested current state (app=$glassesVersionName, build=$glassesVersionCode)"
+                            } else {
+                                "Glasses requested current state (legacy build)"
+                            }
+                        )
                         // Send OpenClaw connection status
                         val isConnected = openClawState is OpenClawClient.ConnectionState.Connected
                         val currentKey = openClawClient.currentSessionKey.value

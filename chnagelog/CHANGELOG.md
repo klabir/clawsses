@@ -27,6 +27,7 @@
 - Diagnostic logs record metadata only and no longer include chat, voice, device, or credential payloads.
 - Rokid camera captures now target 1280×720 and only small thumbnails cross the glasses command channel.
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
+- Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 
 ### Fixed
 

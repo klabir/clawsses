@@ -2,7 +2,9 @@ package com.clawsses.glasses.service
 
 import android.content.Context
 import android.util.Log
+import com.clawsses.glasses.BuildConfig
 import com.clawsses.glasses.debug.DebugPhoneClient
+import com.clawsses.shared.GlassesStateRequest
 import com.rokid.cxr.Caps
 import com.rokid.cxr.CXRServiceBridge
 import kotlinx.coroutines.*
@@ -199,7 +201,12 @@ class PhoneConnectionService(
                 withContext(Dispatchers.Main) {
                     try {
                         val caps = Caps()
-                        caps.write("""{"type":"request_state"}""")
+                        caps.write(
+                            GlassesStateRequest(
+                                versionName = BuildConfig.VERSION_NAME,
+                                versionCode = BuildConfig.VERSION_CODE,
+                            ).toJson()
+                        )
                         cxrBridge?.sendMessage(MSG_TYPE_COMMAND, caps)
                     } catch (e: Exception) {
                         Log.e(TAG, "Connection probe send failed", e)
