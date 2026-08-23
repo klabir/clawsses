@@ -1,5 +1,3 @@
-NOTE: Connecting to the gateway required disabling device security in the previous version (Feb 13). That is now fixed. Pull the latest version and retry if you had issues connecting to your gateway (and read the Connect section below on how to approve devices).
-
 # Clawsses
 
 Connect to your [OpenClaw](https://github.com/openclaw/openclaw) server 🦞 with your [Rokid Glasses](https://global.rokid.com/pages/rokid-glasses) 🕶️. Bring the power of OpenClaw with you anywhere you go. Give it voice command, send it photos of what you're looking at and see the answers stream in on the screens inside the glasses and hear your molty speak.
@@ -17,11 +15,12 @@ Connect to your [OpenClaw](https://github.com/openclaw/openclaw) server 🦞 wit
 
 Clawsses connects your Rokid glasses to an OpenClaw Gateway, via your Android phone, giving you a wearable AI interface:
 
-- **Voice-first interaction** - Long-press to speak, see the response appear in your HUD
+- **Voice-first interaction** - Long-press to speak, or enable persistent Talk Mode for automatic send and listen-after-reply
 - **Live streaming** - AI responses stream token-by-token onto the glasses display
-- **Camera input** - Snap photos through the glasses camera and attach them to your message ("what am I looking at?")
-- **Session management** - Switch between multiple OpenClaw sessions from the glasses
-- **Text-to-speech** - Hear responses read aloud via ElevenLabs, controllable from the glasses
+- **Camera input** - Send a 1280x720 photo by itself or attach it to a later message; optionally save captures to Android Gallery
+- **Agent and session management** - Switch between OpenClaw agents and sessions from the phone or glasses
+- **Text-to-speech** - Hear responses through ElevenLabs or OpenAI, with stop and replay controls
+- **Run control** - See thinking/streaming status and cancel the exact active OpenClaw run
 - **Wake-on-message** - Glasses display wakes automatically when new messages arrive
 - **Slash commands** - Quick access to OpenClaw commands (`/model`, `/clear`, `/status`, etc.)
 
@@ -55,7 +54,7 @@ OpenClaw Gateway ←─ WebSocket ──→ Phone App (Android) ←─ Bluetooth
 
 ## Setup
 
-Intimadated by all the instructions below? Ask you OpenClaw to help to make things a lot easier.
+Intimidated by the instructions below? Ask your OpenClaw agent to help.
 
 ### Prerequisites
 
@@ -76,21 +75,23 @@ To install and debug the app on your Android phone:
 
 ### 2. SDK Credentials
 
-Create `local.properties` in the project root with your Rokid CXR SDK credentials:
+Copy the ignored template and edit the resulting file in an editor:
+
+```bash
+cp local.properties.example local.properties
+chmod 600 local.properties
+```
+
+Enter your Rokid CXR SDK credentials in `local.properties`:
 
 ```properties
 rokid.clientSecret=your-client-secret
 rokid.accessKey=your-access-key
 ```
 
-You can create this file in Android Studio (right-click the project root → **New → File** → name it `local.properties`) or from the command line:
-
-```bash
-echo 'rokid.clientSecret=your-client-secret' > local.properties
-echo 'rokid.accessKey=your-access-key' >> local.properties
-```
-
 These are injected as `BuildConfig` fields at compile time and are required for Bluetooth pairing with the glasses.
+
+> `local.properties` is git-ignored. Because the values are compiled into the phone APK, do not publish or attach APKs built with production Rokid credentials.
 
 ### 3. OpenClaw Gateway Setup
 
@@ -101,13 +102,13 @@ The phone app connects to your OpenClaw Gateway via WebSocket. A few things to c
 openclaw config set gateway.auth.token <your-token>
 ```
 
-**Bind to your LAN interface.** By default, the gateway listens on loopback (`127.0.0.1`) only. To allow connections from your phone on the same network, change the bind address:
+**Provide a private TLS endpoint.** This hardened client rejects `ws://` and requires `wss://`. Keep the gateway private and expose it through Tailscale Serve or another authenticated TLS reverse proxy. For OpenClaw's integrated Tailscale route:
 ```bash
-openclaw config set gateway.host 0.0.0.0
+openclaw config set gateway.tailscale.mode serve
 openclaw gateway restart
 ```
 
-**For remote access** (outside your local WiFi), use [Tailscale](https://tailscale.com/) or another VPN rather than exposing the gateway to the public internet.
+Enter the resulting MagicDNS host in Clawsses (for example `machine.tailnet.ts.net`) and port `443`. Do not expose the raw gateway port to the public internet.
 
 **Device approval:** The first connection from the app will fail — this is expected. OpenClaw requires you to approve new devices:
 
@@ -143,7 +144,7 @@ The phone app bundles the glasses APK and can push it to the glasses over WiFi P
   <img src="docs/images/phone-settings-top.png" width="260" alt="Phone app settings - server and voice configuration">
 </p>
 
-1. Open the phone app and configure your OpenClaw Gateway host, port, and token in Settings (I recommend using a VPN, like Tailscale and not connecting OpenClaw to the open Internet)
+1. Open the phone app and configure your private WSS OpenClaw Gateway host, port, and token in Settings. A Tailscale Serve hostname normally uses port `443`.
 2. The first time you connect, the gateway will reject the connection because your device isn't paired yet. On the gateway, approve the pending device:
    ```bash
    # List pending pairing requests
@@ -168,10 +169,21 @@ The phone app bundles the glasses APK and can push it to the glasses over WiFi P
 Long-press on the glasses temple to start voice recognition.
 
 Two speech recognition backends are supported:
-- **OpenAI Realtime API** (primary) - streaming transcription via Whisper with server-side VAD, multi-segment speech support, and audio pre-buffering for zero-latency start. Note: only shows the recognized speech once you stop speaking.
+- **OpenAI Realtime API** (primary) - streaming transcription with `gpt-live-transcribe`, local speech-end detection, and audio pre-buffering for immediate capture. The final text appears after you stop speaking.
 - **Android SpeechRecognizer** (fallback) - used automatically when no OpenAI API key is configured; shows speech while you talk, but recognition isn't as great.
 
 Configure your OpenAI API key in Settings > Voice to enable the primary backend.
+
+### Permanent Talk Mode
+
+Enable **Settings → Voice → Permanent Talk Mode** or choose **Talk Mode** in the glasses More menu.
+
+1. Clawsses listens for one utterance.
+2. The recognized text is sent immediately without a separate Send action.
+3. The OpenClaw answer streams to the HUD and is spoken if TTS is configured.
+4. Listening restarts automatically after the answer.
+
+Press the glasses **AI key** while an answer is running to stop TTS, cancel the exact active OpenClaw run, and begin the next utterance. Disable the mode with the settings toggle, the More menu, or the voice command **“stop talk mode”** / **“Talk Modus aus”**.
 
 ### Temple Touchpad Gestures
 
@@ -192,7 +204,7 @@ The glasses touchpad has two focus areas that change what gestures do:
 | 📷 Photo | Capture a photo to attach to your next message (up to 4) |
 | ◎ Session | Open session picker - browse, switch, or create sessions |
 | █ Size | Cycle HUD position: Full → Bottom Half → Top Half |
-| … More | Font size, slash commands, toggle voice responses |
+| … More | Talk Mode, agent selection, font size, slash commands, TTS stop/replay, and active-run cancellation |
 
 <p align="center">
   <img src="docs/images/glasses-session-picker.png" width="240" alt="Session picker">
@@ -204,11 +216,13 @@ The glasses touchpad has two focus areas that change what gestures do:
 
 ### Camera
 
-Tap the Photo menu item to capture an image through the glasses camera. Photos are attached to your next voice message as base64-encoded images, enabling multimodal AI interactions ("what does this error message say?", "describe what I'm looking at"). You can attach up to 4 photos.
+Tap the Photo menu item to capture a 1280x720 image through the glasses camera. Queue up to four images for the next message, or use **Take and Send Photo** to send an image without additional text. **Settings → Glasses → Save captures to Gallery** stores an additional copy under `Pictures/Clawsses`.
+
+The voice commands **“take photo”**, **“take and send photo”**, **“Foto aufnehmen”**, and **“Foto aufnehmen und senden”** call the same camera actions.
 
 ### Text-to-Speech
 
-Toggle voice responses from the More menu on the glasses. When enabled, AI responses are spoken aloud via ElevenLabs TTS. Configure your ElevenLabs API key and preferred voice in the phone app Settings.
+Choose ElevenLabs or OpenAI in the phone app TTS settings, then enable voice responses from the glasses More menu. OpenAI uses `gpt-4o-mini-tts` and shares the encrypted OpenAI key configured for transcription. Both providers support stop and replay controls on the phone and glasses.
 
 ### Wake-on-Message
 
@@ -244,18 +258,27 @@ You can develop without physical glasses by using the built-in debug mode. In de
 
 The phone app implements the [OpenClaw Gateway protocol](https://docs.openclaw.ai):
 
+- **Transport:** TLS-only `wss://`; plaintext WebSocket endpoints are rejected
 - **Authentication:** Token auth + Ed25519 device identity (keypair stored in Android Keystore)
 - **Chat:** Sends `chat.send`, receives streaming `chat` events with accumulated text (client diffs to extract new content)
-- **Sessions:** Full session management - list, switch, create, reset
+- **Run control:** Cancels only the frozen active `sessionKey` + `runId` through `chat.abort`
+- **Agents and sessions:** Lists and switches agents with `agents.list`, plus session list/switch/create/reset
 - **Auto-reconnect:** 3-second backoff on disconnect
 
 ## Phone-Glasses Protocol
 
 Communication between phone and glasses uses JSON messages over the CXR SDK bridge (or WebSocket in debug mode):
 
-**Phone → Glasses:** `chat_message`, `agent_thinking`, `chat_stream`, `chat_stream_end`, `connection_update`, `session_list`, `voice_state`, `voice_result`, `wake_signal`, `tts_state`
+**Phone → Glasses:** `chat_message`, `agent_thinking`, `chat_stream`, `chat_stream_end`, `connection_update`, `session_list`, `agent_list`, `voice_state`, `voice_result`, `wake_signal`, `tts_state`, `run_state`, `talk_mode_state`
 
-**Glasses → Phone:** `user_input` (text + optional photo), `list_sessions`, `switch_session`, `slash_command`, `start_voice`, `cancel_voice`, `request_more_history`, `wake_ack`, `tts_toggle`
+**Glasses → Phone:** `user_input` (text + optional photo), `list_sessions`, `switch_session`, `list_agents`, `switch_agent`, `slash_command`, `start_voice`, `cancel_voice`, `request_more_history`, `wake_ack`, `tts_toggle`, `tts_control`, `abort_run`, `talk_mode_toggle`
+
+## Security Notes
+
+- Runtime OpenClaw, Rokid pairing, OpenAI, and ElevenLabs settings use Android Keystore-backed encrypted preferences.
+- Android backup is disabled for both apps so credentials and device identity are not copied to cloud backups.
+- Logs contain connection metadata, not chat text, transcripts, device payloads, or credentials.
+- Keep `local.properties` private and publish source only; production Rokid credentials are embedded in locally built phone APKs.
 
 ## Screenshots
 
@@ -265,10 +288,10 @@ See the full [screenshot gallery](docs/SCREENSHOTS.md) for more images of the gl
 
 ### "Connection refused" / app won't connect
 
-- Verify the OpenClaw Gateway is running and the correct IP, port, and token are entered in the app's Settings
-- Make sure the gateway is bound to your LAN interface (`0.0.0.0`), not loopback (`127.0.0.1`) — see [Gateway Setup](#3-openclaw-gateway-setup)
-- Check that your phone is on the same WiFi network as the machine running the gateway
-- For remote access (outside your LAN), you need [Tailscale](https://tailscale.com/) or a VPN
+- Verify the OpenClaw Gateway is running and the correct private TLS hostname, port, and token are entered in Settings
+- Confirm the endpoint opens as `https://` and the WebSocket route is available as `wss://`
+- Check that Tailscale or your VPN is connected on both the phone and gateway host
+- Plaintext `ws://` / `http://` endpoints are intentionally rejected
 
 ### "Pairing required" / first connection fails
 
@@ -296,8 +319,12 @@ This is normal! OpenClaw requires device approval before allowing connections:
 
 ### No audio / TTS not working
 
-- Configure your ElevenLabs API key in the phone app **Settings**
+- Configure either an ElevenLabs or OpenAI API key in phone app **Settings → TTS**
 - On the glasses, make sure TTS is enabled via the **More** menu (… → toggle voice responses)
+
+## Credits
+
+This fork is based on [dweddepohl/clawsses](https://github.com/dweddepohl/clawsses). Features were selectively reimplemented after reviewing ideas in [YNCK000/clawsses](https://github.com/YNCK000/clawsses) (photo/history and scrolling), [Steven0706/clawsses](https://github.com/Steven0706/clawsses) (TTS, agent/session UI, gallery and camera), and [Massif-5279/clawsses](https://github.com/Massif-5279/clawsses) (Talk Mode and run cancellation). The forks were not merged wholesale; security and current OpenClaw/OpenAI protocol behavior were retained independently.
 
 ## License
 

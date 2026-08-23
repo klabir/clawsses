@@ -4,7 +4,7 @@ This document summarizes the research findings on Rokid CXR-M SDK capabilities f
 
 ## SDK Version
 
-- **CXR-M SDK**: `com.rokid.cxr:client-m:1.0.4`
+- **CXR-M SDK**: `com.rokid.cxr:client-m:1.0.8`
 - **Maven Repository**: `https://maven.rokid.com/repository/maven-public/`
 
 ## APK Installation API

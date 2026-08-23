@@ -52,7 +52,7 @@ Rokid uses a split SDK architecture for glasses-phone communication:
 
 ### Phone SDK: CXR-M (Client Mobile)
 
-**Maven Artifact:** `com.rokid.cxr:client-m:1.0.4`
+**Maven Artifact:** `com.rokid.cxr:client-m:1.0.8`
 
 **Key Classes:**
 - `CxrApi` - Main SDK singleton
@@ -113,10 +113,11 @@ bridge.sendMessage("command", caps)
 
 Required in `local.properties`:
 ```properties
-rokid.clientId=your_client_id
 rokid.clientSecret=your_client_secret
 rokid.accessKey=your_access_key
 ```
+
+Keep `local.properties` untracked and do not distribute APKs built with production credentials.
 
 Get credentials from [Rokid Developer Portal](https://ar.rokid.com).
 
