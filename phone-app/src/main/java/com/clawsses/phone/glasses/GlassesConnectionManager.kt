@@ -186,17 +186,27 @@ class GlassesConnectionManager(private val context: Context) {
 
         RokidSdkManager.onWifiP2PDisconnected = {
             _wifiP2PConnected.value = false
+            restoreBluetoothConnectionStateAfterWifiAttempt()
             Log.d(TAG, "SDK: WiFi P2P disconnected")
         }
 
         RokidSdkManager.onWifiP2PFailed = {
             _wifiP2PConnected.value = false
+            restoreBluetoothConnectionStateAfterWifiAttempt()
             Log.e(TAG, "SDK: WiFi P2P failed")
         }
 
         RokidSdkManager.onMessageFromGlasses = handleGlassesMsg@{ cmd, caps ->
             // Notify wake signal manager of activity (glasses is responsive)
             wakeSignalManager.handleGlassesActivity()
+
+            // The vendor bridge also emits plain-text transport status commands such as
+            // "Wifi_Status" on this channel. Clawsses' application protocol is JSON-only;
+            // do not forward vendor control traffic into the JSON message handler.
+            if (!cmd.trimStart().startsWith("{")) {
+                Log.d(TAG, "Ignored non-JSON SDK status command")
+                return@handleGlassesMsg
+            }
 
             // Check for wake_ack message
             try {
@@ -413,7 +423,18 @@ class GlassesConnectionManager(private val context: Context) {
         }
 
         _connectionState.value = ConnectionState.InitializingWifiP2P
-        return RokidSdkManager.initWifiP2P()
+        val started = RokidSdkManager.initWifiP2P()
+        if (!started) restoreBluetoothConnectionStateAfterWifiAttempt()
+        return started
+    }
+
+    private fun restoreBluetoothConnectionStateAfterWifiAttempt() {
+        if (_connectionState.value !is ConnectionState.InitializingWifiP2P) return
+        _connectionState.value = if (RokidSdkManager.isConnected()) {
+            ConnectionState.Connected(RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses")
+        } else {
+            ConnectionState.Disconnected
+        }
     }
 
     /**

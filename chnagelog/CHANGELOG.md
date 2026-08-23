@@ -32,6 +32,7 @@
 
 - Prevented competing reconnect jobs after Android activity recreation.
 - Disabled Android backup for both companion applications.
+- Updated Rokid CXR-M to 1.2.2 after a 1.0.8 WiFi-P2P failure crashed inside the vendor SDK, moved its Handler-based transfer lifecycle to the Android main thread, added a bounded retry, restored Bluetooth UI state after failures, and ignored non-JSON vendor status commands on the app protocol channel.
 
 ### Removed
 

@@ -52,7 +52,7 @@ Rokid uses a split SDK architecture for glasses-phone communication:
 
 ### Phone SDK: CXR-M (Client Mobile)
 
-**Maven Artifact:** `com.rokid.cxr:client-m:1.0.8`
+**Maven Artifact:** `com.rokid.cxr:client-m:1.2.2`
 
 **Key Classes:**
 - `CxrApi` - Main SDK singleton
