@@ -25,6 +25,7 @@ import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.tts.ElevenLabsClient
 import com.clawsses.phone.tts.TtsSettingsManager
+import com.clawsses.phone.tts.TtsPlaybackState
 import com.clawsses.phone.util.isEmulator
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
@@ -69,6 +70,10 @@ fun SettingsScreen(
     // TTS
     ttsSettingsManager: TtsSettingsManager? = null,
     elevenLabsClient: ElevenLabsClient? = null,
+    ttsPlaybackState: TtsPlaybackState = TtsPlaybackState.IDLE,
+    ttsCanReplay: Boolean = false,
+    onTtsStop: () -> Unit = {},
+    onTtsReplay: () -> Unit = {},
     // Developer
     onDebugModeChange: (Boolean) -> Unit,
     // Navigation
@@ -158,6 +163,10 @@ fun SettingsScreen(
                     TtsSection(
                         ttsSettingsManager = ttsSettingsManager,
                         elevenLabsClient = elevenLabsClient,
+                        playbackState = ttsPlaybackState,
+                        canReplay = ttsCanReplay,
+                        onStop = onTtsStop,
+                        onReplay = onTtsReplay,
                     )
                 }
             }

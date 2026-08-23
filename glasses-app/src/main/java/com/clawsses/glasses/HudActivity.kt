@@ -852,6 +852,12 @@ class HudActivity : ComponentActivity() {
                 phoneConnection.sendToPhone(json.toString())
                 Log.d(GlassesApp.TAG, "TTS toggle: $newEnabled")
             }
+            MoreMenuItem.TTS_STOP -> {
+                phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
+            }
+            MoreMenuItem.TTS_REPLAY -> {
+                phoneConnection.sendToPhone("""{"type":"tts_control","action":"replay"}""")
+            }
             else -> {}
         }
     }
@@ -1509,7 +1515,11 @@ class HudActivity : ComponentActivity() {
                         msg.getString("voiceName")
                     } else null
                     hudState.update { current ->
-                        current.copy(ttsEnabled = enabled)
+                        current.copy(
+                            ttsEnabled = enabled,
+                            ttsPlaybackState = msg.optString("playbackState", "idle"),
+                            ttsCanReplay = msg.optBoolean("canReplay", false),
+                        )
                     }
                     Log.d(GlassesApp.TAG, "TTS state: enabled=$enabled, voice=$voiceName")
                 }

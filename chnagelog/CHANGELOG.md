@@ -14,6 +14,8 @@
 - Optional gallery storage for captured photos under `Pictures/Clawsses`.
 - Voice commands to capture a photo or capture and send it immediately.
 - Privacy-preserving thinking/reasoning phase indicators on the Rokid HUD.
+- OpenAI `gpt-4o-mini-tts` alongside ElevenLabs, with selectable voices and shared encrypted OpenAI credentials.
+- TTS stop and replay controls on both the phone and glasses.
 
 ### Changed
 

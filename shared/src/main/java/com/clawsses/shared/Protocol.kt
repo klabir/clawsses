@@ -369,13 +369,24 @@ data class TtsToggle(
 data class TtsState(
     @SerializedName("type") val type: String = "tts_state",
     @SerializedName("enabled") val enabled: Boolean,
-    @SerializedName("voiceName") val voiceName: String? = null
+    @SerializedName("voiceName") val voiceName: String? = null,
+    @SerializedName("provider") val provider: String? = null,
+    @SerializedName("playbackState") val playbackState: String = "idle",
+    @SerializedName("canReplay") val canReplay: Boolean = false,
 ) {
     fun toJson(): String = gson.toJson(this)
 
     companion object {
         fun fromJson(json: String): TtsState = gson.fromJson(json, TtsState::class.java)
     }
+}
+
+/** Stop or replay speech without changing the enabled preference. */
+data class TtsControl(
+    @SerializedName("type") val type: String = "tts_control",
+    @SerializedName("action") val action: String,
+) {
+    fun toJson(): String = gson.toJson(this)
 }
 
 // ============================================

@@ -67,6 +67,7 @@ import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.ui.settings.SettingsScreen
 import com.clawsses.phone.util.SecurePreferences
 import com.clawsses.phone.tts.ElevenLabsClient
+import com.clawsses.phone.tts.OpenAiTtsClient
 import com.clawsses.phone.tts.TtsPlaybackManager
 import com.clawsses.phone.tts.TtsSettingsManager
 import com.clawsses.phone.voice.VoiceCommandHandler
@@ -96,7 +97,10 @@ fun MainScreen() {
     val apkInstaller = remember { ApkInstaller(context) }
     val ttsSettingsManager = remember { TtsSettingsManager(context) }
     val elevenLabsClient = remember { ElevenLabsClient() }
-    val ttsPlaybackManager = remember { TtsPlaybackManager(context, elevenLabsClient, ttsSettingsManager) }
+    val openAiTtsClient = remember { OpenAiTtsClient() }
+    val ttsPlaybackManager = remember {
+        TtsPlaybackManager(context, elevenLabsClient, openAiTtsClient, ttsSettingsManager)
+    }
 
     // State
     val glassesState by glassesManager.connectionState.collectAsState()
@@ -112,6 +116,9 @@ fun MainScreen() {
     val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsState()
     val ttsEnabled by ttsSettingsManager.isEnabled.collectAsState()
     val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsState()
+    val ttsProvider by ttsSettingsManager.provider.collectAsState()
+    val ttsPlaybackState by ttsPlaybackManager.state.collectAsState()
+    val ttsCanReplay by ttsPlaybackManager.canReplay.collectAsState()
 
     // Persist OpenClaw settings in Android Keystore-backed encrypted preferences.
     val prefs = remember { SecurePreferences.create(context, "clawsses") }
@@ -180,11 +187,14 @@ fun MainScreen() {
     }
 
     // Sync TTS state to glasses when settings change
-    LaunchedEffect(ttsEnabled, ttsVoiceName) {
+    LaunchedEffect(ttsEnabled, ttsVoiceName, ttsProvider, ttsPlaybackState, ttsCanReplay) {
         if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
             val ttsStateMsg = TtsState(
                 enabled = ttsEnabled,
-                voiceName = ttsVoiceName
+                voiceName = ttsVoiceName,
+                provider = ttsProvider.name.lowercase(),
+                playbackState = ttsPlaybackState.name.lowercase(),
+                canReplay = ttsCanReplay,
             )
             glassesManager.sendRawMessage(ttsStateMsg.toJson())
         }
@@ -209,7 +219,10 @@ fun MainScreen() {
                 // Send TTS state to glasses
                 val ttsStateMsg = TtsState(
                     enabled = ttsSettingsManager.isEnabled.value,
-                    voiceName = ttsSettingsManager.selectedVoiceName.value
+                    voiceName = ttsSettingsManager.selectedVoiceName.value,
+                    provider = ttsSettingsManager.provider.value.name.lowercase(),
+                    playbackState = ttsPlaybackManager.state.value.name.lowercase(),
+                    canReplay = ttsPlaybackManager.canReplay.value,
                 )
                 glassesManager.sendRawMessage(ttsStateMsg.toJson())
             }
@@ -510,20 +523,33 @@ fun MainScreen() {
                         // Send TTS state
                         val ttsStateMsg = TtsState(
                             enabled = ttsSettingsManager.isEnabled.value,
-                            voiceName = ttsSettingsManager.selectedVoiceName.value
+                            voiceName = ttsSettingsManager.selectedVoiceName.value,
+                            provider = ttsSettingsManager.provider.value.name.lowercase(),
+                            playbackState = ttsPlaybackManager.state.value.name.lowercase(),
+                            canReplay = ttsPlaybackManager.canReplay.value,
                         )
                         glassesManager.sendRawMessage(ttsStateMsg.toJson())
                     }
                     "tts_toggle" -> {
                         val enabled = json.optBoolean("enabled", false)
                         android.util.Log.d("MainScreen", "TTS toggle from glasses: $enabled")
-                        ttsSettingsManager.setEnabled(enabled)
+                        val effectiveEnabled = enabled && ttsSettingsManager.isConfigured()
+                        ttsSettingsManager.setEnabled(effectiveEnabled)
                         // Send updated state back to glasses
                         val ttsStateMsg = TtsState(
-                            enabled = enabled,
-                            voiceName = ttsSettingsManager.selectedVoiceName.value
+                            enabled = effectiveEnabled,
+                            voiceName = ttsSettingsManager.selectedVoiceName.value,
+                            provider = ttsSettingsManager.provider.value.name.lowercase(),
+                            playbackState = ttsPlaybackManager.state.value.name.lowercase(),
+                            canReplay = ttsPlaybackManager.canReplay.value,
                         )
                         glassesManager.sendRawMessage(ttsStateMsg.toJson())
+                    }
+                    "tts_control" -> {
+                        when (json.optString("action", "")) {
+                            "stop" -> ttsPlaybackManager.stop()
+                            "replay" -> ttsPlaybackManager.replay()
+                        }
                     }
                     "take_photo" -> {
                         android.util.Log.d("MainScreen", "Glasses requested photo capture")
@@ -570,6 +596,7 @@ fun MainScreen() {
             openClawClient.cleanup()
             voiceHandler.cleanup()
             voiceRecognitionManager.cleanup()
+            ttsPlaybackManager.dispose()
         }
     }
 
@@ -887,6 +914,10 @@ fun MainScreen() {
             // TTS
             ttsSettingsManager = ttsSettingsManager,
             elevenLabsClient = elevenLabsClient,
+            ttsPlaybackState = ttsPlaybackState,
+            ttsCanReplay = ttsCanReplay,
+            onTtsStop = { ttsPlaybackManager.stop() },
+            onTtsReplay = { ttsPlaybackManager.replay() },
             // Developer
             onDebugModeChange = { enabled ->
                 if (enabled) glassesManager.enableDebugMode()

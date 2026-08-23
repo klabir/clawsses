@@ -8,7 +8,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 /**
@@ -34,34 +33,30 @@ class ElevenLabsClient {
                 .get()
                 .build()
 
-            val response = client.newCall(request).execute()
-
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(
-                    Exception("Failed to fetch voices: ${response.code} ${response.message}")
-                )
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(
+                        Exception("Failed to fetch voices (HTTP ${response.code})")
+                    )
+                }
+                val body = response.body?.string()
+                    ?: return@withContext Result.failure(Exception("Empty response body"))
+                Result.success(gson.fromJson(body, VoicesResponse::class.java).voices)
             }
-
-            val body = response.body?.string()
-                ?: return@withContext Result.failure(Exception("Empty response body"))
-
-            val voicesResponse = gson.fromJson(body, VoicesResponse::class.java)
-            Result.success(voicesResponse.voices)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
     /**
-     * Synthesize text to speech and return audio stream.
-     * Returns MP3 audio data as InputStream.
+     * Synthesize text to speech and return MP3 bytes.
      */
     suspend fun synthesize(
         apiKey: String,
         voiceId: String,
         text: String,
         speed: Double = 1.0
-    ): Result<InputStream> = withContext(Dispatchers.IO) {
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
         try {
             val voiceSettings = if (speed != 1.0) VoiceSettings(speed = speed) else null
             val requestBody = SynthesisRequest(
@@ -77,19 +72,16 @@ class ElevenLabsClient {
                 .post(gson.toJson(requestBody).toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = client.newCall(request).execute()
-
-            if (!response.isSuccessful) {
-                val errorBody = response.body?.string() ?: "Unknown error"
-                return@withContext Result.failure(
-                    Exception("TTS synthesis failed: ${response.code} - $errorBody")
-                )
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(
+                        Exception("TTS synthesis failed (HTTP ${response.code})")
+                    )
+                }
+                val bytes = response.body?.bytes()
+                    ?: return@withContext Result.failure(Exception("Empty response body"))
+                Result.success(bytes)
             }
-
-            val inputStream = response.body?.byteStream()
-                ?: return@withContext Result.failure(Exception("Empty response body"))
-
-            Result.success(inputStream)
         } catch (e: Exception) {
             Result.failure(e)
         }

@@ -119,6 +119,8 @@ enum class MoreMenuItem(val icon: String, val label: String, val displaySize: Hu
     FONT_LARGE("Aa", "Large", HudDisplaySize.LARGE),
     SLASH("/", "Slash Cmds"),
     VOICE("\uD83D\uDD0A", "Voice"),  // speaker icon - label is dynamic
+    TTS_STOP("\u25A0", "Stop Voice"),
+    TTS_REPLAY("\u21BB", "Replay Voice"),
 }
 
 /**
@@ -231,7 +233,9 @@ data class ChatHudState(
     val showWakeNotification: Boolean = false,
     val wakeReason: String? = null,  // "stream_content", "new_message", "cron_message"
     // TTS state (voice responses)
-    val ttsEnabled: Boolean = false
+    val ttsEnabled: Boolean = false,
+    val ttsPlaybackState: String = "idle",
+    val ttsCanReplay: Boolean = false,
 ) {
     /** Total number of messages */
     val totalMessages: Int get() = messages.size
@@ -495,6 +499,8 @@ fun HudScreen(
                 selectedIndex = state.selectedMoreIndex,
                 currentDisplaySize = state.displaySize,
                 ttsEnabled = state.ttsEnabled,
+                ttsPlaybackState = state.ttsPlaybackState,
+                ttsCanReplay = state.ttsCanReplay,
                 fontFamily = monoFontFamily
             )
         }
@@ -1436,6 +1442,8 @@ private fun MoreMenuOverlay(
     selectedIndex: Int,
     currentDisplaySize: HudDisplaySize,
     ttsEnabled: Boolean,
+    ttsPlaybackState: String,
+    ttsCanReplay: Boolean,
     fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
@@ -1466,12 +1474,16 @@ private fun MoreMenuOverlay(
                     val isSelected = itemIndex == selectedIndex
                     val isActive = when (item) {
                         MoreMenuItem.VOICE -> ttsEnabled
+                        MoreMenuItem.TTS_STOP -> ttsPlaybackState == "playing" || ttsPlaybackState == "synthesizing"
+                        MoreMenuItem.TTS_REPLAY -> ttsCanReplay
                         else -> item.displaySize == currentDisplaySize
                     }
 
                     // Dynamic label for VOICE item
                     val displayLabel = when (item) {
                         MoreMenuItem.VOICE -> if (ttsEnabled) "Voice On" else "Voice Off"
+                        MoreMenuItem.TTS_STOP -> "Stop Voice"
+                        MoreMenuItem.TTS_REPLAY -> "Replay Voice"
                         else -> item.label
                     }
 
