@@ -31,7 +31,7 @@ class OpenClawClient(
     companion object {
         private const val TAG = "OpenClawClient"
         private const val RECONNECT_DELAY_MS = 3000L
-        private const val PROTOCOL_VERSION = 3
+        private const val PROTOCOL_VERSION = 4
     }
 
     sealed class ConnectionState {
@@ -106,27 +106,32 @@ class OpenClawClient(
     private var challengeNonce: String? = null
 
     fun connect(host: String, port: Int, token: String) {
-        this.host = host.trimEnd('/')
+        val normalizedHost = host.trim().trimEnd('/')
+        if (normalizedHost.startsWith("ws://") || normalizedHost.startsWith("http://")) {
+            shouldReconnect = false
+            _connectionState.value = ConnectionState.Error("Secure WSS connection required")
+            return
+        }
+
+        this.host = normalizedHost
         this.port = port
         this.token = token
         this.shouldReconnect = true
 
-        // Build URL: use host as-is if it starts with ws:// or wss://, otherwise prepend ws://
+        // Build a TLS-only WebSocket URL.
         val url = when {
-            host.startsWith("ws://") || host.startsWith("wss://") -> {
+            normalizedHost.startsWith("wss://") -> {
                 // User provided full URL - append port if not already in URL
-                val trimmed = host.trimEnd('/')
-                if (trimmed.contains(Regex(":\\d+$"))) trimmed else "$trimmed:$port"
+                if (normalizedHost.contains(Regex(":\\d+$"))) normalizedHost else "$normalizedHost:$port"
             }
-            else -> "ws://${host.trimEnd('/')}:$port"
+            else -> "wss://$normalizedHost:$port"
         }
-        val originHost = host
-            .removePrefix("ws://")
+        val originHost = normalizedHost
             .removePrefix("wss://")
             .trimEnd('/')
-        val originUrl = "http://$originHost" + (if (originHost.contains(Regex(":\\d+$"))) "" else ":$port")
+        val originUrl = "https://$originHost" + (if (originHost.contains(Regex(":\\d+$"))) "" else ":$port")
 
-        Log.i(TAG, "Connecting to OpenClaw Gateway: $url")
+        Log.i(TAG, "Connecting to OpenClaw Gateway over WSS")
         _connectionState.value = ConnectionState.Connecting
 
         val request = Request.Builder()
@@ -136,7 +141,7 @@ class OpenClawClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.i(TAG, "WebSocket connected to $url (HTTP ${response.code})")
+                Log.i(TAG, "WebSocket connected (HTTP ${response.code})")
                 _connectionState.value = ConnectionState.Authenticating
                 // Wait for connect.challenge event from server
             }
@@ -150,19 +155,19 @@ class OpenClawClient(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closing: $code - $reason")
+                Log.d(TAG, "WebSocket closing (code=$code)")
                 webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closed: $code - $reason")
+                Log.d(TAG, "WebSocket closed (code=$code)")
                 _connectionState.value = ConnectionState.Disconnected
                 notifyConnectionUpdate(false)
                 if (shouldReconnect) scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failed: ${t.javaClass.simpleName}: ${t.message}", t)
+                Log.e(TAG, "WebSocket failed: ${t.javaClass.simpleName}")
                 _connectionState.value = ConnectionState.Error("${t.javaClass.simpleName}: ${t.message}")
                 notifyConnectionUpdate(false)
                 failAllPending("Connection lost")
@@ -227,12 +232,12 @@ class OpenClawClient(
                 if (response.ok) {
                     // Extract runId from response
                     activeRunId = response.payload?.get("runId")?.asString
-                    Log.d(TAG, "Agent run started: runId=$activeRunId")
+                    Log.d(TAG, "Agent run started")
                     // Notify glasses that agent is thinking
                     onAgentThinking?.invoke(AgentThinking(id = assistantMsgId))
                 } else {
                     val errorMsg = response.error?.get("message")?.asString ?: "Agent run failed"
-                    Log.e(TAG, "Agent run failed: $errorMsg")
+                    Log.e(TAG, "Agent run failed")
                     activeRunId = null
                     activeMessageId = null
                 }
@@ -276,7 +281,7 @@ class OpenClawClient(
                         unreadSessionKeys = _unreadSessions.value.toList()
                     ))
                 } else {
-                    Log.e(TAG, "Session list request failed: ${response.error}")
+                    Log.e(TAG, "Session list request failed")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting sessions", e)
@@ -293,21 +298,21 @@ class OpenClawClient(
         scope.launch {
             try {
                 val key = _currentSessionKey.value ?: "main"
-                Log.d(TAG, "Creating new session (resetting key=$key)")
+                Log.d(TAG, "Creating new session")
                 val params = JsonObject().apply {
                     addProperty("key", key)
                 }
                 val response = sendRequest(OpenClawMethods.SESSION_RESET, params)
                 if (response.ok) {
                     val newKey = response.payload?.get("key")?.asString ?: key
-                    Log.i(TAG, "Session reset ok, key=$newKey")
+                    Log.i(TAG, "Session reset completed")
                     _currentSessionKey.value = newKey
                     _chatMessages.value = emptyList()
                     notifyConnectionUpdate(true, newKey)
                     onChatHistory?.invoke(emptyList())
                 } else {
                     val errorMsg = response.error?.get("message")?.asString ?: "Session reset failed"
-                    Log.e(TAG, "Session reset failed: $errorMsg")
+                    Log.e(TAG, "Session reset failed")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error creating session", e)
@@ -320,7 +325,7 @@ class OpenClawClient(
      */
     fun switchSession(sessionKey: String) {
         scope.launch {
-            Log.d(TAG, "Switching to session: $sessionKey")
+            Log.d(TAG, "Switching session")
             _currentSessionKey.value = sessionKey
             _chatMessages.value = emptyList()
             currentHistoryLimit = 50
@@ -541,7 +546,7 @@ class OpenClawClient(
         pendingRequests[id] = deferred
 
         val json = request.toJson()
-        Log.d(TAG, "Sending request: method=$method id=$id json=${json.take(300)}")
+        Log.d(TAG, "Sending request: method=$method id=$id bytes=${json.length}")
         webSocket?.send(json) ?: throw IllegalStateException("Not connected")
 
         return withTimeout(30_000) {
@@ -555,10 +560,10 @@ class OpenClawClient(
             when (obj.get("type")?.asString) {
                 "res" -> handleResponse(obj)
                 "event" -> handleEvent(obj)
-                else -> Log.w(TAG, "Unknown frame type: ${json.take(200)}")
+                else -> Log.w(TAG, "Unknown frame type (${json.length} bytes)")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing frame: ${json.take(200)}", e)
+            Log.e(TAG, "Error parsing frame (${json.length} bytes)", e)
         }
     }
 
@@ -589,7 +594,7 @@ class OpenClawClient(
         when (eventName) {
             OpenClawEvents.CONNECT_CHALLENGE -> {
                 challengeNonce = payload?.get("nonce")?.asString
-                Log.d(TAG, "Received connect challenge, nonce=${challengeNonce?.take(16)}...")
+                Log.d(TAG, "Received connect challenge")
                 performAuth()
             }
             OpenClawEvents.CHAT -> {
@@ -597,7 +602,7 @@ class OpenClawClient(
             }
             OpenClawEvents.AGENT -> {
                 // Lower-level agent events (tool use, lifecycle)
-                Log.d(TAG, "Agent event: ${payload?.toString()?.take(200)}")
+                Log.d(TAG, "Agent event received")
             }
             "tick", OpenClawEvents.HEARTBEAT -> {
                 // Keep-alive, no action needed
@@ -634,7 +639,6 @@ class OpenClawClient(
 
                     addProperty("role", "operator")
                     add("scopes", JsonArray().apply {
-                        add("operator.admin")
                         add("operator.read")
                         add("operator.write")
                     })
@@ -645,7 +649,7 @@ class OpenClawClient(
 
                     // Device identity for pairing
                     val signedAtMs = System.currentTimeMillis()
-                    val scopesList = listOf("operator.admin", "operator.read", "operator.write")
+                    val scopesList = listOf("operator.read", "operator.write")
                     add("device", JsonObject().apply {
                         addProperty("id", deviceIdentity.deviceId)
                         addProperty("publicKey", deviceIdentity.publicKeyBase64Url)
@@ -688,9 +692,9 @@ class OpenClawClient(
                     val mainSessionKey = sessionDefaults?.get("mainSessionKey")?.asString
                     if (mainSessionKey != null) {
                         _currentSessionKey.value = mainSessionKey
-                        Log.d(TAG, "Default session key from gateway: $mainSessionKey")
+                        Log.d(TAG, "Default session selected from gateway snapshot")
                     } else {
-                        Log.w(TAG, "No mainSessionKey in connect response, snapshot keys=${snapshot?.keySet()}")
+                        Log.w(TAG, "No default session in connect response")
                     }
 
                     _connectionState.value = ConnectionState.Connected
@@ -701,7 +705,7 @@ class OpenClawClient(
                 } else {
                     val errorMsg = response.error?.get("message")?.asString ?: "Authentication failed"
                     val errorCode = response.error?.get("code")?.asString ?: ""
-                    Log.e(TAG, "Authentication failed: $errorMsg (code=$errorCode)")
+                    Log.e(TAG, "Authentication failed (code=$errorCode)")
 
                     if (errorCode == "pairing_required" || errorMsg.contains("pair", ignoreCase = true)) {
                         _connectionState.value = ConnectionState.PairingRequired(errorMsg)
@@ -735,13 +739,13 @@ class OpenClawClient(
         // If so, mark that session as having unread messages and don't render into the current view.
         val currentKey = _currentSessionKey.value
         if (eventSessionKey != null && currentKey != null && eventSessionKey != currentKey) {
-            Log.d(TAG, "Chat event for inactive session $eventSessionKey (active=$currentKey), state=$state — marking unread")
+            Log.d(TAG, "Chat event for inactive session (state=$state); marking unread")
             _unreadSessions.value = _unreadSessions.value + eventSessionKey
             // Still need to clean up our streaming state if this was our active run
             // (user switched sessions mid-stream)
             if (runId != null && runId == activeRunId) {
                 if (state == "final" || state == "aborted" || state == "error") {
-                    Log.d(TAG, "Clearing stale active run $activeRunId for inactive session")
+                    Log.d(TAG, "Clearing stale active run for inactive session")
                     activeRunId = null
                     activeMessageId = null
                     activeSessionKey = null
@@ -787,7 +791,7 @@ class OpenClawClient(
             }
             "aborted", "error" -> {
                 val errorMsg = payload.get("errorMessage")?.asString
-                Log.e(TAG, "Chat run $state: $errorMsg")
+                Log.e(TAG, "Chat run ended with state=$state")
                 finalizeStreaming()
             }
         }

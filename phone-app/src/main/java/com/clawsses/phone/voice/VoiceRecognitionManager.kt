@@ -2,6 +2,7 @@ package com.clawsses.phone.voice
 
 import android.content.Context
 import android.util.Log
+import com.clawsses.phone.util.SecurePreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,7 +43,7 @@ class VoiceRecognitionManager(private val context: Context) {
         PREFERENCE              // User prefers fallback
     }
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = SecurePreferences.create(context, PREFS_NAME)
 
     private val openAIClient = OpenAIRealtimeClient()
     private val fallbackHandler = VoiceCommandHandler(context)
@@ -155,7 +156,7 @@ class VoiceRecognitionManager(private val context: Context) {
                 onSpeechStopped?.invoke()
             },
             onFinal = { finalText ->
-                Log.i(TAG, "OpenAI final result: ${finalText.take(100)}")
+                Log.i(TAG, "OpenAI transcription completed (${finalText.length} chars)")
                 _isListening.value = false
                 _activeMode.value = RecognitionMode.NONE
 

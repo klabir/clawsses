@@ -1,6 +1,7 @@
 package com.clawsses.phone.tts
 
 import android.content.Context
+import com.clawsses.phone.util.SecurePreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -10,7 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class TtsSettingsManager(context: Context) {
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = SecurePreferences.create(context, PREFS_NAME)
 
     private val _apiKey = MutableStateFlow(prefs.getString(KEY_API_KEY, "") ?: "")
     val apiKey: StateFlow<String> = _apiKey.asStateFlow()

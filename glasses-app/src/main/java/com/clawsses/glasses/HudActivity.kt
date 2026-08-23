@@ -11,8 +11,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -61,8 +61,6 @@ class HudActivity : ComponentActivity() {
 
         const val DEBUG_HOST = "10.0.2.2"
         const val DEBUG_PORT = 8081
-        private const val CAMERA_PERMISSION_REQUEST = 1001
-
         /** Sentinel key for the "New Session" entry in the session picker. */
         const val NEW_SESSION_KEY = "__new_session__"
 
@@ -97,6 +95,16 @@ class HudActivity : ComponentActivity() {
 
     // Wake signal handling
     private var clearWakeNotificationJob: Job? = null
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            cameraCapture.capture()
+        } else {
+            Log.w(GlassesApp.TAG, "Camera permission denied")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -185,7 +193,7 @@ class HudActivity : ComponentActivity() {
                         }
                     }
                     is PhotoCaptureState.Error -> {
-                        Log.e(GlassesApp.TAG, "Photo capture error: ${photoState.message}")
+                        Log.e(GlassesApp.TAG, "Photo capture error")
                         lifecycleScope.launch {
                             delay(3000)
                             cameraCapture.clearPhoto()
@@ -659,7 +667,7 @@ class HudActivity : ComponentActivity() {
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         cameraCapture.capture()
                     } else {
-                        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     }
                 } else {
                     phoneConnection.sendToPhone("""{"type":"take_photo"}""")
@@ -697,7 +705,7 @@ class HudActivity : ComponentActivity() {
         if (text.isEmpty()) return
 
         val thumbnails = current.photoThumbnails.toList()
-        Log.d(GlassesApp.TAG, "submitInput: text='${text.take(50)}', photos=${thumbnails.size}, focusArea=${current.focusedArea}")
+        Log.d(GlassesApp.TAG, "Submitting input (${text.length} chars, photos=${thumbnails.size}, focusArea=${current.focusedArea})")
 
         // Add user message to display immediately (optimistic update)
         val userMsg = DisplayMessage(
@@ -954,7 +962,7 @@ class HudActivity : ComponentActivity() {
      * Also clears voice UI state to prevent race condition with voice state collector.
      */
     private fun stageVoiceText(text: String) {
-        Log.d(GlassesApp.TAG, "Staging voice text: ${text.take(100)}")
+        Log.d(GlassesApp.TAG, "Staging voice text (${text.length} chars)")
         // Use atomic update to avoid race with concurrent state changes
         hudState.update { current ->
             val newStagingText = if (current.stagingText.isEmpty()) {
@@ -988,7 +996,7 @@ class HudActivity : ComponentActivity() {
                 handleVoiceCommand(result.command)
             }
             is GlassesVoiceHandler.VoiceResult.Error -> {
-                Log.e(GlassesApp.TAG, "Voice error: ${result.message}")
+                Log.e(GlassesApp.TAG, "Voice command error")
                 lifecycleScope.launch {
                     delay(3000)
                     val current = hudState.value
@@ -1096,7 +1104,7 @@ class HudActivity : ComponentActivity() {
 
     private fun handlePhoneMessage(json: String) {
         try {
-            Log.d(GlassesApp.TAG, "handlePhoneMessage: ${json.length} chars, preview=${json.take(120)}")
+            Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
             val msg = JSONObject(json)
             val type = msg.optString("type", "")
 
@@ -1114,7 +1122,7 @@ class HudActivity : ComponentActivity() {
                         // Check if submitInput already added this message optimistically
                         val existingLocal = messages.indexOfLast { it.role == "user" && it.content == content }
                         if (existingLocal >= 0) {
-                            Log.d(GlassesApp.TAG, "User echo already displayed, skipping: ${content.take(50)}")
+                            Log.d(GlassesApp.TAG, "User echo already displayed; skipping duplicate")
                             // Clear any lingering photos (belt-and-suspenders)
                             if (current.photoThumbnails.isNotEmpty()) {
                                 hudState.value = current.copy(
@@ -1140,7 +1148,7 @@ class HudActivity : ComponentActivity() {
                             scrollPosition = messages.size - 1,
                             scrollTrigger = current.scrollTrigger + 1
                         )
-                        Log.d(GlassesApp.TAG, "User message (phone): ${content.take(50)}, photos=${thumbnails.size}")
+                        Log.d(GlassesApp.TAG, "User message received (${content.length} chars, photos=${thumbnails.size})")
                     } else {
                         // Assistant message
                         val existingIndex = messages.indexOfFirst { it.id == id }
@@ -1163,7 +1171,7 @@ class HudActivity : ComponentActivity() {
                             scrollPosition = messages.size - 1,
                             scrollTrigger = current.scrollTrigger + 1
                         )
-                        Log.d(GlassesApp.TAG, "Assistant message: ${content.take(50)}")
+                        Log.d(GlassesApp.TAG, "Assistant message received (${content.length} chars)")
                     }
                 }
 
@@ -1322,7 +1330,7 @@ class HudActivity : ComponentActivity() {
                         showSessionPicker = if (sessionChanged) false else current.showSessionPicker
                     )
 
-                    Log.d(GlassesApp.TAG, "Connection update: connected=$connected, session=$sessionKey, name=$sessionName")
+                    Log.d(GlassesApp.TAG, "Connection update: connected=$connected, sessionChanged=$sessionChanged")
                 }
 
                 "session_list" -> {
@@ -1384,13 +1392,13 @@ class HudActivity : ComponentActivity() {
                         selectedSessionIndex = currentIndex
                     )
 
-                    Log.d(GlassesApp.TAG, "Sessions: ${sessions.size}, current: $currentSessionKey")
+                    Log.d(GlassesApp.TAG, "Session list received (${sessions.size} entries)")
                 }
 
                 "voice_state" -> {
                     val state = msg.optString("state", "")
                     val text = msg.optString("text", "")
-                    val mode = if (msg.has("mode")) msg.optString("mode", null) else null
+                    val mode = if (msg.has("mode") && !msg.isNull("mode")) msg.getString("mode") else null
                     voiceHandler.handleVoiceState(state, text, mode)
                 }
 
@@ -1432,7 +1440,7 @@ class HudActivity : ComponentActivity() {
                             }
                         }
                     } else {
-                        Log.e(GlassesApp.TAG, "Photo capture failed: ${msg.optString("message", "")}")
+                        Log.e(GlassesApp.TAG, "Photo capture failed")
                     }
                 }
 
@@ -1468,7 +1476,7 @@ class HudActivity : ComponentActivity() {
                     // the notification and sends ack.
                     val reason = msg.optString("reason", "")
                     val bufferedCount = msg.optInt("bufferedCount", 0)
-                    Log.i(GlassesApp.TAG, "Wake signal received: reason=$reason, buffered=$bufferedCount")
+                    Log.i(GlassesApp.TAG, "Wake signal received (buffered=$bufferedCount)")
 
                     // Show wake notification briefly
                     showWakeNotification(reason)
@@ -1482,7 +1490,7 @@ class HudActivity : ComponentActivity() {
                     // TTS state sync from phone
                     val enabled = msg.optBoolean("enabled", false)
                     val voiceName = if (msg.has("voiceName") && !msg.isNull("voiceName")) {
-                        msg.optString("voiceName", null)
+                        msg.getString("voiceName")
                     } else null
                     hudState.update { current ->
                         current.copy(ttsEnabled = enabled)
@@ -1495,7 +1503,7 @@ class HudActivity : ComponentActivity() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(GlassesApp.TAG, "Error parsing message: ${json.take(100)}", e)
+            Log.e(GlassesApp.TAG, "Error parsing phone message (${json.length} chars)", e)
         }
     }
 
@@ -1542,18 +1550,6 @@ class HudActivity : ComponentActivity() {
             }
         }
         return result.toString()
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                cameraCapture.capture()
-            } else {
-                Log.w(GlassesApp.TAG, "Camera permission denied")
-            }
-        }
     }
 
     override fun onDestroy() {

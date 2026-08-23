@@ -298,6 +298,14 @@ class WakeSignalManager(
         }
     }
 
+    /** Stop timers and buffered work owned by a disposed UI connection manager. */
+    fun dispose() {
+        wakeTimeoutJob?.cancel()
+        standbyTimerJob?.cancel()
+        messageBuffer.clear()
+        scope.cancel()
+    }
+
     private fun bufferMessage(json: String, reason: String) {
         if (messageBuffer.size >= MAX_BUFFER_SIZE) {
             // Drop oldest message to make room

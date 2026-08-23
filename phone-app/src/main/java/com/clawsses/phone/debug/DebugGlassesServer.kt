@@ -98,7 +98,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
             while (socket.isConnected && _isRunning.value) {
                 val message = readWebSocketFrame(input)
                 if (message != null) {
-                    Log.d(TAG, "Received from glasses: ${message.take(100)}")
+                    Log.d(TAG, "Received from glasses (${message.length} chars)")
                     withContext(Dispatchers.Main) {
                         onMessageFromGlasses?.invoke(message)
                     }
@@ -140,7 +140,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
         }
 
         val request = requestBuilder.toString()
-        Log.d(TAG, "Handshake request: ${request.take(200)}")
+        Log.d(TAG, "Handshake request received (${request.length} chars)")
 
         // Find WebSocket key
         val keyLine = request.lines().find { it.startsWith("Sec-WebSocket-Key:", ignoreCase = true) }
@@ -233,7 +233,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
                         output.flush()
                     }
 
-                    Log.d(TAG, "Sent to glasses: ${payload.size} bytes, frame=${frame.size} bytes, preview=${message.take(80)}")
+                    Log.d(TAG, "Sent to glasses: ${payload.size} bytes, frame=${frame.size} bytes")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error sending to glasses (${message.length} chars)", e)
                 }

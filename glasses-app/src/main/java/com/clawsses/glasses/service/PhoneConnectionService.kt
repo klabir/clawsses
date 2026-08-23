@@ -74,7 +74,7 @@ class PhoneConnectionService(
 
         debugClient = DebugPhoneClient().apply {
             onMessageFromPhone = { message ->
-                Log.d(TAG, "Debug: received from phone: ${message.take(100)}")
+                Log.d(TAG, "Debug: received from phone (${message.length} chars)")
                 onMessageReceived(message)
             }
             onConnected = {
@@ -99,7 +99,7 @@ class PhoneConnectionService(
      */
     private fun markConnected(info: String) {
         if (!isConnected) {
-            Log.i(TAG, "Connection detected: $info")
+            Log.i(TAG, "Phone connection detected")
             isConnected = true
             _connectionState.value = ConnectionState.Connected(info)
         }
@@ -114,7 +114,7 @@ class PhoneConnectionService(
         // Set up status listener for connection events
         cxrBridge?.setStatusListener(object : CXRServiceBridge.StatusListener {
             override fun onConnected(name: String?, mac: String?, deviceType: Int) {
-                Log.i(TAG, "Phone connected via CXR bridge: $name ($mac), type=$deviceType")
+                Log.i(TAG, "Phone connected via CXR bridge (type=$deviceType)")
                 connectedDeviceName = name
                 connectedDeviceMac = mac
                 markConnected("$name ($mac)")
@@ -129,7 +129,7 @@ class PhoneConnectionService(
             }
 
             override fun onConnecting(name: String?, mac: String?, deviceType: Int) {
-                Log.d(TAG, "Phone connecting: $name ($mac)")
+                Log.d(TAG, "Phone connection in progress (type=$deviceType)")
                 _connectionState.value = ConnectionState.Connecting
             }
 
@@ -141,7 +141,7 @@ class PhoneConnectionService(
             }
 
             override fun onRokidAccountChanged(account: String?) {
-                Log.d(TAG, "Rokid account changed: $account")
+                Log.d(TAG, "Rokid account changed")
             }
         })
 
@@ -165,7 +165,7 @@ class PhoneConnectionService(
                 }
                 if (message.isNotEmpty()) {
                     markConnected("Phone (detected via message)")
-                    Log.d(TAG, "Message content (${message.length} chars): ${message.take(100)}...")
+                    Log.d(TAG, "Message received (${message.length} chars)")
                     onMessageReceived(message)
                 } else {
                     Log.w(TAG, "Received empty message from phone")
@@ -225,7 +225,7 @@ class PhoneConnectionService(
         if (debugMode) {
             // Send via debug WebSocket client
             debugClient?.sendToPhone(message)
-            Log.d(TAG, "Debug: sent to phone: ${message.take(50)}...")
+            Log.d(TAG, "Debug: sent to phone (${message.length} chars)")
         } else {
             // CXR bridge must be called from the same thread it was initialized on (main thread).
             // Using an IO coroutine here causes sendMessage to silently fail.
@@ -233,7 +233,7 @@ class PhoneConnectionService(
                 val caps = Caps()
                 caps.write(message)
                 val result = cxrBridge?.sendMessage(MSG_TYPE_COMMAND, caps)
-                Log.d(TAG, "Sent to phone: ${message.take(50)}..., result: $result")
+                Log.d(TAG, "Sent to phone (${message.length} chars), result=$result")
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending to phone", e)
             }

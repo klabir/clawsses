@@ -3,6 +3,7 @@ package com.clawsses.phone.openclaw
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.clawsses.phone.util.SecurePreferences
 import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
 import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
@@ -30,7 +31,7 @@ class DeviceIdentity(context: Context) {
     }
 
     private val prefs: SharedPreferences =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        SecurePreferences.create(context, PREFS_NAME)
 
     private lateinit var privateKeyParams: Ed25519PrivateKeyParameters
     private lateinit var publicKeyParams: Ed25519PublicKeyParameters
@@ -81,8 +82,7 @@ class DeviceIdentity(context: Context) {
         publicKeyBase64Url = Base64.getUrlEncoder().withoutPadding()
             .encodeToString(rawPublicKey)
 
-        Log.d(TAG, "Device ID: ${deviceId.take(16)}...")
-        Log.d(TAG, "Public key (base64url): $publicKeyBase64Url (${rawPublicKey.size} bytes)")
+        Log.d(TAG, "Device identity initialized (${rawPublicKey.size}-byte public key)")
     }
 
     /**
@@ -109,9 +109,7 @@ class DeviceIdentity(context: Context) {
             token,
             nonce
         ).joinToString("|")
-        Log.d(TAG, "Auth payload to sign: ${payload.take(120)}...")
         val sig = sign(payload.toByteArray(Charsets.UTF_8))
-        Log.d(TAG, "Signature: ${sig.take(20)}... (${Base64.getUrlDecoder().decode(sig + "==").size} bytes)")
         return sig
     }
 

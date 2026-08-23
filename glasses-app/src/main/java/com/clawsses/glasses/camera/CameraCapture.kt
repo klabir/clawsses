@@ -9,6 +9,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -108,9 +110,7 @@ class CameraCapture(private val context: Context) {
                         captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                         captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
 
-                        camera.createCaptureSession(
-                            listOf(imageReader.surface),
-                            object : CameraCaptureSession.StateCallback() {
+                        val sessionCallback = object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: CameraCaptureSession) {
                                     try {
                                         session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
@@ -148,8 +148,14 @@ class CameraCapture(private val context: Context) {
                                     _state.value = PhotoCaptureState.Error("Camera configure failed")
                                     cleanupThread()
                                 }
-                            },
-                            handler
+                            }
+                        camera.createCaptureSession(
+                            SessionConfiguration(
+                                SessionConfiguration.SESSION_REGULAR,
+                                listOf(OutputConfiguration(imageReader.surface)),
+                                { command -> handler.post(command) },
+                                sessionCallback,
+                            )
                         )
                     } catch (e: Exception) {
                         Log.e(TAG, "Error setting up capture", e)

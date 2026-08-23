@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.DropdownMenu
@@ -61,6 +62,7 @@ import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.ui.settings.SettingsScreen
+import com.clawsses.phone.util.SecurePreferences
 import com.clawsses.phone.tts.ElevenLabsClient
 import com.clawsses.phone.tts.TtsPlaybackManager
 import com.clawsses.phone.tts.TtsSettingsManager
@@ -105,8 +107,8 @@ fun MainScreen() {
     val ttsEnabled by ttsSettingsManager.isEnabled.collectAsState()
     val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsState()
 
-    // Persist OpenClaw settings in SharedPreferences
-    val prefs = remember { context.getSharedPreferences("clawsses", android.content.Context.MODE_PRIVATE) }
+    // Persist OpenClaw settings in Android Keystore-backed encrypted preferences.
+    val prefs = remember { SecurePreferences.create(context, "clawsses") }
     var openClawHost by remember {
         mutableStateOf(prefs.getString("openclaw_host", "10.0.2.2") ?: "10.0.2.2")
     }
@@ -152,6 +154,13 @@ fun MainScreen() {
 
         // Try to auto-reconnect to previously paired glasses on startup
         glassesManager.tryAutoReconnectOnStartup()
+
+        // Restore the saved private OpenClaw connection after process/activity restart.
+        // Without this, the HUD can reconnect to the glasses while chat remains offline.
+        if (openClawHost.isNotBlank()) {
+            val portNum = openClawPort.toIntOrNull() ?: 18789
+            openClawClient.connect(openClawHost, portNum, openClawToken)
+        }
     }
 
     // Fetch session list when OpenClaw connects
@@ -354,7 +363,7 @@ fun MainScreen() {
                             com.clawsses.phone.glasses.RokidSdkManager.clearCommunicationDevice()
                             when (result) {
                                 is VoiceCommandHandler.VoiceResult.Text -> {
-                                    android.util.Log.d("MainScreen", "Voice result text: ${result.text.take(100)}")
+                                    android.util.Log.d("MainScreen", "Voice result received (${result.text.length} chars)")
                                     val resultMsg = org.json.JSONObject().apply {
                                         put("type", "voice_result")
                                         put("result_type", "text")
@@ -374,7 +383,7 @@ fun MainScreen() {
                                     glassesManager.sendRawMessage(resultMsg.toString())
                                 }
                                 is VoiceCommandHandler.VoiceResult.Error -> {
-                                    android.util.Log.e("MainScreen", "Voice result error: ${result.message}")
+                                    android.util.Log.e("MainScreen", "Voice recognition failed")
                                     val resultMsg = org.json.JSONObject().apply {
                                         put("type", "voice_result")
                                         put("result_type", "error")
@@ -407,7 +416,7 @@ fun MainScreen() {
                     }
                     "switch_session" -> {
                         val sessionKey = json.optString("sessionKey", "")
-                        android.util.Log.d("MainScreen", "Switching to session: $sessionKey")
+                        android.util.Log.d("MainScreen", "Switching session")
                         if (sessionKey.isNotEmpty()) {
                             openClawClient.switchSession(sessionKey)
                         }
@@ -418,7 +427,7 @@ fun MainScreen() {
                     }
                     "slash_command" -> {
                         val command = json.optString("command", "")
-                        android.util.Log.d("MainScreen", "Slash command from glasses: $command")
+                        android.util.Log.d("MainScreen", "Slash command received from glasses")
                         if (command.isNotEmpty()) {
                             openClawClient.sendSlashCommand(command)
                         }
@@ -521,7 +530,10 @@ fun MainScreen() {
     // Cleanup
     DisposableEffect(Unit) {
         onDispose {
-            glassesManager.disconnect()
+            // MainScreen can be recreated for configuration/lifecycle changes.
+            // Stop jobs owned by this UI instance without tearing down the shared
+            // Rokid SDK connection used by the foreground service.
+            glassesManager.dispose()
             openClawClient.cleanup()
             voiceHandler.cleanup()
             voiceRecognitionManager.cleanup()
@@ -719,7 +731,7 @@ fun MainScreen() {
                         }
                     }
                 ) {
-                    Icon(Icons.Default.Send, "Send")
+                    Icon(Icons.AutoMirrored.Filled.Send, "Send")
                 }
             }
             } // Column
@@ -1184,13 +1196,13 @@ private fun startVoiceRecognitionWithManager(
 
     voiceRecognitionManager.startListening(languageTag = languageTag) { result ->
         val actualMode = voiceRecognitionManager.getModeDescription()
-        android.util.Log.i("MainScreen", ">>> Voice result received (mode=$actualMode, retry=$isRetry): $result")
+        android.util.Log.i("MainScreen", ">>> Voice result received (mode=$actualMode, retry=$isRetry)")
 
         when (result) {
             is VoiceCommandHandler.VoiceResult.Text -> {
                 RokidSdkManager.clearCommunicationDevice()
                 if (result.text.isNotEmpty()) {
-                    android.util.Log.i("MainScreen", "Voice text ($actualMode): ${result.text.take(100)}")
+                    android.util.Log.i("MainScreen", "Voice text received ($actualMode, ${result.text.length} chars)")
                     RokidSdkManager.sendAsrContent(result.text)
                     RokidSdkManager.notifyAsrEnd()
                     // Don't send to OpenClaw here — glasses stages the text
@@ -1231,13 +1243,13 @@ private fun startVoiceRecognitionWithManager(
                 // VoiceRecognitionManager handles fallback internally, but if we still get an error
                 // after fallback attempt, we can retry with phone mic as last resort
                 if (!isRetry) {
-                    android.util.Log.w("MainScreen", "Voice error '${result.message}', retrying with phone mic...")
+                    android.util.Log.w("MainScreen", "Voice recognition failed; retrying with phone mic")
                     RokidSdkManager.clearCommunicationDevice()
                     mainHandler.postDelayed({
                         startVoiceRecognition(voiceHandler, openClawClient, glassesManager, mainHandler, isRetry = true, languageTag = languageTag, pendingPhotos = pendingPhotos, onPhotosConsumed = onPhotosConsumed)
                     }, 200)
                 } else {
-                    android.util.Log.e("MainScreen", "Voice error (after retry): ${result.message}")
+                    android.util.Log.e("MainScreen", "Voice recognition failed after retry")
                     RokidSdkManager.clearCommunicationDevice()
                     RokidSdkManager.notifyAsrError()
                     val resultMsg = org.json.JSONObject().apply {
@@ -1267,12 +1279,12 @@ private fun startVoiceRecognition(
     onPhotosConsumed: () -> Unit = {}
 ) {
     voiceHandler.startListening(languageTag = languageTag) { result ->
-        android.util.Log.i("MainScreen", ">>> Voice result received (retry=$isRetry): $result")
+        android.util.Log.i("MainScreen", ">>> Voice result received (retry=$isRetry)")
         when (result) {
             is VoiceCommandHandler.VoiceResult.Text -> {
                 RokidSdkManager.clearCommunicationDevice()
                 if (result.text.isNotEmpty()) {
-                    android.util.Log.i("MainScreen", "AI voice text: ${result.text.take(100)}")
+                    android.util.Log.i("MainScreen", "AI voice text received (${result.text.length} chars)")
                     RokidSdkManager.sendAsrContent(result.text)
                     RokidSdkManager.notifyAsrEnd()
                     // Don't send to OpenClaw here — glasses stages the text
@@ -1310,13 +1322,13 @@ private fun startVoiceRecognition(
             }
             is VoiceCommandHandler.VoiceResult.Error -> {
                 if (!isRetry) {
-                    android.util.Log.w("MainScreen", "Voice error '${result.message}', retrying with phone mic...")
+                    android.util.Log.w("MainScreen", "AI voice recognition failed; retrying with phone mic")
                     RokidSdkManager.clearCommunicationDevice()
                     mainHandler.postDelayed({
                         startVoiceRecognition(voiceHandler, openClawClient, glassesManager, mainHandler, isRetry = true, languageTag = languageTag, pendingPhotos = pendingPhotos, onPhotosConsumed = onPhotosConsumed)
                     }, 200)
                 } else {
-                    android.util.Log.e("MainScreen", "AI voice error (after retry): ${result.message}")
+                    android.util.Log.e("MainScreen", "AI voice recognition failed after retry")
                     RokidSdkManager.clearCommunicationDevice()
                     RokidSdkManager.notifyAsrError()
                     val resultMsg = org.json.JSONObject().apply {

@@ -51,7 +51,7 @@ class TtsPlaybackManager(
 
         scope.launch {
             try {
-                Log.d(TAG, "Synthesizing TTS for text: ${text.take(50)}...")
+                Log.d(TAG, "Synthesizing TTS (${text.length} chars)")
 
                 val speed = settings.speed.value.toDouble()
                 val result = client.synthesize(apiKey, voiceId, text, speed)
@@ -66,7 +66,7 @@ class TtsPlaybackManager(
                     }
                     inputStream.close()
 
-                    Log.d(TAG, "Audio saved to temp file: ${tempFile.absolutePath}")
+                    Log.d(TAG, "TTS audio saved to private cache")
 
                     // Play on main thread
                     launch(Dispatchers.Main) {

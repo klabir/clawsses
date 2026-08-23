@@ -32,21 +32,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * and flushed to the server once the session is ready. This eliminates the ~500-800ms gap
  * where the user's first words would otherwise be lost.
  *
- * Multi-segment speech: The mic stays active after VAD detects a pause. If the user
- * continues speaking, more segments are accumulated. Final delivery happens after
- * DONE_TIMEOUT_MS of silence following the last transcription.
+ * The mic stays active until local detection finds a sustained pause, then the client
+ * explicitly commits that utterance and waits for the final transcript.
  *
  * Audio: 24kHz, 16-bit PCM, mono (required by OpenAI Realtime API).
- * Transcription: Whisper-1 via input_audio_transcription.
- * Server VAD detects speech end and auto-commits the audio buffer.
- * We disable auto-response generation (create_response: false) since we only need transcription.
+ * Transcription: gpt-live-transcribe via a GA Realtime transcription session.
+ * Local amplitude detection commits the audio buffer after the user stops speaking.
  */
 class OpenAIRealtimeClient {
 
     companion object {
         private const val TAG = "OpenAIRealtime"
         private const val REALTIME_URL = "wss://api.openai.com/v1/realtime"
-        private const val MODEL = "gpt-4o-realtime-preview"
+        private const val TRANSCRIPTION_MODEL = "gpt-live-transcribe"
 
         private const val SAMPLE_RATE = 24000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
@@ -55,6 +53,9 @@ class OpenAIRealtimeClient {
 
         // Send audio in small frames for responsive VAD (~20ms = 960 bytes at 24kHz 16-bit mono)
         private const val SEND_FRAME_BYTES = 960
+        private const val SPEECH_PEAK_THRESHOLD = 1_500
+        private const val SPEECH_START_FRAME_COUNT = 3
+        private const val SILENCE_FRAME_COUNT = 38
 
         private const val NO_SPEECH_TIMEOUT_MS = 10_000L
         private const val TRANSCRIPTION_TIMEOUT_MS = 5_000L
@@ -79,8 +80,12 @@ class OpenAIRealtimeClient {
     // Guard: only the first call to deliverFinalResult/deliverError takes effect
     private val resultDelivered = AtomicBoolean(false)
 
-    private var speechDetected = false
+    @Volatile private var speechDetected = false
     @Volatile private var currentlySpeaking = false
+    private var consecutiveSpeechFrames = 0
+    private var consecutiveSilentFrames = 0
+    @Volatile private var commitPending = false
+    private val audioCommitted = AtomicBoolean(false)
 
     // Audio pre-buffering: record starts before WebSocket is ready
     private val preBuffer = ConcurrentLinkedQueue<ByteArray>()
@@ -139,6 +144,10 @@ class OpenAIRealtimeClient {
         resultDelivered.set(false)
         speechDetected = false
         currentlySpeaking = false
+        consecutiveSpeechFrames = 0
+        consecutiveSilentFrames = 0
+        commitPending = false
+        audioCommitted.set(false)
         sessionReady = false
         preBuffer.clear()
         synchronized(transcriptLock) { accumulatedTranscript.clear() }
@@ -157,11 +166,10 @@ class OpenAIRealtimeClient {
         // No-speech timeout starts later when session is configured (server can't detect speech until then)
         startAudioCapture()
 
-        val url = "$REALTIME_URL?model=$MODEL"
+        val url = "$REALTIME_URL?intent=transcription"
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $apiKey")
-            .header("OpenAI-Beta", "realtime=v1")
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -177,16 +185,16 @@ class OpenAIRealtimeClient {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val errorMsg = t.message ?: "Connection failed"
-                Log.e(TAG, "WebSocket failure: $errorMsg", t)
+                Log.e(TAG, "Realtime transcription WebSocket failed: ${t.javaClass.simpleName}")
                 deliverError(errorMsg)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closing: $code $reason")
+                Log.d(TAG, "WebSocket closing (code=$code)")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closed: $code $reason")
+                Log.d(TAG, "WebSocket closed (code=$code)")
                 // If result wasn't delivered yet (unexpected close), deliver empty
                 deliverFinalResult()
             }
@@ -197,21 +205,23 @@ class OpenAIRealtimeClient {
         val sessionConfig = JSONObject().apply {
             put("type", "session.update")
             put("session", JSONObject().apply {
-                put("modalities", JSONArray().apply { put("text") })
-                put("input_audio_format", "pcm16")
-                put("input_audio_transcription", JSONObject().apply {
-                    put("model", "whisper-1")
-                    if (languageTag != null) {
-                        val isoLang = languageTag.split("-").firstOrNull()?.lowercase() ?: "en"
-                        put("language", isoLang)
-                    }
-                })
-                put("turn_detection", JSONObject().apply {
-                    put("type", "server_vad")
-                    put("threshold", 0.5)
-                    put("prefix_padding_ms", 300)
-                    put("silence_duration_ms", 750)
-                    put("create_response", false) // We only need transcription, not AI response
+                put("type", "transcription")
+                put("audio", JSONObject().apply {
+                    put("input", JSONObject().apply {
+                        put("format", JSONObject().apply {
+                            put("type", "audio/pcm")
+                            put("rate", SAMPLE_RATE)
+                        })
+                        put("transcription", JSONObject().apply {
+                            put("model", TRANSCRIPTION_MODEL)
+                            languageTag
+                                ?.substringBefore('-')
+                                ?.lowercase()
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { put("languages", JSONArray().put(it)) }
+                        })
+                        put("turn_detection", JSONObject.NULL)
+                    })
                 })
             })
         }
@@ -235,7 +245,7 @@ class OpenAIRealtimeClient {
                     Log.i(TAG, "Session configured, flushing pre-buffered audio")
                     sessionReady = true
                     // Recording coroutine will drain preBuffer on next iteration
-                    startNoSpeechTimeout()
+                    if (!speechDetected) startNoSpeechTimeout()
                 }
 
                 "input_audio_buffer.speech_started" -> {
@@ -250,7 +260,7 @@ class OpenAIRealtimeClient {
                 "input_audio_buffer.speech_stopped" -> {
                     Log.d(TAG, "Speech stopped — waiting for transcription (mic stays active)")
                     currentlySpeaking = false
-                    // Server VAD auto-commits the buffer
+                    // Retained for compatibility with models that provide server VAD events.
                     // DON'T stop recording — user might continue speaking after a pause
                     // Notify caller so they can show "processing" state on glasses
                     val speechStoppedCallback = onSpeechStopped
@@ -264,7 +274,7 @@ class OpenAIRealtimeClient {
 
                 "conversation.item.input_audio_transcription.completed" -> {
                     val transcript = json.optString("transcript", "")
-                    Log.i(TAG, "Transcription completed: ${transcript.take(100)}")
+                    Log.i(TAG, "Transcription completed (${transcript.length} chars)")
                     cancelTranscriptionTimeout()
 
                     if (transcript.isNotEmpty()) {
@@ -295,7 +305,7 @@ class OpenAIRealtimeClient {
                 "conversation.item.input_audio_transcription.failed" -> {
                     val errorObj = json.optJSONObject("error")
                     val message = errorObj?.optString("message") ?: "Transcription failed"
-                    Log.e(TAG, "Transcription failed: $message")
+                    Log.e(TAG, "Transcription failed")
                     cancelTranscriptionTimeout()
                     // Wait for more speech or done timeout
                     startDoneTimeout()
@@ -305,7 +315,7 @@ class OpenAIRealtimeClient {
                     val error = json.optJSONObject("error")
                     val message = error?.optString("message") ?: "Unknown error"
                     val code = error?.optString("code") ?: ""
-                    Log.e(TAG, "API error: $code - $message")
+                    Log.e(TAG, "Realtime transcription API error (code=$code)")
                     deliverError(message)
                 }
 
@@ -315,7 +325,7 @@ class OpenAIRealtimeClient {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing message: ${e.message}", e)
+            Log.e(TAG, "Error parsing Realtime API message")
         }
     }
 
@@ -352,6 +362,7 @@ class OpenAIRealtimeClient {
                     val bytesRead = audioRecord?.read(readBuffer, 0, readBuffer.size) ?: -1
                     if (bytesRead > 0) {
                         val chunk = readBuffer.copyOf(bytesRead)
+                        updateLocalSpeechState(chunk)
                         if (!sessionReady) {
                             // Buffer audio until WebSocket session is configured
                             preBuffer.add(chunk)
@@ -364,6 +375,11 @@ class OpenAIRealtimeClient {
                             }
                             // Then send current chunk
                             sendAudioData(chunk)
+
+                            if (commitPending && audioCommitted.compareAndSet(false, true)) {
+                                commitAudioBuffer()
+                                break
+                            }
                         }
                     }
                 }
@@ -384,8 +400,65 @@ class OpenAIRealtimeClient {
         try {
             webSocket?.send(message.toString())
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to send audio: ${e.message}")
+            Log.w(TAG, "Failed to send audio frame")
         }
+    }
+
+    private fun updateLocalSpeechState(audioData: ByteArray) {
+        var peak = 0
+        var index = 0
+        while (index + 1 < audioData.size) {
+            val sample = (((audioData[index + 1].toInt() shl 8) or
+                (audioData[index].toInt() and 0xff)).toShort().toInt())
+            val magnitude = if (sample == Short.MIN_VALUE.toInt()) Short.MAX_VALUE.toInt()
+                else kotlin.math.abs(sample)
+            if (magnitude > peak) peak = magnitude
+            index += 2
+        }
+
+        if (!speechDetected) {
+            consecutiveSpeechFrames = if (peak >= SPEECH_PEAK_THRESHOLD) {
+                consecutiveSpeechFrames + 1
+            } else {
+                0
+            }
+
+            if (consecutiveSpeechFrames >= SPEECH_START_FRAME_COUNT) {
+                speechDetected = true
+                currentlySpeaking = true
+                consecutiveSilentFrames = 0
+                cancelNoSpeechTimeout()
+                Log.d(TAG, "Speech started (local detection)")
+            }
+            return
+        }
+
+        if (peak >= SPEECH_PEAK_THRESHOLD) {
+            currentlySpeaking = true
+            consecutiveSilentFrames = 0
+            return
+        }
+
+        consecutiveSilentFrames++
+        if (consecutiveSilentFrames >= SILENCE_FRAME_COUNT && !commitPending) {
+            currentlySpeaking = false
+            commitPending = true
+            Log.d(TAG, "Speech stopped (local detection) — committing audio")
+        }
+    }
+
+    private fun commitAudioBuffer() {
+        val message = JSONObject().apply {
+            put("type", "input_audio_buffer.commit")
+        }
+        if (webSocket?.send(message.toString()) != true) {
+            deliverError("Failed to commit audio buffer")
+            return
+        }
+
+        val speechStoppedCallback = onSpeechStopped
+        mainHandler.post { speechStoppedCallback?.invoke() }
+        startTranscriptionTimeout()
     }
 
     private fun stopRecording() {
@@ -397,7 +470,7 @@ class OpenAIRealtimeClient {
                 record.stop()
                 record.release()
             } catch (e: Exception) {
-                Log.w(TAG, "Error stopping AudioRecord: ${e.message}")
+                Log.w(TAG, "Error stopping AudioRecord")
             }
         }
         audioRecord = null
@@ -458,7 +531,7 @@ class OpenAIRealtimeClient {
         val finalText = synchronized(transcriptLock) {
             accumulatedTranscript.toString().trim()
         }
-        Log.i(TAG, "Delivering final result: '${finalText.take(100)}' (${finalText.length} chars)")
+        Log.i(TAG, "Delivering final result (${finalText.length} chars)")
 
         val callback = onFinalResult
         mainHandler.post { callback?.invoke(finalText) }
@@ -473,7 +546,7 @@ class OpenAIRealtimeClient {
     private fun deliverError(message: String) {
         if (!resultDelivered.compareAndSet(false, true)) return
 
-        Log.e(TAG, "Delivering error: $message")
+        Log.e(TAG, "Delivering transcription error")
         _connectionState.value = ConnectionState.Error(message)
 
         val callback = onError

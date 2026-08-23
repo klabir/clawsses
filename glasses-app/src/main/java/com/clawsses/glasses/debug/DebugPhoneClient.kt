@@ -133,7 +133,7 @@ class DebugPhoneClient {
             }
 
             val response = responseBuilder.toString()
-            Log.d(TAG, "Handshake response: ${response.take(200)}")
+            Log.d(TAG, "Handshake response received (${response.length} chars)")
 
             // Verify response contains 101 Switching Protocols
             if (!response.contains("101")) {
@@ -157,7 +157,7 @@ class DebugPhoneClient {
             while (_connectionState.value is ConnectionState.Connected) {
                 val message = readWebSocketFrame(input)
                 if (message != null) {
-                    Log.d(TAG, "Received from phone: ${message.take(100)}")
+                    Log.d(TAG, "Received from phone (${message.length} chars)")
                     withContext(Dispatchers.Main) {
                         onMessageFromPhone?.invoke(message)
                     }
@@ -248,7 +248,7 @@ class DebugPhoneClient {
                 val frame = createWebSocketFrame(payload)
                 output.write(frame)
                 output.flush()
-                Log.d(TAG, "Sent to phone: ${message.take(100)}")
+                Log.d(TAG, "Sent to phone (${message.length} chars)")
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending to phone", e)
             }

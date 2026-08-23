@@ -120,7 +120,7 @@ class GlassesVoiceHandler {
             }
             "recognizing" -> {
                 _voiceState.value = VoiceState.Recognizing(partialText, currentMode)
-                Log.d(TAG, "Phone: recognizing '$partialText' (mode=$currentMode)")
+                Log.d(TAG, "Phone: recognizing (${partialText.length} chars, mode=$currentMode)")
             }
             "processing" -> {
                 _voiceState.value = VoiceState.Processing(currentMode)
@@ -130,7 +130,7 @@ class GlassesVoiceHandler {
                 _voiceState.value = VoiceState.Error(partialText)
                 onResult?.invoke(VoiceResult.Error(partialText))
                 onResult = null
-                Log.e(TAG, "Phone: voice error: $partialText")
+                Log.e(TAG, "Phone: voice recognition error")
             }
             "idle" -> {
                 _voiceState.value = VoiceState.Idle
@@ -147,7 +147,7 @@ class GlassesVoiceHandler {
      * Handle final voice result from phone.
      */
     fun handleVoiceResult(type: String, text: String) {
-        Log.d(TAG, "Phone voice result: type=$type, text='${text.take(100)}'")
+        Log.d(TAG, "Phone voice result: type=$type, chars=${text.length}")
         _voiceState.value = VoiceState.Idle
 
         val result = when (type) {
@@ -182,7 +182,7 @@ class GlassesVoiceHandler {
      * Simulate voice input for debug/emulator testing (keyboard input).
      */
     fun simulateVoiceInput(text: String, onResult: (VoiceResult) -> Unit) {
-        Log.d(TAG, "Simulating voice input: $text")
+        Log.d(TAG, "Simulating voice input (${text.length} chars)")
         _voiceState.value = VoiceState.Recognizing(text, currentMode)
         _voiceState.value = VoiceState.Idle
         onResult(VoiceResult.Text(text))

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import com.clawsses.phone.util.SecurePreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,7 +72,7 @@ class VoiceLanguageManager(private val context: Context) {
         val displayName: String // e.g. "Nederlands (Nederland)", "English (United States)"
     )
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = SecurePreferences.create(context, PREFS_NAME)
 
     private val _selectedLanguage = MutableStateFlow(loadPersistedLanguage())
     val selectedLanguage: StateFlow<String> = _selectedLanguage.asStateFlow()

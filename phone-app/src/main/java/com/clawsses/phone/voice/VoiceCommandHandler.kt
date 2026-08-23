@@ -228,7 +228,7 @@ class VoiceCommandHandler(private val context: Context) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val spokenText = matches?.firstOrNull() ?: ""
 
-            Log.i(TAG, ">>> Final recognition result: '$spokenText'")
+            Log.i(TAG, ">>> Final recognition result (${spokenText.length} chars)")
 
             val processedResult = processSpokenText(spokenText)
             _lastResult.value = processedResult
@@ -239,7 +239,7 @@ class VoiceCommandHandler(private val context: Context) {
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val partialText = matches?.firstOrNull() ?: ""
             if (partialText.isNotEmpty()) {
-                Log.d(TAG, "Partial: $partialText")
+                Log.d(TAG, "Partial recognition result (${partialText.length} chars)")
                 onPartialResult?.invoke(partialText)
             }
         }
