@@ -59,6 +59,7 @@ class OpenClawClient(
     var onChatStream: ((ChatStream) -> Unit)? = null
     var onChatStreamEnd: ((ChatStreamEnd) -> Unit)? = null
     var onSessionList: ((SessionListUpdate) -> Unit)? = null
+    var onAgentList: ((AgentListUpdate) -> Unit)? = null
     var onConnectionUpdate: ((ConnectionUpdate) -> Unit)? = null
     /** Fired after loadMoreHistory completes. Args: (prependedCount, hasMore) */
     var onMoreHistoryLoaded: ((Int, Boolean) -> Unit)? = null
@@ -102,6 +103,9 @@ class OpenClawClient(
     // Available sessions (exposed as StateFlow for phone UI)
     private val _sessionList = MutableStateFlow<List<SessionInfo>>(emptyList())
     val sessionList: StateFlow<List<SessionInfo>> = _sessionList.asStateFlow()
+
+    private val _agentList = MutableStateFlow<List<AgentInfo>>(emptyList())
+    val agentList: StateFlow<List<AgentInfo>> = _agentList.asStateFlow()
 
     // Challenge nonce for auth handshake
     private var challengeNonce: String? = null
@@ -296,6 +300,89 @@ class OpenClawClient(
                 Log.e(TAG, "Error requesting sessions", e)
             }
         }
+    }
+
+    /** Request the read-only agent roster exposed by the gateway. */
+    fun requestAgents() {
+        scope.launch {
+            try {
+                val response = sendRequest(OpenClawMethods.AGENTS_LIST, JsonObject())
+                if (!response.ok) {
+                    Log.e(TAG, "Agent list request failed")
+                    return@launch
+                }
+
+                val agents = response.payload?.getAsJsonArray("agents")
+                    ?.mapNotNull { element ->
+                        val obj = element.takeIf { it.isJsonObject }?.asJsonObject
+                            ?: return@mapNotNull null
+                        val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?.takeIf { it.isNotBlank() }
+                            ?: return@mapNotNull null
+                        val identity = obj.get("identity")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val identityName = identity?.get("name")
+                            ?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                        val configuredName = obj.get("name")
+                            ?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                        val emoji = identity?.get("emoji")
+                            ?.takeIf { it.isJsonPrimitive }?.asString
+                            ?.takeIf { it.isNotBlank() && it != "(not set)" }
+                        var name = configuredName ?: identityName ?: id
+                        if (emoji != null && !name.contains(emoji)) name = "$emoji $name"
+                        val modelElement = obj.get("model")
+                        val model = when {
+                            modelElement == null -> null
+                            modelElement.isJsonPrimitive -> modelElement.asString
+                            modelElement.isJsonObject -> modelElement.asJsonObject.get("primary")
+                                ?.takeIf { it.isJsonPrimitive }?.asString
+                            else -> null
+                        }
+                        AgentInfo(id = id, name = name, model = model)
+                    }
+                    .orEmpty()
+
+                _agentList.value = agents
+                onAgentList?.invoke(
+                    AgentListUpdate(
+                        agents = agents,
+                        currentAgentId = agentIdFromSessionKey(_currentSessionKey.value)
+                            ?: response.payload?.get("defaultId")
+                                ?.takeIf { it.isJsonPrimitive }?.asString
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error requesting agents", e)
+            }
+        }
+    }
+
+    /** Select an agent's canonical main session, which is created lazily if needed. */
+    fun switchAgent(agentId: String, displayName: String? = null) {
+        val normalizedId = agentId.trim()
+        if (normalizedId.isEmpty() || ':' in normalizedId) return
+
+        scope.launch {
+            val key = "agent:$normalizedId:main"
+            _currentSessionKey.value = key
+            _chatMessages.value = emptyList()
+            currentHistoryLimit = 50
+            _unreadSessions.value = _unreadSessions.value - key
+            onConnectionUpdate?.invoke(
+                ConnectionUpdate(
+                    connected = true,
+                    sessionId = key,
+                    sessionName = displayName ?: _agentList.value.firstOrNull { it.id == normalizedId }?.name
+                        ?: normalizedId
+                )
+            )
+            loadSessionHistory(key)
+        }
+    }
+
+    fun agentIdFromSessionKey(sessionKey: String?): String? {
+        if (sessionKey.isNullOrBlank()) return null
+        val parts = sessionKey.split(':')
+        return parts.getOrNull(1)?.takeIf { parts.firstOrNull() == "agent" && it.isNotBlank() }
     }
 
     /**
@@ -894,7 +981,9 @@ class OpenClawClient(
 
     private fun notifyConnectionUpdate(connected: Boolean, sessionId: String? = null) {
         val sessionName = sessionId?.let { id ->
-            _sessionList.value.firstOrNull { it.key == id }?.name
+            val agentId = agentIdFromSessionKey(id)
+            _agentList.value.firstOrNull { it.id == agentId }?.name
+                ?: _sessionList.value.firstOrNull { it.key == id }?.name
         }
         onConnectionUpdate?.invoke(ConnectionUpdate(
             connected = connected,

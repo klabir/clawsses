@@ -73,6 +73,8 @@ import com.clawsses.phone.tts.TtsSettingsManager
 import com.clawsses.phone.voice.VoiceCommandHandler
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
+import com.clawsses.shared.AgentInfo
+import com.clawsses.shared.AgentListUpdate
 import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
 import com.clawsses.shared.SessionInfo
@@ -111,6 +113,7 @@ fun MainScreen() {
     val installState by apkInstaller.installState.collectAsState()
     val selectedVoiceLanguage by voiceLanguageManager.selectedLanguage.collectAsState()
     val sessionList by openClawClient.sessionList.collectAsState()
+    val agentList by openClawClient.agentList.collectAsState()
     val currentSessionKey by openClawClient.currentSessionKey.collectAsState()
     val unreadSessions by openClawClient.unreadSessions.collectAsState()
     val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsState()
@@ -138,6 +141,7 @@ fun MainScreen() {
     var inputText by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
     var showSessionPicker by remember { mutableStateOf(false) }
+    var showAgentPicker by remember { mutableStateOf(false) }
     var pendingPhotos by remember { mutableStateOf<List<String>>(emptyList()) }
     val listState = rememberLazyListState()
 
@@ -183,6 +187,7 @@ fun MainScreen() {
     LaunchedEffect(openClawState) {
         if (openClawState is OpenClawClient.ConnectionState.Connected) {
             openClawClient.requestSessions()
+            openClawClient.requestAgents()
         }
     }
 
@@ -315,6 +320,9 @@ fun MainScreen() {
             }
         }
         openClawClient.onSessionList = { msg ->
+            glassesManager.sendRawMessage(msg.toJson())
+        }
+        openClawClient.onAgentList = { msg ->
             glassesManager.sendRawMessage(msg.toJson())
         }
         openClawClient.onConnectionUpdate = { msg ->
@@ -496,6 +504,17 @@ fun MainScreen() {
                         android.util.Log.d("MainScreen", "Creating new session from glasses")
                         openClawClient.createSession()
                     }
+                    "list_agents" -> {
+                        android.util.Log.d("MainScreen", "Requesting agent list for glasses")
+                        openClawClient.requestAgents()
+                    }
+                    "switch_agent" -> {
+                        val agentId = json.optString("agentId", "")
+                        val agentName = json.optString("agentName", "").ifBlank { null }
+                        if (agentId.isNotEmpty()) {
+                            openClawClient.switchAgent(agentId, agentName)
+                        }
+                    }
                     "slash_command" -> {
                         val command = json.optString("command", "")
                         android.util.Log.d("MainScreen", "Slash command received from glasses")
@@ -517,6 +536,12 @@ fun MainScreen() {
                             sessionName = currentName
                         )
                         glassesManager.sendRawMessage(connUpdate.toJson())
+                        glassesManager.sendRawMessage(
+                            AgentListUpdate(
+                                agents = openClawClient.agentList.value,
+                                currentAgentId = openClawClient.agentIdFromSessionKey(currentKey)
+                            ).toJson()
+                        )
                         // Send current chat history
                         val currentMessages = openClawClient.chatMessages.value
                         glassesManager.sendRawMessage(buildChatHistoryJson(currentMessages))
@@ -809,6 +834,21 @@ fun MainScreen() {
                         openClawClient.switchSession(session.key)
                     },
                     onDismiss = { showSessionPicker = false }
+                )
+
+                AgentSelector(
+                    agents = agentList,
+                    currentAgentId = openClawClient.agentIdFromSessionKey(currentSessionKey),
+                    expanded = showAgentPicker,
+                    onToggle = {
+                        if (!showAgentPicker) openClawClient.requestAgents()
+                        showAgentPicker = !showAgentPicker
+                    },
+                    onSelect = { agent ->
+                        showAgentPicker = false
+                        openClawClient.switchAgent(agent.id, agent.name)
+                    },
+                    onDismiss = { showAgentPicker = false }
                 )
             }
 
@@ -1218,6 +1258,102 @@ fun SessionSelector(
                             }
                         },
                         onClick = { onSelect(session) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AgentSelector(
+    agents: List<AgentInfo>,
+    currentAgentId: String?,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onSelect: (AgentInfo) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val currentAgent = agents.firstOrNull { it.id == currentAgentId }
+    val displayName = currentAgent?.name ?: currentAgentId ?: "No agent"
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.SmartToy,
+                contentDescription = "Agent",
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
+            )
+            Icon(
+                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismiss,
+            modifier = Modifier.fillMaxWidth(0.9f)
+        ) {
+            if (agents.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("Loading agents...") },
+                    onClick = {},
+                    enabled = false
+                )
+            } else {
+                agents.forEach { agent ->
+                    val isCurrent = agent.id == currentAgentId
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isCurrent) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = "Current",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = agent.name,
+                                        color = if (isCurrent) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1
+                                    )
+                                    agent.model?.takeIf { it.isNotBlank() }?.let { model ->
+                                        Text(
+                                            text = model,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color.Gray,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        onClick = { onSelect(agent) }
                     )
                 }
             }

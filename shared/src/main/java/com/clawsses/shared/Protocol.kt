@@ -71,6 +71,7 @@ object OpenClawMethods {
     const val SESSION_RUN = "session.run"
     const val CHAT_HISTORY = "chat.history"
     const val CONFIG_GET = "config.get"
+    const val AGENTS_LIST = "agents.list"
     const val SYSTEM_PRESENCE = "system-presence"
 }
 
@@ -222,6 +223,21 @@ data class SessionInfo(
     /** Best available display name for this session */
     val name: String get() = label ?: displayName ?: derivedTitle ?: key
 }
+
+/** Available OpenClaw agents and the agent selected by the active session. */
+data class AgentListUpdate(
+    @SerializedName("type") val type: String = "agent_list",
+    @SerializedName("agents") val agents: List<AgentInfo>,
+    @SerializedName("currentAgentId") val currentAgentId: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+data class AgentInfo(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("model") val model: String? = null
+)
 
 // ============================================
 // Glasses -> Phone Messages

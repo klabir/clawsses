@@ -105,6 +105,7 @@ enum class AgentState {
 enum class MenuBarItem(val icon: String, val label: String) {
     PHOTO("\uD83D\uDCF7", "Photo"),
     SESSION("\u25CE", "Sess"),
+    AGENT("\u25C6", "Agent"),
     SIZE("\u2588", "Size"),  // Icon overridden dynamically based on next HudPosition
     MORE("\u2026", "More"),
 }
@@ -165,6 +166,12 @@ data class SessionPickerInfo(
     val updatedAt: Long? = null
 )
 
+data class AgentPickerInfo(
+    val id: String,
+    val name: String,
+    val model: String? = null
+)
+
 /** Format a millisecond epoch timestamp as a short relative time string. */
 private fun formatRelativeTime(timestampMs: Long): String {
     val now = System.currentTimeMillis()
@@ -208,6 +215,12 @@ data class ChatHudState(
     val currentSessionKey: String? = null,
     val currentSessionName: String? = null,
     val selectedSessionIndex: Int = 0,
+    // Agent picker
+    val showAgentPicker: Boolean = false,
+    val availableAgents: List<AgentPickerInfo> = emptyList(),
+    val currentAgentId: String? = null,
+    val currentAgentName: String? = null,
+    val selectedAgentIndex: Int = 0,
     // More menu
     val showMoreMenu: Boolean = false,
     val selectedMoreIndex: Int = 0,
@@ -485,6 +498,19 @@ fun HudScreen(
                 sessions = state.availableSessions,
                 currentSessionKey = state.currentSessionKey,
                 selectedIndex = state.selectedSessionIndex,
+                fontFamily = monoFontFamily
+            )
+        }
+
+        AnimatedVisibility(
+            visible = state.showAgentPicker,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            AgentPickerOverlay(
+                agents = state.availableAgents,
+                currentAgentId = state.currentAgentId,
+                selectedIndex = state.selectedAgentIndex,
                 fontFamily = monoFontFamily
             )
         }
@@ -1423,6 +1449,121 @@ private fun SessionPickerOverlay(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            Text(
+                text = "\u2191\u2193 Navigate  TAP Select  2\u00D7TAP Cancel",
+                color = HudColors.dimText,
+                fontSize = 10.sp,
+                fontFamily = fontFamily
+            )
+        }
+    }
+}
+
+// ============================================================================
+// AGENT PICKER OVERLAY
+// ============================================================================
+
+@Composable
+private fun AgentPickerOverlay(
+    agents: List<AgentPickerInfo>,
+    currentAgentId: String?,
+    selectedIndex: Int,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(selectedIndex) {
+        if (agents.isNotEmpty()) listState.animateScrollToItem(selectedIndex)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.9f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(24.dp)
+        ) {
+            Text(
+                text = "SELECT AGENT",
+                color = HudColors.cyan,
+                fontSize = 16.sp,
+                fontFamily = fontFamily,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (agents.isEmpty()) {
+                Text(
+                    text = "No agents available",
+                    color = HudColors.dimText,
+                    fontSize = 14.sp,
+                    fontFamily = fontFamily
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    itemsIndexed(agents) { index, agent ->
+                        val isSelected = index == selectedIndex
+                        val isCurrent = agent.id == currentAgentId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (isSelected) HudColors.green.copy(alpha = 0.3f)
+                                    else Color.Transparent
+                                )
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (isSelected) "\u25B6" else " ",
+                                    color = HudColors.green,
+                                    fontSize = 14.sp,
+                                    fontFamily = fontFamily
+                                )
+                                Column {
+                                    Text(
+                                        text = agent.name,
+                                        color = if (isSelected) HudColors.green else HudColors.primaryText,
+                                        fontSize = 14.sp,
+                                        fontFamily = fontFamily,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1
+                                    )
+                                    agent.model?.takeIf { it.isNotBlank() }?.let { model ->
+                                        Text(
+                                            text = model,
+                                            color = HudColors.dimText,
+                                            fontSize = 10.sp,
+                                            fontFamily = fontFamily,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                            if (isCurrent) {
+                                Text(text = "\u25CF", color = HudColors.cyan, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = "\u2191\u2193 Navigate  TAP Select  2\u00D7TAP Cancel",
                 color = HudColors.dimText,

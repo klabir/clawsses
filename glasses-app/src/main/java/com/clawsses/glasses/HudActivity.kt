@@ -24,6 +24,7 @@ import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.ui.AgentState
+import com.clawsses.glasses.ui.AgentPickerInfo
 import com.clawsses.glasses.ui.ChatFocusArea
 import com.clawsses.glasses.ui.ChatHudState
 import com.clawsses.glasses.ui.DisplayMessage
@@ -85,6 +86,11 @@ class HudActivity : ComponentActivity() {
     private lateinit var cameraCapture: CameraCapture
 
     // Thumbnails to attach to the next user message echo from the server
+
+    // List updates also arrive during background state synchronization. These flags
+    // ensure pickers open only after an explicit menu action.
+    private var sessionPickerRequested = false
+    private var agentPickerRequested = false
 
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
@@ -428,6 +434,10 @@ class HudActivity : ComponentActivity() {
             handleSessionPickerGesture(gesture)
             return
         }
+        if (current.showAgentPicker) {
+            handleAgentPickerGesture(gesture)
+            return
+        }
 
         // If voice is active, TAP cancels
         if (isVoiceActive && gesture == Gesture.TAP) {
@@ -653,6 +663,9 @@ class HudActivity : ComponentActivity() {
             MenuBarItem.SESSION -> {
                 requestSessionList()
             }
+            MenuBarItem.AGENT -> {
+                requestAgentList()
+            }
             MenuBarItem.SIZE -> {
                 val nextPosition = when (current.hudPosition) {
                     HudPosition.FULL -> HudPosition.BOTTOM_HALF
@@ -785,6 +798,46 @@ class HudActivity : ComponentActivity() {
 
     private fun createNewSession() {
         phoneConnection.sendToPhone("""{"type":"create_session"}""")
+    }
+
+    // ============== Agent Picker Gestures ==============
+
+    private fun handleAgentPickerGesture(gesture: Gesture) {
+        val current = hudState.value
+        val totalOptions = current.availableAgents.size
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                if (totalOptions > 0) {
+                    hudState.value = current.copy(
+                        selectedAgentIndex = maxOf(0, current.selectedAgentIndex - 1)
+                    )
+                }
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                if (totalOptions > 0) {
+                    hudState.value = current.copy(
+                        selectedAgentIndex = minOf(totalOptions - 1, current.selectedAgentIndex + 1)
+                    )
+                }
+            }
+            Gesture.TAP -> {
+                val selected = current.availableAgents.getOrNull(current.selectedAgentIndex)
+                if (selected != null) {
+                    switchToAgent(selected.id, selected.name)
+                    hudState.value = current.copy(
+                        showAgentPicker = false,
+                        currentAgentId = selected.id,
+                        currentAgentName = selected.name,
+                        currentSessionName = selected.name
+                    )
+                } else {
+                    hudState.value = current.copy(showAgentPicker = false)
+                }
+            }
+            Gesture.DOUBLE_TAP -> hudState.value = current.copy(showAgentPicker = false)
+            Gesture.LONG_PRESS -> {}
+        }
     }
 
     // ============== More Menu Gestures ==============
@@ -1109,6 +1162,7 @@ class HudActivity : ComponentActivity() {
     // ============== Phone Communication ==============
 
     private fun requestSessionList() {
+        sessionPickerRequested = true
         phoneConnection.sendToPhone("""{"type":"list_sessions"}""")
     }
 
@@ -1118,6 +1172,26 @@ class HudActivity : ComponentActivity() {
             put("sessionKey", sessionKey)
         }
         phoneConnection.sendToPhone(json.toString())
+    }
+
+    private fun requestAgentList() {
+        agentPickerRequested = true
+        phoneConnection.sendToPhone("""{"type":"list_agents"}""")
+    }
+
+    private fun switchToAgent(agentId: String, agentName: String) {
+        val json = JSONObject().apply {
+            put("type", "switch_agent")
+            put("agentId", agentId)
+            put("agentName", agentName)
+        }
+        phoneConnection.sendToPhone(json.toString())
+    }
+
+    private fun agentIdFromSessionKey(key: String?): String? {
+        if (key.isNullOrBlank()) return null
+        val parts = key.split(':')
+        return parts.getOrNull(1)?.takeIf { parts.firstOrNull() == "agent" && it.isNotBlank() }
     }
 
     // ============== Phone Message Handling ==============
@@ -1352,6 +1426,9 @@ class HudActivity : ComponentActivity() {
                         isConnected = connected,
                         currentSessionKey = newSessionKey,
                         currentSessionName = newSessionName,
+                        currentAgentId = agentIdFromSessionKey(newSessionKey) ?: current.currentAgentId,
+                        currentAgentName = newSessionName?.takeIf { it.isNotBlank() }
+                            ?: current.currentAgentName,
                         showSessionPicker = if (sessionChanged) false else current.showSessionPicker
                     )
 
@@ -1410,14 +1487,47 @@ class HudActivity : ComponentActivity() {
                     val resolvedSessionName = sessions.firstOrNull { it.key == currentSessionKey }?.name
                         ?: current.currentSessionName
                     hudState.value = current.copy(
-                        showSessionPicker = true,
+                        showSessionPicker = sessionPickerRequested,
                         availableSessions = sessionsWithNew,
                         currentSessionKey = currentSessionKey.ifEmpty { current.currentSessionKey },
                         currentSessionName = resolvedSessionName,
                         selectedSessionIndex = currentIndex
                     )
+                    sessionPickerRequested = false
 
                     Log.d(GlassesApp.TAG, "Session list received (${sessions.size} entries)")
+                }
+
+                "agent_list" -> {
+                    val agentsArray = msg.optJSONArray("agents")
+                    val agents = mutableListOf<AgentPickerInfo>()
+                    if (agentsArray != null) {
+                        for (i in 0 until agentsArray.length()) {
+                            val agent = agentsArray.optJSONObject(i) ?: continue
+                            val id = agent.optString("id", "").takeIf { it.isNotBlank() } ?: continue
+                            agents += AgentPickerInfo(
+                                id = id,
+                                name = agent.optString("name", id).ifBlank { id },
+                                model = agent.optString("model", "").takeIf { it.isNotBlank() }
+                            )
+                        }
+                    }
+                    val current = hudState.value
+                    val currentAgentId = msg.optString("currentAgentId", "")
+                        .takeIf { it.isNotBlank() }
+                        ?: agentIdFromSessionKey(current.currentSessionKey)
+                    val selectedIndex = agents.indexOfFirst { it.id == currentAgentId }
+                        .coerceAtLeast(0)
+                    hudState.value = current.copy(
+                        showAgentPicker = agentPickerRequested,
+                        availableAgents = agents,
+                        currentAgentId = currentAgentId,
+                        currentAgentName = agents.firstOrNull { it.id == currentAgentId }?.name
+                            ?: current.currentAgentName,
+                        selectedAgentIndex = selectedIndex
+                    )
+                    agentPickerRequested = false
+                    Log.d(GlassesApp.TAG, "Agent list received (${agents.size} entries)")
                 }
 
                 "voice_state" -> {
