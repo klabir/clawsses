@@ -84,6 +84,7 @@ class OpenClawClient(
     private var activeMessageId: String? = null
     private var activeSessionKey: String? = null // session that initiated the current run
     private var streamingContent = StringBuilder()
+    private var lastAgentPhase: String? = null
 
     // Current session tracking (exposed as StateFlow for phone UI)
     private val _currentSessionKey = MutableStateFlow<String?>(null)
@@ -234,6 +235,7 @@ class OpenClawClient(
                 activeMessageId = assistantMsgId
                 activeSessionKey = _currentSessionKey.value
                 streamingContent.clear()
+                lastAgentPhase = null
 
                 val response = sendRequest(OpenClawMethods.CHAT_SEND, params)
                 if (response.ok) {
@@ -241,7 +243,7 @@ class OpenClawClient(
                     activeRunId = response.payload?.get("runId")?.asString
                     Log.d(TAG, "Agent run started")
                     // Notify glasses that agent is thinking
-                    onAgentThinking?.invoke(AgentThinking(id = assistantMsgId))
+                    notifyAgentPhase("thinking", onlyIfUnset = true)
                 } else {
                     val errorMsg = response.error?.get("message")?.asString ?: "Agent run failed"
                     Log.e(TAG, "Agent run failed")
@@ -602,8 +604,7 @@ class OpenClawClient(
                 handleChatEvent(payload)
             }
             OpenClawEvents.AGENT -> {
-                // Lower-level agent events (tool use, lifecycle)
-                Log.d(TAG, "Agent event received")
+                handleAgentEvent(payload)
             }
             "tick", OpenClawEvents.HEARTBEAT -> {
                 // Keep-alive, no action needed
@@ -615,6 +616,24 @@ class OpenClawClient(
 
         // Emit to shared flow for external observers
         scope.launch { _events.emit(event) }
+    }
+
+    /** Forward only the reasoning phase, never private reasoning content. */
+    private fun handleAgentEvent(payload: JsonObject?) {
+        payload ?: return
+        val runId = payload.get("runId")?.takeIf { it.isJsonPrimitive }?.asString
+        if (runId != null && activeRunId != null && runId != activeRunId) return
+
+        when (payload.get("stream")?.takeIf { it.isJsonPrimitive }?.asString) {
+            "thinking", "reasoning" -> notifyAgentPhase("reasoning")
+        }
+    }
+
+    private fun notifyAgentPhase(phase: String, onlyIfUnset: Boolean = false) {
+        val messageId = activeMessageId ?: return
+        if ((onlyIfUnset && lastAgentPhase != null) || lastAgentPhase == phase) return
+        lastAgentPhase = phase
+        onAgentThinking?.invoke(AgentThinking(id = messageId, phase = phase))
     }
 
     private fun performAuth() {
@@ -839,6 +858,7 @@ class OpenClawClient(
         activeMessageId = null
         activeSessionKey = null
         streamingContent.clear()
+        lastAgentPhase = null
     }
 
     private fun addChatMessage(message: ChatMessage) {

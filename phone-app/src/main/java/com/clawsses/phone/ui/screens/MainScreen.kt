@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -76,6 +78,7 @@ import com.clawsses.shared.SessionInfo
 import com.clawsses.shared.TtsState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -234,12 +237,21 @@ fun MainScreen() {
     // reliable than checking phoneLoadingMore which may already be false by the
     // time this effect runs (both StateFlows update in the same coroutine frame).
     var previousFirstMsgId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(chatMessages.size) {
+    var followPhoneTail by remember { mutableStateOf(true) }
+    val phoneListDragged by listState.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(phoneListDragged, listState.canScrollForward) {
+        val isAtBottom = !listState.canScrollForward
+        if (phoneListDragged || isAtBottom) followPhoneTail = isAtBottom
+    }
+    val phoneTailVersion = chatMessages.lastOrNull()?.let { "${it.id}:${it.content.length}" }
+    LaunchedEffect(chatMessages.size, phoneTailVersion) {
         if (chatMessages.isNotEmpty()) {
             val currentFirstId = chatMessages.first().id
             val wasPrepend = previousFirstMsgId != null && currentFirstId != previousFirstMsgId
-            if (!wasPrepend) {
+            if (!wasPrepend && followPhoneTail) {
                 listState.animateScrollToItem(chatMessages.size - 1)
+                yield()
+                listState.animateScrollBy(Float.MAX_VALUE)
             }
             previousFirstMsgId = currentFirstId
         }

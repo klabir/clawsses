@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -94,6 +95,7 @@ const val MAX_PHOTOS = 4
 enum class AgentState {
     IDLE,       // No active request
     THINKING,   // Ack received, waiting for first chunk
+    REASONING,  // Gateway reports a private reasoning phase (content is not forwarded)
     STREAMING   // Receiving streaming chunks
 }
 
@@ -324,15 +326,15 @@ fun HudScreen(
                 val scrollDistance = -(itemsToScroll * avgItemHeight)
                 listState.animateScrollBy(scrollDistance)
             } else if (state.scrollPosition == totalItems - 1) {
-                // Scrolling to last item: use a large offset so the bottom of the
-                // item aligns with the viewport bottom (Compose clamps internally).
-                // During streaming, use instant scroll — animated scroll gets
-                // cancelled and restarted on every chunk, causing visible flicker.
+                // Align the last item, then continue to the real pixel-level end.
+                // The event handler only targets the last item while tail-following.
                 val isStreaming = state.messages.lastOrNull()?.isStreaming == true
                 if (isStreaming) {
-                    listState.scrollToItem(state.scrollPosition, Int.MAX_VALUE)
+                    listState.scrollToItem(state.scrollPosition)
+                    listState.scrollBy(Float.MAX_VALUE)
                 } else {
-                    listState.animateScrollToItem(state.scrollPosition, Int.MAX_VALUE)
+                    listState.animateScrollToItem(state.scrollPosition)
+                    listState.animateScrollBy(Float.MAX_VALUE)
                 }
             } else {
                 listState.animateScrollToItem(state.scrollPosition)
@@ -624,6 +626,7 @@ private fun TopBar(
                 isLoadingMoreHistory -> "loading..."
                 agentState == AgentState.IDLE -> if (isConnected) "connected" else "disconnected"
                 agentState == AgentState.THINKING -> "thinking..."
+                agentState == AgentState.REASONING -> "reasoning..."
                 agentState == AgentState.STREAMING -> "streaming..."
                 else -> ""
             }
@@ -772,9 +775,10 @@ private fun ChatContentArea(
                 }
 
                 // Thinking indicator (shown after last message when agent is thinking)
-                if (agentState == AgentState.THINKING) {
+                if (agentState == AgentState.THINKING || agentState == AgentState.REASONING) {
                     item {
                         ThinkingIndicator(
+                            label = if (agentState == AgentState.REASONING) "reasoning" else "thinking",
                             fontSize = fontSize,
                             fontFamily = fontFamily
                         )
@@ -865,6 +869,7 @@ private fun ChatMessageItem(
 
 @Composable
 private fun ThinkingIndicator(
+    label: String,
     fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily
 ) {
@@ -882,7 +887,7 @@ private fun ThinkingIndicator(
             .graphicsLayer { this.alpha = alpha }
     ) {
         Text(
-            text = "...",
+            text = "$label...",
             color = HudColors.cyan,
             fontSize = (fontSize.value + 2).sp,
             fontFamily = fontFamily,

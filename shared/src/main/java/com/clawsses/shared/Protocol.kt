@@ -137,7 +137,8 @@ data class ChatAttachment(
  */
 data class AgentThinking(
     @SerializedName("type") val type: String = "agent_thinking",
-    @SerializedName("id") val id: String
+    @SerializedName("id") val id: String,
+    @SerializedName("phase") val phase: String = "thinking",
 ) {
     fun toJson(): String = gson.toJson(this)
 

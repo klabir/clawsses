@@ -913,13 +913,18 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollUp() {
         val current = hudState.value
-        val newPosition = maxOf(0, current.scrollPosition - 5) // scroll by 5 messages
-        hudState.value = current.copy(scrollPosition = newPosition)
-
-        // If we've scrolled to the top and there might be more history, request it
-        if (newPosition == 0 && current.hasMoreHistory && !current.isLoadingMoreHistory && current.messages.isNotEmpty()) {
-            requestMoreHistory()
+        if (current.scrollPosition <= 0) {
+            if (current.hasMoreHistory && !current.isLoadingMoreHistory && current.messages.isNotEmpty()) {
+                requestMoreHistory()
+            }
+            hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
+            return
         }
+        val newPosition = maxOf(0, current.scrollPosition - 5) // scroll by 5 messages
+        hudState.value = current.copy(
+            scrollPosition = newPosition,
+            scrollTrigger = current.scrollTrigger + 1,
+        )
     }
 
     private fun requestMoreHistory() {
@@ -939,8 +944,15 @@ class HudActivity : ComponentActivity() {
     private fun scrollDown() {
         val current = hudState.value
         val maxScroll = maxOf(0, current.messages.size - 1)
+        if (current.scrollPosition >= maxScroll) {
+            hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
+            return
+        }
         val newPosition = minOf(maxScroll, current.scrollPosition + 5)
-        hudState.value = current.copy(scrollPosition = newPosition)
+        hudState.value = current.copy(
+            scrollPosition = newPosition,
+            scrollTrigger = current.scrollTrigger + 1,
+        )
     }
 
     // ============== Voice Recognition ==============
@@ -1148,7 +1160,7 @@ class HudActivity : ComponentActivity() {
                             messages = messages,
                             agentState = AgentState.IDLE,
                             photoThumbnails = emptyList(),
-                            scrollPosition = messages.size - 1,
+                            scrollPosition = if (current.isScrolledToEnd) messages.size - 1 else current.scrollPosition,
                             scrollTrigger = current.scrollTrigger + 1
                         )
                         Log.d(GlassesApp.TAG, "User message received (${content.length} chars, photos=${thumbnails.size})")
@@ -1172,7 +1184,7 @@ class HudActivity : ComponentActivity() {
                         hudState.value = current.copy(
                             messages = messages,
                             agentState = AgentState.IDLE,
-                            scrollPosition = messages.size - 1,
+                            scrollPosition = if (current.isScrolledToEnd) messages.size - 1 else current.scrollPosition,
                             scrollTrigger = current.scrollTrigger + 1
                         )
                         Log.d(GlassesApp.TAG, "Assistant message received (${content.length} chars)")
@@ -1253,8 +1265,10 @@ class HudActivity : ComponentActivity() {
                 "agent_thinking" -> {
                     // Agent acknowledged request, waiting for first chunk
                     val current = hudState.value
-                    hudState.value = current.copy(agentState = AgentState.THINKING)
-                    Log.d(GlassesApp.TAG, "Agent thinking")
+                    val phase = msg.optString("phase", "thinking")
+                    val state = if (phase == "reasoning") AgentState.REASONING else AgentState.THINKING
+                    hudState.value = current.copy(agentState = state)
+                    Log.d(GlassesApp.TAG, "Agent phase: $phase")
                 }
 
                 "chat_stream" -> {
@@ -1285,8 +1299,7 @@ class HudActivity : ComponentActivity() {
                     }
 
                     // Auto-scroll to bottom during streaming (unless user scrolled up)
-                    val shouldAutoScroll = current.focusedArea != ChatFocusArea.CONTENT ||
-                        current.scrollPosition >= current.messages.size - 2
+                    val shouldAutoScroll = current.isScrolledToEnd
 
                     hudState.value = current.copy(
                         messages = messages,
