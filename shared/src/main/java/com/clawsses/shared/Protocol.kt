@@ -63,14 +63,16 @@ data class OpenClawEvent(
 object OpenClawMethods {
     const val CONNECT = "connect"
     const val CHAT_SEND = "chat.send"
+    const val CHAT_ABORT = "chat.abort"
     const val CHANNEL_SEND = "channel.send"
     const val CHANNEL_LIST = "channel.list"
-    const val SESSION_CREATE = "session.create"
+    const val SESSION_CREATE = "sessions.create"
     const val SESSION_RESET = "sessions.reset"
     const val SESSION_LIST = "sessions.list"
     const val SESSION_RUN = "session.run"
     const val CHAT_HISTORY = "chat.history"
     const val CONFIG_GET = "config.get"
+    const val AGENTS_LIST = "agents.list"
     const val SYSTEM_PRESENCE = "system-presence"
 }
 
@@ -113,7 +115,8 @@ data class ChatMessage(
     @SerializedName("id") val id: String,
     @SerializedName("role") val role: String,  // "user" or "assistant"
     @SerializedName("content") val content: String,
-    @SerializedName("timestamp") val timestamp: Long = System.currentTimeMillis()
+    @SerializedName("timestamp") val timestamp: Long = System.currentTimeMillis(),
+    @SerializedName("attachments") val attachments: List<ChatAttachment> = emptyList()
 ) {
     fun toJson(): String = gson.toJson(this)
 
@@ -122,13 +125,22 @@ data class ChatMessage(
     }
 }
 
+/** Embedded image attachment retained with a chat message. */
+data class ChatAttachment(
+    @SerializedName("type") val type: String = "image",
+    @SerializedName("mimeType") val mimeType: String? = null,
+    @SerializedName("fileName") val fileName: String? = null,
+    @SerializedName("base64") val base64: String? = null
+)
+
 /**
  * Agent has acknowledged the request but no content yet.
  * Glasses should show a thinking/processing indicator.
  */
 data class AgentThinking(
     @SerializedName("type") val type: String = "agent_thinking",
-    @SerializedName("id") val id: String
+    @SerializedName("id") val id: String,
+    @SerializedName("phase") val phase: String = "thinking",
 ) {
     fun toJson(): String = gson.toJson(this)
 
@@ -160,13 +172,34 @@ data class ChatStream(
  */
 data class ChatStreamEnd(
     @SerializedName("type") val type: String = "chat_stream_end",
-    @SerializedName("id") val id: String
+    @SerializedName("id") val id: String,
+    @SerializedName("state") val state: String = "final"
 ) {
     fun toJson(): String = gson.toJson(this)
 
     companion object {
         fun fromJson(json: String): ChatStreamEnd = gson.fromJson(json, ChatStreamEnd::class.java)
     }
+}
+
+/** Active OpenClaw run state mirrored from the phone to the glasses. */
+data class RunStateUpdate(
+    @SerializedName("type") val type: String = "run_state",
+    @SerializedName("state") val state: String,
+    @SerializedName("canAbort") val canAbort: Boolean,
+    @SerializedName("error") val error: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+data class TalkModeStateUpdate(
+    @SerializedName("type") val type: String = "talk_mode_state",
+    @SerializedName("enabled") val enabled: Boolean,
+    @SerializedName("phase") val phase: String,
+    @SerializedName("interruptible") val interruptible: Boolean,
+    @SerializedName("error") val error: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
 }
 
 /**
@@ -185,6 +218,24 @@ data class ConnectionUpdate(
     }
 }
 
+/** Valid range and fallback for one glasses chat-scroll gesture. */
+object ScrollSettings {
+    const val MIN_MESSAGES_PER_STEP = 1
+    const val MAX_MESSAGES_PER_STEP = 5
+    const val DEFAULT_MESSAGES_PER_STEP = 1
+
+    fun normalizeMessagesPerStep(value: Int): Int =
+        value.coerceIn(MIN_MESSAGES_PER_STEP, MAX_MESSAGES_PER_STEP)
+}
+
+/** Phone-controlled chat scroll step sent to the glasses HUD. */
+data class ScrollSettingsUpdate(
+    @SerializedName("type") val type: String = "scroll_settings",
+    @SerializedName("messagesPerStep") val messagesPerStep: Int = ScrollSettings.DEFAULT_MESSAGES_PER_STEP,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
 /**
  * List of available sessions from OpenClaw.
  */
@@ -201,6 +252,16 @@ data class SessionListUpdate(
     }
 }
 
+/** Progress or failure feedback for a glasses-initiated session operation. */
+data class SessionOperationUpdate(
+    @SerializedName("type") val type: String = "session_operation",
+    @SerializedName("operation") val operation: String,
+    @SerializedName("state") val state: String,
+    @SerializedName("error") val error: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
 data class SessionInfo(
     @SerializedName("key") val key: String,
     @SerializedName("displayName") val displayName: String? = null,
@@ -213,9 +274,36 @@ data class SessionInfo(
     val name: String get() = label ?: displayName ?: derivedTitle ?: key
 }
 
+/** Available OpenClaw agents and the agent selected by the active session. */
+data class AgentListUpdate(
+    @SerializedName("type") val type: String = "agent_list",
+    @SerializedName("agents") val agents: List<AgentInfo>,
+    @SerializedName("currentAgentId") val currentAgentId: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+data class AgentInfo(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("model") val model: String? = null
+)
+
 // ============================================
 // Glasses -> Phone Messages
 // ============================================
+
+/**
+ * Requests the current phone/OpenClaw state and identifies the running glasses build.
+ * Version fields are nullable so phones remain compatible with older glasses builds.
+ */
+data class GlassesStateRequest(
+    @SerializedName("type") val type: String = "request_state",
+    @SerializedName("versionName") val versionName: String? = null,
+    @SerializedName("versionCode") val versionCode: Int? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
 
 /**
  * User input from glasses (text and optional photo).
@@ -359,12 +447,94 @@ data class TtsToggle(
 data class TtsState(
     @SerializedName("type") val type: String = "tts_state",
     @SerializedName("enabled") val enabled: Boolean,
-    @SerializedName("voiceName") val voiceName: String? = null
+    @SerializedName("voiceName") val voiceName: String? = null,
+    @SerializedName("provider") val provider: String? = null,
+    @SerializedName("playbackState") val playbackState: String = "idle",
+    @SerializedName("canReplay") val canReplay: Boolean = false,
 ) {
     fun toJson(): String = gson.toJson(this)
 
     companion object {
         fun fromJson(json: String): TtsState = gson.fromJson(json, TtsState::class.java)
+    }
+}
+
+/** Stop or replay speech without changing the enabled preference. */
+data class TtsControl(
+    @SerializedName("type") val type: String = "tts_control",
+    @SerializedName("action") val action: String,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+// ============================================
+// Ambient HUD Protocol (Phone <-> Glasses)
+// ============================================
+
+data class HudCardAction(
+    @SerializedName("id") val id: String,
+    @SerializedName("label") val label: String,
+)
+
+/** A short, actionable card that may be shown without opening the chat. */
+data class HudCard(
+    @SerializedName("type") val type: String = "hud_card",
+    @SerializedName("id") val id: String,
+    @SerializedName("source") val source: String,
+    @SerializedName("title") val title: String,
+    @SerializedName("body") val body: String,
+    @SerializedName("priority") val priority: String = "normal",
+    @SerializedName("timestamp") val timestamp: Long = System.currentTimeMillis(),
+    @SerializedName("expiresAt") val expiresAt: Long? = null,
+    @SerializedName("actions") val actions: List<HudCardAction> = emptyList(),
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+data class HudCardActionRequest(
+    @SerializedName("type") val type: String = "hud_card_action",
+    @SerializedName("cardId") val cardId: String,
+    @SerializedName("actionId") val actionId: String,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+/** Live microphone caption state. Translation is optional and never replaces source text. */
+data class LiveCaptionUpdate(
+    @SerializedName("type") val type: String = "live_caption",
+    @SerializedName("enabled") val enabled: Boolean,
+    @SerializedName("sourceText") val sourceText: String = "",
+    @SerializedName("translatedText") val translatedText: String? = null,
+    @SerializedName("sourceLanguage") val sourceLanguage: String? = null,
+    @SerializedName("targetLanguage") val targetLanguage: String? = null,
+    @SerializedName("error") val error: String? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+/** Canonical camera commands understood by phone and glasses voice paths. */
+object VisionCommands {
+    val phrases = setOf(
+        "read this",
+        "lies das",
+        "translate this",
+        "übersetze das",
+        "identify this",
+        "erkenne das",
+        "remember this",
+        "merk dir das",
+    )
+
+    fun promptFor(command: String): String? = when (command.trim().lowercase()) {
+        "read this", "lies das" ->
+            "Read all visible text in this photo. Preserve important structure and summarize only if needed."
+        "translate this", "übersetze das" ->
+            "Read all visible text in this photo and translate it into the user's preferred language. Show the translation first."
+        "identify this", "erkenne das" ->
+            "Identify the main object, place, product, or situation in this photo and provide the most useful concise context."
+        "remember this", "merk dir das" ->
+            "Create and save a concise memory note about the important thing shown in this photo. State what you remembered."
+        else -> null
     }
 }
 

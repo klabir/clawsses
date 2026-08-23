@@ -89,7 +89,7 @@ class GlassesConnectionManager(private val context: Context) {
     // Auto-reconnect: when glasses disconnect unexpectedly (e.g. glasses app restart),
     // automatically attempt to reconnect using saved BT credentials with exponential backoff.
     private val reconnectScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var reconnectJob: Job? = null
+    @Volatile private var reconnectJob: Job? = null
     private var userInitiatedDisconnect = false
     private var reconnectAttempts = 0
     private var currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
@@ -125,7 +125,7 @@ class GlassesConnectionManager(private val context: Context) {
         if (RokidSdkManager.isReady() && RokidSdkManager.isConnected()) {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
-            Log.i(TAG, "SDK already connected on init — restored Connected state ($name)")
+            Log.i(TAG, "SDK already connected on init; restored connected state")
         }
     }
 
@@ -186,17 +186,27 @@ class GlassesConnectionManager(private val context: Context) {
 
         RokidSdkManager.onWifiP2PDisconnected = {
             _wifiP2PConnected.value = false
+            restoreBluetoothConnectionStateAfterWifiAttempt()
             Log.d(TAG, "SDK: WiFi P2P disconnected")
         }
 
         RokidSdkManager.onWifiP2PFailed = {
             _wifiP2PConnected.value = false
+            restoreBluetoothConnectionStateAfterWifiAttempt()
             Log.e(TAG, "SDK: WiFi P2P failed")
         }
 
         RokidSdkManager.onMessageFromGlasses = handleGlassesMsg@{ cmd, caps ->
             // Notify wake signal manager of activity (glasses is responsive)
             wakeSignalManager.handleGlassesActivity()
+
+            // The vendor bridge also emits plain-text transport status commands such as
+            // "Wifi_Status" on this channel. Clawsses' application protocol is JSON-only;
+            // do not forward vendor control traffic into the JSON message handler.
+            if (!cmd.trimStart().startsWith("{")) {
+                Log.d(TAG, "Ignored non-JSON SDK status command")
+                return@handleGlassesMsg
+            }
 
             // Check for wake_ack message
             try {
@@ -247,7 +257,7 @@ class GlassesConnectionManager(private val context: Context) {
             } else {
                 // Add new device
                 currentDevices.add(discoveredDevice)
-                Log.d(TAG, "Discovered device: $deviceName ($address) RSSI: $rssi")
+                Log.d(TAG, "Discovered candidate Rokid device (RSSI=$rssi)")
             }
 
             _discoveredDevices.value = currentDevices
@@ -329,7 +339,7 @@ class GlassesConnectionManager(private val context: Context) {
         stopScanning()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.Connecting
-        Log.d(TAG, "Connecting to device: ${device.name} (${device.address})")
+        Log.d(TAG, "Connecting to selected Rokid device")
 
         // Use SDK to establish connection
         RokidSdkManager.initBluetooth(device.device)
@@ -342,7 +352,7 @@ class GlassesConnectionManager(private val context: Context) {
     fun connectWithSavedInfo(socketUuid: String, macAddress: String) {
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.Connecting
-        Log.d(TAG, "Reconnecting with socketUuid=$socketUuid, mac=$macAddress")
+        Log.d(TAG, "Reconnecting with saved device identifiers")
 
         RokidSdkManager.connectBluetooth(socketUuid, macAddress)
     }
@@ -413,7 +423,18 @@ class GlassesConnectionManager(private val context: Context) {
         }
 
         _connectionState.value = ConnectionState.InitializingWifiP2P
-        return RokidSdkManager.initWifiP2P()
+        val started = RokidSdkManager.initWifiP2P()
+        if (!started) restoreBluetoothConnectionStateAfterWifiAttempt()
+        return started
+    }
+
+    private fun restoreBluetoothConnectionStateAfterWifiAttempt() {
+        if (_connectionState.value !is ConnectionState.InitializingWifiP2P) return
+        _connectionState.value = if (RokidSdkManager.isConnected()) {
+            ConnectionState.Connected(RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses")
+        } else {
+            ConnectionState.Disconnected
+        }
     }
 
     /**
@@ -448,6 +469,14 @@ class GlassesConnectionManager(private val context: Context) {
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
 
+        if (RokidSdkManager.isConnected()) {
+            val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
+            _connectionState.value = ConnectionState.Connected(name)
+            resetReconnectState()
+            Log.i(TAG, "Auto-reconnect skipped: SDK connection is already active")
+            return
+        }
+
         // Check if we have saved connection info
         if (!RokidSdkManager.hasSavedConnectionInfo()) {
             Log.w(TAG, "Cannot auto-reconnect: no saved connection info")
@@ -464,6 +493,14 @@ class GlassesConnectionManager(private val context: Context) {
         reconnectJob = reconnectScope.launch {
             delay(delayMs)
 
+            if (RokidSdkManager.isConnected()) {
+                val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
+                _connectionState.value = ConnectionState.Connected(name)
+                resetReconnectState()
+                Log.i(TAG, "Pending auto-reconnect cancelled: SDK connection recovered")
+                return@launch
+            }
+
             // Update state before attempting
             reconnectAttempts = attempt
 
@@ -478,6 +515,13 @@ class GlassesConnectionManager(private val context: Context) {
                 // Timeout: if no callback fires within RECONNECT_TIMEOUT_MS, the SDK
                 // silently failed. Schedule another attempt.
                 delay(RECONNECT_TIMEOUT_MS)
+                if (RokidSdkManager.isConnected()) {
+                    val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
+                    _connectionState.value = ConnectionState.Connected(name)
+                    resetReconnectState()
+                    Log.i(TAG, "Auto-reconnect completed: active SDK connection confirmed")
+                    return@launch
+                }
                 val state = _connectionState.value
                 if (state is ConnectionState.Reconnecting || state is ConnectionState.Connecting) {
                     Log.w(TAG, "Auto-reconnect attempt $attempt timed out (no SDK callback)")
@@ -540,6 +584,19 @@ class GlassesConnectionManager(private val context: Context) {
         userInitiatedDisconnect = true // prevent auto-reconnect from re-triggering
         RokidSdkManager.disconnect()
         _connectionState.value = ConnectionState.Disconnected
+    }
+
+    /**
+     * Release jobs owned by this manager without disconnecting the shared SDK session.
+     * Activity/Compose recreation can otherwise leave an old reconnect loop running,
+     * which may restart Bluetooth after a newer manager is already connected.
+     */
+    fun dispose() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        wakeSignalManager.dispose()
+        reconnectScope.cancel()
+        Log.d(TAG, "Disposed connection manager jobs")
     }
 
     // ============== Debug Mode Methods ==============

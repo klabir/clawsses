@@ -6,6 +6,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val clawssesVersionCode = providers.gradleProperty("clawsses.versionCode").get().toInt()
+val clawssesVersionName = providers.gradleProperty("clawsses.versionName").get()
+
 // Load Rokid credentials from local.properties (needed for SN verification)
 val localProperties = Properties().apply {
     val localPropertiesFile = rootProject.file("local.properties")
@@ -22,8 +25,8 @@ android {
         applicationId = "com.clawsses.phone"
         minSdk = 28  // Required by CXR-M SDK
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = clawssesVersionCode
+        versionName = clawssesVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -87,12 +90,13 @@ dependencies {
     implementation(project(":shared"))
 
     // Rokid CXR-M SDK (Phone side)
-    implementation("com.rokid.cxr:client-m:1.0.8")
+    implementation("com.rokid.cxr:client-m:1.0.9")
 
     // Android Core
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.security:security-crypto:1.1.0")
 
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))

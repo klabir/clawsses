@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -94,7 +95,9 @@ const val MAX_PHOTOS = 4
 enum class AgentState {
     IDLE,       // No active request
     THINKING,   // Ack received, waiting for first chunk
-    STREAMING   // Receiving streaming chunks
+    REASONING,  // Gateway reports a private reasoning phase (content is not forwarded)
+    STREAMING,  // Receiving streaming chunks
+    ABORTING    // A targeted chat.abort request is in flight
 }
 
 /**
@@ -103,6 +106,7 @@ enum class AgentState {
 enum class MenuBarItem(val icon: String, val label: String) {
     PHOTO("\uD83D\uDCF7", "Photo"),
     SESSION("\u25CE", "Sess"),
+    AGENT("\u25C6", "Agent"),
     SIZE("\u2588", "Size"),  // Icon overridden dynamically based on next HudPosition
     MORE("\u2026", "More"),
 }
@@ -116,7 +120,12 @@ enum class MoreMenuItem(val icon: String, val label: String, val displaySize: Hu
     FONT_COMFORTABLE("Aa", "Comfortable", HudDisplaySize.COMFORTABLE),
     FONT_LARGE("Aa", "Large", HudDisplaySize.LARGE),
     SLASH("/", "Slash Cmds"),
+    TALK("\u25C9", "Talk Mode"),
+    CAPTIONS("CC", "Live Captions"),
     VOICE("\uD83D\uDD0A", "Voice"),  // speaker icon - label is dynamic
+    TTS_STOP("\u25A0", "Stop Voice"),
+    TTS_REPLAY("\u21BB", "Replay Voice"),
+    STOP_RUN("\u25A0", "Stop Run"),
 }
 
 /**
@@ -159,6 +168,32 @@ data class SessionPickerInfo(
     val kind: String? = null,
     val hasUnread: Boolean = false,
     val updatedAt: Long? = null
+)
+
+data class AgentPickerInfo(
+    val id: String,
+    val name: String,
+    val model: String? = null
+)
+
+data class HudCardActionDisplay(val id: String, val label: String)
+
+data class HudCardDisplay(
+    val id: String,
+    val source: String,
+    val title: String,
+    val body: String,
+    val priority: String,
+    val expiresAt: Long?,
+    val actions: List<HudCardActionDisplay>,
+)
+
+data class LiveCaptionDisplay(
+    val sourceText: String = "",
+    val translatedText: String? = null,
+    val sourceLanguage: String? = null,
+    val targetLanguage: String? = null,
+    val error: String? = null,
 )
 
 /** Format a millisecond epoch timestamp as a short relative time string. */
@@ -204,6 +239,15 @@ data class ChatHudState(
     val currentSessionKey: String? = null,
     val currentSessionName: String? = null,
     val selectedSessionIndex: Int = 0,
+    val isSessionOperationPending: Boolean = false,
+    val sessionOperationMessage: String? = null,
+    val sessionOperationError: String? = null,
+    // Agent picker
+    val showAgentPicker: Boolean = false,
+    val availableAgents: List<AgentPickerInfo> = emptyList(),
+    val currentAgentId: String? = null,
+    val currentAgentName: String? = null,
+    val selectedAgentIndex: Int = 0,
     // More menu
     val showMoreMenu: Boolean = false,
     val selectedMoreIndex: Int = 0,
@@ -229,7 +273,17 @@ data class ChatHudState(
     val showWakeNotification: Boolean = false,
     val wakeReason: String? = null,  // "stream_content", "new_message", "cron_message"
     // TTS state (voice responses)
-    val ttsEnabled: Boolean = false
+    val ttsEnabled: Boolean = false,
+    val ttsPlaybackState: String = "idle",
+    val ttsCanReplay: Boolean = false,
+    val runState: String = "idle",
+    val runCanAbort: Boolean = false,
+    val talkModeEnabled: Boolean = false,
+    val talkModePhase: String = "off",
+    val hudCards: List<HudCardDisplay> = emptyList(),
+    val selectedHudCardActionIndex: Int = 0,
+    val liveCaptionEnabled: Boolean = false,
+    val liveCaption: LiveCaptionDisplay? = null,
 ) {
     /** Total number of messages */
     val totalMessages: Int get() = messages.size
@@ -324,15 +378,15 @@ fun HudScreen(
                 val scrollDistance = -(itemsToScroll * avgItemHeight)
                 listState.animateScrollBy(scrollDistance)
             } else if (state.scrollPosition == totalItems - 1) {
-                // Scrolling to last item: use a large offset so the bottom of the
-                // item aligns with the viewport bottom (Compose clamps internally).
-                // During streaming, use instant scroll — animated scroll gets
-                // cancelled and restarted on every chunk, causing visible flicker.
+                // Align the last item, then continue to the real pixel-level end.
+                // The event handler only targets the last item while tail-following.
                 val isStreaming = state.messages.lastOrNull()?.isStreaming == true
                 if (isStreaming) {
-                    listState.scrollToItem(state.scrollPosition, Int.MAX_VALUE)
+                    listState.scrollToItem(state.scrollPosition)
+                    listState.scrollBy(Float.MAX_VALUE)
                 } else {
-                    listState.animateScrollToItem(state.scrollPosition, Int.MAX_VALUE)
+                    listState.animateScrollToItem(state.scrollPosition)
+                    listState.animateScrollBy(Float.MAX_VALUE)
                 }
             } else {
                 listState.animateScrollToItem(state.scrollPosition)
@@ -415,6 +469,8 @@ fun HudScreen(
                     isLoadingMoreHistory = state.isLoadingMoreHistory,
                     showWakeNotification = state.showWakeNotification,
                     wakeReason = state.wakeReason,
+                    talkModeEnabled = state.talkModeEnabled,
+                    talkModePhase = state.talkModePhase,
                     fontFamily = monoFontFamily,
                     fontSize = fontSize
                 )
@@ -479,6 +535,22 @@ fun HudScreen(
                 sessions = state.availableSessions,
                 currentSessionKey = state.currentSessionKey,
                 selectedIndex = state.selectedSessionIndex,
+                isPending = state.isSessionOperationPending,
+                statusMessage = state.sessionOperationMessage,
+                errorMessage = state.sessionOperationError,
+                fontFamily = monoFontFamily
+            )
+        }
+
+        AnimatedVisibility(
+            visible = state.showAgentPicker,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            AgentPickerOverlay(
+                agents = state.availableAgents,
+                currentAgentId = state.currentAgentId,
+                selectedIndex = state.selectedAgentIndex,
                 fontFamily = monoFontFamily
             )
         }
@@ -493,7 +565,39 @@ fun HudScreen(
                 selectedIndex = state.selectedMoreIndex,
                 currentDisplaySize = state.displaySize,
                 ttsEnabled = state.ttsEnabled,
+                ttsPlaybackState = state.ttsPlaybackState,
+                ttsCanReplay = state.ttsCanReplay,
+                runState = state.runState,
+                runCanAbort = state.runCanAbort,
+                talkModeEnabled = state.talkModeEnabled,
+                liveCaptionEnabled = state.liveCaptionEnabled,
                 fontFamily = monoFontFamily
+            )
+        }
+
+        AnimatedVisibility(
+            visible = state.hudCards.isNotEmpty(),
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            state.hudCards.firstOrNull()?.let { card ->
+                HudCardOverlay(
+                    card = card,
+                    selectedActionIndex = state.selectedHudCardActionIndex,
+                    queuedCount = state.hudCards.size,
+                    fontFamily = monoFontFamily,
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = state.liveCaptionEnabled && state.hudCards.isEmpty(),
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            LiveCaptionOverlay(
+                caption = state.liveCaption,
+                fontFamily = monoFontFamily,
             )
         }
 
@@ -549,6 +653,8 @@ private fun TopBar(
     isLoadingMoreHistory: Boolean = false,
     showWakeNotification: Boolean = false,
     wakeReason: String? = null,
+    talkModeEnabled: Boolean = false,
+    talkModePhase: String = "off",
     fontFamily: FontFamily,
     fontSize: androidx.compose.ui.unit.TextUnit
 ) {
@@ -621,10 +727,13 @@ private fun TopBar(
                     "processing$modeSuffix $processingDots"
                 }
                 voiceState is VoiceInputState.Error -> "voice error"
+                talkModeEnabled && agentState == AgentState.IDLE -> "talk $talkModePhase"
                 isLoadingMoreHistory -> "loading..."
                 agentState == AgentState.IDLE -> if (isConnected) "connected" else "disconnected"
                 agentState == AgentState.THINKING -> "thinking..."
+                agentState == AgentState.REASONING -> "reasoning..."
                 agentState == AgentState.STREAMING -> "streaming..."
+                agentState == AgentState.ABORTING -> "stopping..."
                 else -> ""
             }
             Text(
@@ -772,9 +881,10 @@ private fun ChatContentArea(
                 }
 
                 // Thinking indicator (shown after last message when agent is thinking)
-                if (agentState == AgentState.THINKING) {
+                if (agentState == AgentState.THINKING || agentState == AgentState.REASONING) {
                     item {
                         ThinkingIndicator(
+                            label = if (agentState == AgentState.REASONING) "reasoning" else "thinking",
                             fontSize = fontSize,
                             fontFamily = fontFamily
                         )
@@ -865,6 +975,7 @@ private fun ChatMessageItem(
 
 @Composable
 private fun ThinkingIndicator(
+    label: String,
     fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily
 ) {
@@ -882,7 +993,7 @@ private fun ThinkingIndicator(
             .graphicsLayer { this.alpha = alpha }
     ) {
         Text(
-            text = "...",
+            text = "$label...",
             color = HudColors.cyan,
             fontSize = (fontSize.value + 2).sp,
             fontFamily = fontFamily,
@@ -975,7 +1086,7 @@ private fun InputStagingArea(
 ) {
     val commandFontSize = 8.sp  // Match menu bar fixed size
     val photoCount = photos.size
-    val hasContent = text.isNotEmpty()
+    val hasContent = text.isNotEmpty() || photos.isNotEmpty()
 
     // Blinking cursor for processing state
     val cursorVisible = if (isProcessing) {
@@ -1290,6 +1401,9 @@ private fun SessionPickerOverlay(
     sessions: List<SessionPickerInfo>,
     currentSessionKey: String?,
     selectedIndex: Int,
+    isPending: Boolean,
+    statusMessage: String?,
+    errorMessage: String?,
     fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
@@ -1323,6 +1437,27 @@ private fun SessionPickerOverlay(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            statusMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = if (isPending) HudColors.cyan else HudColors.dimText,
+                    fontSize = 12.sp,
+                    fontFamily = fontFamily
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            errorMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = HudColors.error,
+                    fontSize = 12.sp,
+                    fontFamily = fontFamily,
+                    maxLines = 3
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             if (sessions.isEmpty()) {
                 Text(
@@ -1413,11 +1548,226 @@ private fun SessionPickerOverlay(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
+                text = if (isPending) {
+                    "Please wait  2\u00D7TAP Cancel"
+                } else {
+                    "\u2191\u2193 Navigate  TAP Select  2\u00D7TAP Cancel"
+                },
+                color = HudColors.dimText,
+                fontSize = 10.sp,
+                fontFamily = fontFamily
+            )
+        }
+    }
+}
+
+// ============================================================================
+// AGENT PICKER OVERLAY
+// ============================================================================
+
+@Composable
+private fun AgentPickerOverlay(
+    agents: List<AgentPickerInfo>,
+    currentAgentId: String?,
+    selectedIndex: Int,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(selectedIndex) {
+        if (agents.isNotEmpty()) listState.animateScrollToItem(selectedIndex)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.9f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(24.dp)
+        ) {
+            Text(
+                text = "SELECT AGENT",
+                color = HudColors.cyan,
+                fontSize = 16.sp,
+                fontFamily = fontFamily,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (agents.isEmpty()) {
+                Text(
+                    text = "No agents available",
+                    color = HudColors.dimText,
+                    fontSize = 14.sp,
+                    fontFamily = fontFamily
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    itemsIndexed(agents) { index, agent ->
+                        val isSelected = index == selectedIndex
+                        val isCurrent = agent.id == currentAgentId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (isSelected) HudColors.green.copy(alpha = 0.3f)
+                                    else Color.Transparent
+                                )
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (isSelected) "\u25B6" else " ",
+                                    color = HudColors.green,
+                                    fontSize = 14.sp,
+                                    fontFamily = fontFamily
+                                )
+                                Column {
+                                    Text(
+                                        text = agent.name,
+                                        color = if (isSelected) HudColors.green else HudColors.primaryText,
+                                        fontSize = 14.sp,
+                                        fontFamily = fontFamily,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1
+                                    )
+                                    agent.model?.takeIf { it.isNotBlank() }?.let { model ->
+                                        Text(
+                                            text = model,
+                                            color = HudColors.dimText,
+                                            fontSize = 10.sp,
+                                            fontFamily = fontFamily,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                            if (isCurrent) {
+                                Text(text = "\u25CF", color = HudColors.cyan, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
                 text = "\u2191\u2193 Navigate  TAP Select  2\u00D7TAP Cancel",
                 color = HudColors.dimText,
                 fontSize = 10.sp,
                 fontFamily = fontFamily
             )
+        }
+    }
+}
+
+// ============================================================================
+// AMBIENT CARD / LIVE CAPTION OVERLAYS
+// ============================================================================
+
+@Composable
+private fun HudCardOverlay(
+    card: HudCardDisplay,
+    selectedActionIndex: Int,
+    queuedCount: Int,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.92f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp)
+                .border(1.dp, if (card.priority == "high") HudColors.cyan else HudColors.green, RoundedCornerShape(12.dp))
+                .padding(18.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(card.source.uppercase(), color = HudColors.cyan, fontSize = 11.sp, fontFamily = fontFamily)
+                if (queuedCount > 1) {
+                    Text("+${queuedCount - 1}", color = HudColors.dimText, fontSize = 10.sp, fontFamily = fontFamily)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(card.title, color = HudColors.green, fontSize = 17.sp, fontFamily = fontFamily, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text(card.body, color = HudColors.primaryText, fontSize = 13.sp, fontFamily = fontFamily, maxLines = 9)
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                card.actions.forEachIndexed { index, action ->
+                    Text(
+                        text = if (index == selectedActionIndex) "[${action.label}]" else action.label,
+                        color = if (index == selectedActionIndex) HudColors.green else HudColors.dimText,
+                        fontSize = 12.sp,
+                        fontFamily = fontFamily,
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("SWIPE Action  TAP Select  2×TAP Dismiss", color = HudColors.dimText, fontSize = 9.sp, fontFamily = fontFamily)
+        }
+    }
+}
+
+@Composable
+private fun LiveCaptionOverlay(
+    caption: LiveCaptionDisplay?,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 14.dp, vertical = 24.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.88f), RoundedCornerShape(10.dp))
+                .border(1.dp, HudColors.cyan.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+                .padding(14.dp),
+        ) {
+            Text("LIVE CAPTIONS", color = HudColors.cyan, fontSize = 10.sp, fontFamily = fontFamily, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                caption?.sourceText?.takeIf { it.isNotBlank() } ?: "Listening…",
+                color = HudColors.primaryText,
+                fontSize = 15.sp,
+                fontFamily = fontFamily,
+            )
+            caption?.translatedText?.takeIf { it.isNotBlank() }?.let { translated ->
+                Spacer(Modifier.height(8.dp))
+                Text(translated, color = HudColors.green, fontSize = 15.sp, fontFamily = fontFamily)
+            }
+            caption?.error?.let { error ->
+                Spacer(Modifier.height(6.dp))
+                Text(error, color = Color(0xFFFF8A80), fontSize = 10.sp, fontFamily = fontFamily)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("2×TAP to stop", color = HudColors.dimText, fontSize = 9.sp, fontFamily = fontFamily)
         }
     }
 }
@@ -1431,6 +1781,12 @@ private fun MoreMenuOverlay(
     selectedIndex: Int,
     currentDisplaySize: HudDisplaySize,
     ttsEnabled: Boolean,
+    ttsPlaybackState: String,
+    ttsCanReplay: Boolean,
+    runState: String,
+    runCanAbort: Boolean,
+    talkModeEnabled: Boolean,
+    liveCaptionEnabled: Boolean,
     fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
@@ -1461,12 +1817,22 @@ private fun MoreMenuOverlay(
                     val isSelected = itemIndex == selectedIndex
                     val isActive = when (item) {
                         MoreMenuItem.VOICE -> ttsEnabled
+                        MoreMenuItem.TTS_STOP -> ttsPlaybackState == "playing" || ttsPlaybackState == "synthesizing"
+                        MoreMenuItem.TTS_REPLAY -> ttsCanReplay
+                        MoreMenuItem.STOP_RUN -> runCanAbort || runState == "aborting"
+                        MoreMenuItem.TALK -> talkModeEnabled
+                        MoreMenuItem.CAPTIONS -> liveCaptionEnabled
                         else -> item.displaySize == currentDisplaySize
                     }
 
                     // Dynamic label for VOICE item
                     val displayLabel = when (item) {
                         MoreMenuItem.VOICE -> if (ttsEnabled) "Voice On" else "Voice Off"
+                        MoreMenuItem.TTS_STOP -> "Stop Voice"
+                        MoreMenuItem.TTS_REPLAY -> "Replay Voice"
+                        MoreMenuItem.STOP_RUN -> if (runState == "aborting") "Stopping Run" else "Stop Run"
+                        MoreMenuItem.TALK -> if (talkModeEnabled) "Talk On" else "Talk Off"
+                        MoreMenuItem.CAPTIONS -> if (liveCaptionEnabled) "Captions On" else "Captions Off"
                         else -> item.label
                     }
 

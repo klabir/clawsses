@@ -1,0 +1,4 @@
+# Copy this file to local.properties, restrict it to your user, and replace the placeholders.
+# local.properties is ignored by git. Do not publish APKs built with production credentials.
+rokid.clientSecret=your-client-secret
+rokid.accessKey=your-access-key

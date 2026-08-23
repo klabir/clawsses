@@ -2,6 +2,7 @@ package com.clawsses.phone.ui.settings
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,8 +13,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Search
@@ -64,6 +65,11 @@ fun GlassesSection(
     cachedDeviceName: String?,
     wakeOnStreamEnabled: Boolean = true,
     onWakeOnStreamChange: (Boolean) -> Unit = {},
+    savePhotosToGallery: Boolean = false,
+    onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
+    scrollMessagesPerStep: Int = 1,
+    onScrollMessagesPerStepChange: (Int) -> Unit = {},
+    onSwitchToHiRokid: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -104,6 +110,8 @@ fun GlassesSection(
                         cachedDeviceName = cachedDeviceName,
                         wakeOnStreamEnabled = wakeOnStreamEnabled,
                         onWakeOnStreamChange = onWakeOnStreamChange,
+                        savePhotosToGallery = savePhotosToGallery,
+                        onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
                         onDisconnect = onDisconnectGlasses,
                         onInitWifiP2P = onInitWifiP2P,
                         onClearSn = onClearSn,
@@ -114,6 +122,70 @@ fun GlassesSection(
                         message = state.message,
                         onRetry = onStartScanning,
                     )
+            }
+        }
+
+        if (!debugModeEnabled) {
+            Spacer(Modifier.height(12.dp))
+            ScrollStepControl(
+                selectedStep = scrollMessagesPerStep,
+                onStepSelected = onScrollMessagesPerStepChange,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = onSwitchToHiRokid, modifier = Modifier.fillMaxWidth()) {
+                Text("Switch to Hi Rokid")
+            }
+            Text(
+                "Disconnects Clawsses before opening the official app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScrollStepControl(
+    selectedStep: Int,
+    onStepSelected: (Int) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Messages per scroll", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "One glasses swipe moves this many chat messages",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                (1..5).forEach { option ->
+                    if (option == selectedStep) {
+                        Button(
+                            onClick = { onStepSelected(option) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 8.dp),
+                        ) {
+                            Text(option.toString())
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { onStepSelected(option) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 8.dp),
+                        ) {
+                            Text(option.toString())
+                        }
+                    }
+                }
             }
         }
     }
@@ -292,6 +364,8 @@ private fun ConnectedContent(
     cachedDeviceName: String?,
     wakeOnStreamEnabled: Boolean,
     onWakeOnStreamChange: (Boolean) -> Unit,
+    savePhotosToGallery: Boolean,
+    onSavePhotosToGalleryChange: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
     onInitWifiP2P: () -> Unit,
     onClearSn: () -> Unit,
@@ -370,6 +444,35 @@ private fun ConnectedContent(
             Switch(
                 checked = wakeOnStreamEnabled,
                 onCheckedChange = onWakeOnStreamChange,
+            )
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Save Photos", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Store captured images in Pictures/Clawsses",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                checked = savePhotosToGallery,
+                onCheckedChange = onSavePhotosToGalleryChange,
             )
         }
     }
@@ -467,7 +570,7 @@ private fun ErrorContent(
         onClick = onRetry,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
+        Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Text("Scan for Glasses")
     }

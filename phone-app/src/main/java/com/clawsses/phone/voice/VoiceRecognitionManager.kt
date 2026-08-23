@@ -2,6 +2,8 @@ package com.clawsses.phone.voice
 
 import android.content.Context
 import android.util.Log
+import com.clawsses.phone.util.SecurePreferences
+import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,7 +44,7 @@ class VoiceRecognitionManager(private val context: Context) {
         PREFERENCE              // User prefers fallback
     }
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = SecurePreferences.create(context, PREFS_NAME)
 
     private val openAIClient = OpenAIRealtimeClient()
     private val fallbackHandler = VoiceCommandHandler(context)
@@ -155,7 +157,7 @@ class VoiceRecognitionManager(private val context: Context) {
                 onSpeechStopped?.invoke()
             },
             onFinal = { finalText ->
-                Log.i(TAG, "OpenAI final result: ${finalText.take(100)}")
+                Log.i(TAG, "OpenAI transcription completed (${finalText.length} chars)")
                 _isListening.value = false
                 _activeMode.value = RecognitionMode.NONE
 
@@ -205,8 +207,11 @@ class VoiceRecognitionManager(private val context: Context) {
         // Check for special commands
         val commands = setOf(
             "escape", "scroll up", "scroll down", "take screenshot",
-            "take photo", "switch mode", "navigate mode", "scroll mode", "command mode"
-        )
+            "take photo", "take and send photo", "foto aufnehmen",
+            "foto aufnehmen und senden", "stop talk mode", "talk mode off",
+            "talk modus stoppen", "talk modus aus", "switch mode",
+            "navigate mode", "scroll mode", "command mode"
+        ) + VisionCommands.phrases
         for (command in commands) {
             if (lowerText == command || lowerText.startsWith("$command ")) {
                 return VoiceCommandHandler.VoiceResult.Command(command)

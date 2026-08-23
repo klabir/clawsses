@@ -4,8 +4,13 @@ This document summarizes the research findings on Rokid CXR-M SDK capabilities f
 
 ## SDK Version
 
-- **CXR-M SDK**: `com.rokid.cxr:client-m:1.0.4`
+- **CXR-M SDK**: `com.rokid.cxr:client-m:1.0.9`
 - **Maven Repository**: `https://maven.rokid.com/repository/maven-public/`
+
+Version 1.0.9 is the newest release verified to complete WiFi P2P negotiation,
+APK upload, installation, and app launch with the current glasses firmware.
+CXR-M 1.2.2 was rejected after repeated hardware tests because it removed the
+P2P group immediately after discovering the same glasses.
 
 ## APK Installation API
 

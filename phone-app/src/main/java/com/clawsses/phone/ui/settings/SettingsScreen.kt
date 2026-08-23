@@ -23,8 +23,10 @@ import androidx.compose.ui.unit.sp
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.OpenClawClient
+import com.clawsses.phone.talk.TalkModeState
 import com.clawsses.phone.tts.ElevenLabsClient
 import com.clawsses.phone.tts.TtsSettingsManager
+import com.clawsses.phone.tts.TtsPlaybackState
 import com.clawsses.phone.util.isEmulator
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
@@ -56,6 +58,11 @@ fun SettingsScreen(
     // Wake on stream
     wakeOnStreamEnabled: Boolean = true,
     onWakeOnStreamChange: (Boolean) -> Unit = {},
+    savePhotosToGallery: Boolean = false,
+    onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
+    scrollMessagesPerStep: Int = 1,
+    onScrollMessagesPerStepChange: (Int) -> Unit = {},
+    onSwitchToHiRokid: () -> Unit = {},
     // Software Update
     installState: ApkInstaller.InstallState,
     sdkConnected: Boolean,
@@ -64,9 +71,21 @@ fun SettingsScreen(
     // Voice
     voiceLanguageManager: VoiceLanguageManager,
     voiceRecognitionManager: VoiceRecognitionManager? = null,
+    talkModeState: TalkModeState? = null,
+    onTalkModeChange: (Boolean) -> Unit = {},
+    liveCaptionsEnabled: Boolean = false,
+    translateCaptions: Boolean = false,
+    captionTargetLanguage: String = "English",
+    onLiveCaptionsChange: (Boolean) -> Unit = {},
+    onTranslateCaptionsChange: (Boolean) -> Unit = {},
+    onCaptionTargetLanguageChange: (String) -> Unit = {},
     // TTS
     ttsSettingsManager: TtsSettingsManager? = null,
     elevenLabsClient: ElevenLabsClient? = null,
+    ttsPlaybackState: TtsPlaybackState = TtsPlaybackState.IDLE,
+    ttsCanReplay: Boolean = false,
+    onTtsStop: () -> Unit = {},
+    onTtsReplay: () -> Unit = {},
     // Developer
     onDebugModeChange: (Boolean) -> Unit,
     // Navigation
@@ -124,6 +143,11 @@ fun SettingsScreen(
                     cachedDeviceName = cachedDeviceName,
                     wakeOnStreamEnabled = wakeOnStreamEnabled,
                     onWakeOnStreamChange = onWakeOnStreamChange,
+                    savePhotosToGallery = savePhotosToGallery,
+                    onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
+                    scrollMessagesPerStep = scrollMessagesPerStep,
+                    onScrollMessagesPerStepChange = onScrollMessagesPerStepChange,
+                    onSwitchToHiRokid = onSwitchToHiRokid,
                 )
             }
 
@@ -144,8 +168,19 @@ fun SettingsScreen(
                 VoiceSection(
                     voiceLanguageManager = voiceLanguageManager,
                     voiceRecognitionManager = voiceRecognitionManager,
+                    talkModeState = talkModeState,
+                    onTalkModeChange = onTalkModeChange,
+                    liveCaptionsEnabled = liveCaptionsEnabled,
+                    translateCaptions = translateCaptions,
+                    captionTargetLanguage = captionTargetLanguage,
+                    onLiveCaptionsChange = onLiveCaptionsChange,
+                    onTranslateCaptionsChange = onTranslateCaptionsChange,
+                    onCaptionTargetLanguageChange = onCaptionTargetLanguageChange,
                 )
             }
+
+            item { SectionHeader("Notifications") }
+            item { NotificationsSection() }
 
             // TTS section
             if (ttsSettingsManager != null && elevenLabsClient != null) {
@@ -154,6 +189,10 @@ fun SettingsScreen(
                     TtsSection(
                         ttsSettingsManager = ttsSettingsManager,
                         elevenLabsClient = elevenLabsClient,
+                        playbackState = ttsPlaybackState,
+                        canReplay = ttsCanReplay,
+                        onStop = onTtsStop,
+                        onReplay = onTtsReplay,
                     )
                 }
             }

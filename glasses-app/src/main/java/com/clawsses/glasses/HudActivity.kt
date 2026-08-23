@@ -11,8 +11,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -24,10 +24,13 @@ import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.ui.AgentState
+import com.clawsses.glasses.ui.AgentPickerInfo
 import com.clawsses.glasses.ui.ChatFocusArea
 import com.clawsses.glasses.ui.ChatHudState
 import com.clawsses.glasses.ui.DisplayMessage
 import com.clawsses.glasses.ui.HudDisplaySize
+import com.clawsses.glasses.ui.HudCardActionDisplay
+import com.clawsses.glasses.ui.HudCardDisplay
 import com.clawsses.glasses.ui.HudPosition
 import com.clawsses.glasses.ui.HudScreen
 import com.clawsses.glasses.ui.InputActionItem
@@ -38,8 +41,12 @@ import com.clawsses.glasses.ui.MAX_PHOTOS
 import com.clawsses.glasses.ui.SLASH_COMMANDS
 import com.clawsses.glasses.ui.VoiceInputState
 import com.clawsses.glasses.ui.RecognitionMode
+import com.clawsses.glasses.ui.LiveCaptionDisplay
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
+import com.clawsses.shared.GlassesStateRequest
+import com.clawsses.shared.ScrollSettings
+import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -61,8 +68,6 @@ class HudActivity : ComponentActivity() {
 
         const val DEBUG_HOST = "10.0.2.2"
         const val DEBUG_PORT = 8081
-        private const val CAMERA_PERMISSION_REQUEST = 1001
-
         /** Sentinel key for the "New Session" entry in the session picker. */
         const val NEW_SESSION_KEY = "__new_session__"
 
@@ -88,6 +93,12 @@ class HudActivity : ComponentActivity() {
 
     // Thumbnails to attach to the next user message echo from the server
 
+    // List updates also arrive during background state synchronization. These flags
+    // ensure pickers open only after an explicit menu action.
+    private var sessionPickerRequested = false
+    private var agentPickerRequested = false
+    private var scrollMessagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
+
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
 
@@ -97,6 +108,17 @@ class HudActivity : ComponentActivity() {
 
     // Wake signal handling
     private var clearWakeNotificationJob: Job? = null
+    private var cardExpiryJob: Job? = null
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            cameraCapture.capture()
+        } else {
+            Log.w(GlassesApp.TAG, "Camera permission denied")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -185,7 +207,7 @@ class HudActivity : ComponentActivity() {
                         }
                     }
                     is PhotoCaptureState.Error -> {
-                        Log.e(GlassesApp.TAG, "Photo capture error: ${photoState.message}")
+                        Log.e(GlassesApp.TAG, "Photo capture error")
                         lifecycleScope.launch {
                             delay(3000)
                             cameraCapture.clearPhoto()
@@ -230,7 +252,12 @@ class HudActivity : ComponentActivity() {
                 if (current.isConnected != isConnected) {
                     hudState.value = current.copy(isConnected = isConnected)
                     if (isConnected) {
-                        phoneConnection.sendToPhone("""{"type":"request_state"}""")
+                        phoneConnection.sendToPhone(
+                            GlassesStateRequest(
+                                versionName = BuildConfig.VERSION_NAME,
+                                versionCode = BuildConfig.VERSION_CODE,
+                            ).toJson()
+                        )
                     }
                 }
             }
@@ -404,6 +431,15 @@ class HudActivity : ComponentActivity() {
         Log.d(GlassesApp.TAG, "Gesture: $gesture, Area: ${current.focusedArea}")
 
         // If overlays are open, handle gestures for them
+        if (current.hudCards.isNotEmpty()) {
+            handleHudCardGesture(gesture)
+            return
+        }
+        if (current.liveCaptionEnabled && gesture == Gesture.DOUBLE_TAP) {
+            phoneConnection.sendToPhone("""{"type":"live_caption_toggle","enabled":false}""")
+            hudState.value = current.copy(liveCaptionEnabled = false, liveCaption = null)
+            return
+        }
         if (current.showExitConfirm) {
             handleExitConfirmGesture(gesture)
             return
@@ -418,6 +454,10 @@ class HudActivity : ComponentActivity() {
         }
         if (current.showSessionPicker) {
             handleSessionPickerGesture(gesture)
+            return
+        }
+        if (current.showAgentPicker) {
+            handleAgentPickerGesture(gesture)
             return
         }
 
@@ -446,11 +486,7 @@ class HudActivity : ComponentActivity() {
                     // Push through: CONTENT → INPUT (if staging or photos) → MENU
                     if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
                         // Default focus on last visible item in combined row
-                        val lastIndex = if (current.stagingText.isNotEmpty()) {
-                            current.photoThumbnails.size + 1  // Send button
-                        } else {
-                            maxOf(0, current.photoThumbnails.size - 1)  // last photo
-                        }
+                        val lastIndex = current.photoThumbnails.size + 1 // Send button
                         hudState.value = current.copy(
                             focusedArea = ChatFocusArea.INPUT,
                             inputActionIndex = lastIndex
@@ -471,11 +507,7 @@ class HudActivity : ComponentActivity() {
             Gesture.DOUBLE_TAP -> {
                 val current = hudState.value
                 if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                    val lastIndex = if (current.stagingText.isNotEmpty()) {
-                        current.photoThumbnails.size + 1  // Send button
-                    } else {
-                        maxOf(0, current.photoThumbnails.size - 1)  // last photo
-                    }
+                    val lastIndex = current.photoThumbnails.size + 1 // Send button
                     hudState.value = current.copy(
                         focusedArea = ChatFocusArea.INPUT,
                         inputActionIndex = lastIndex
@@ -492,16 +524,14 @@ class HudActivity : ComponentActivity() {
     }
 
     // INPUT staging area gestures
-    // Combined row: [photo0..N-1, CLEAR, SEND] when text is staged
-    // Combined row: [photo0..N-1] when only photos (buttons hidden)
+    // Combined row: [photo0..N-1, CLEAR, SEND] for text, photos, or both.
     // inputActionIndex maps into this combined row.
     private fun handleInputGesture(gesture: Gesture) {
         val current = hudState.value
         val photoCount = current.photoThumbnails.size
-        val hasText = current.stagingText.isNotEmpty()
         val clearIndex = photoCount       // CLEAR is right after photos
         val sendIndex = photoCount + 1    // SEND is rightmost
-        val totalItems = if (hasText) photoCount + 2 else photoCount  // buttons only when text staged
+        val totalItems = photoCount + 2
 
         when (gesture) {
             Gesture.SWIPE_FORWARD -> {
@@ -541,12 +571,9 @@ class HudActivity : ComponentActivity() {
                             )
                             phoneConnection.sendToPhone("""{"type":"remove_photo","index":$idx}""")
                             return
-                        } else if (hasText) {
-                            // Text staged: buttons visible, move focus to Send
-                            newPhotoCount + 1
                         } else {
-                            // No text: buttons hidden, clamp to last photo
-                            maxOf(0, newPhotoCount - 1)
+                            // Keep the primary action focused after removing a photo.
+                            newPhotoCount + 1
                         }
                         hudState.value = current.copy(
                             photoThumbnails = newThumbnails,
@@ -555,18 +582,22 @@ class HudActivity : ComponentActivity() {
                         phoneConnection.sendToPhone("""{"type":"remove_photo","index":$idx}""")
                     }
                     idx == clearIndex -> {
-                        // Clear staged text and dismiss
+                        // Clear all staged content and dismiss.
                         hudState.value = current.copy(
                             showInputStaging = false,
                             stagingText = "",
+                            photoThumbnails = emptyList(),
                             inputActionIndex = 0,
                             focusedArea = ChatFocusArea.CONTENT
                         )
+                        if (current.photoThumbnails.isNotEmpty()) {
+                            phoneConnection.sendToPhone("""{"type":"remove_photo","all":true}""")
+                        }
                     }
                     idx == sendIndex -> {
-                        // Submit the staged text and dismiss
+                        // Submit staged text and/or photos, then dismiss.
                         val text = current.stagingText.trim()
-                        if (text.isNotEmpty()) {
+                        if (text.isNotEmpty() || current.photoThumbnails.isNotEmpty()) {
                             hudState.value = current.copy(inputText = text)
                             submitInput()
                         }
@@ -597,11 +628,7 @@ class HudActivity : ComponentActivity() {
                     // Push through: MENU → INPUT (if staging or photos) → CONTENT
                     if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
                         // Focus on last visible item in combined row
-                        val lastIndex = if (current.stagingText.isNotEmpty()) {
-                            current.photoThumbnails.size + 1  // Send button
-                        } else {
-                            maxOf(0, current.photoThumbnails.size - 1)  // last photo
-                        }
+                        val lastIndex = current.photoThumbnails.size + 1 // Send button
                         hudState.value = current.copy(
                             focusedArea = ChatFocusArea.INPUT,
                             inputActionIndex = lastIndex
@@ -653,21 +680,13 @@ class HudActivity : ComponentActivity() {
 
         when (item) {
             MenuBarItem.PHOTO -> {
-                if (current.photoThumbnails.size >= MAX_PHOTOS) {
-                    Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring photo request")
-                } else if (DEBUG_MODE) {
-                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        cameraCapture.capture()
-                    } else {
-                        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
-                    }
-                } else {
-                    phoneConnection.sendToPhone("""{"type":"take_photo"}""")
-                    Log.d(GlassesApp.TAG, "Requested photo capture from phone")
-                }
+                requestPhotoCapture(sendAfterCapture = false)
             }
             MenuBarItem.SESSION -> {
                 requestSessionList()
+            }
+            MenuBarItem.AGENT -> {
+                requestAgentList()
             }
             MenuBarItem.SIZE -> {
                 val nextPosition = when (current.hudPosition) {
@@ -689,15 +708,39 @@ class HudActivity : ComponentActivity() {
         }
     }
 
+    private fun requestPhotoCapture(sendAfterCapture: Boolean, visionPrompt: String? = null) {
+        val current = hudState.value
+        if (!sendAfterCapture && current.photoThumbnails.size >= MAX_PHOTOS) {
+            Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring photo request")
+            return
+        }
+
+        if (DEBUG_MODE) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                cameraCapture.capture()
+            } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+            return
+        }
+
+        val request = JSONObject().apply {
+            put("type", "take_photo")
+            put("sendAfterCapture", sendAfterCapture)
+            visionPrompt?.let { put("visionPrompt", it) }
+        }
+        phoneConnection.sendToPhone(request.toString())
+        Log.d(GlassesApp.TAG, "Requested photo capture from phone (autoSend=$sendAfterCapture)")
+    }
+
     // ============== Submit Input ==============
 
     private fun submitInput() {
         val current = hudState.value
         val text = current.inputText.trim()
-        if (text.isEmpty()) return
-
         val thumbnails = current.photoThumbnails.toList()
-        Log.d(GlassesApp.TAG, "submitInput: text='${text.take(50)}', photos=${thumbnails.size}, focusArea=${current.focusedArea}")
+        if (text.isEmpty() && thumbnails.isEmpty()) return
+        Log.d(GlassesApp.TAG, "Submitting input (${text.length} chars, photos=${thumbnails.size}, focusArea=${current.focusedArea})")
 
         // Add user message to display immediately (optimistic update)
         val userMsg = DisplayMessage(
@@ -740,36 +783,58 @@ class HudActivity : ComponentActivity() {
         val current = hudState.value
         val totalOptions = current.availableSessions.size
 
+        if (current.isSessionOperationPending) {
+            if (gesture == Gesture.DOUBLE_TAP) {
+                sessionPickerRequested = false
+                hudState.value = current.copy(
+                    showSessionPicker = false,
+                    isSessionOperationPending = false,
+                    sessionOperationMessage = null,
+                    sessionOperationError = null
+                )
+            }
+            return
+        }
+
         when (gesture) {
             Gesture.SWIPE_FORWARD -> {
                 val newIndex = maxOf(0, current.selectedSessionIndex - 1)
                 hudState.value = current.copy(selectedSessionIndex = newIndex)
             }
             Gesture.SWIPE_BACKWARD -> {
-                val newIndex = minOf(totalOptions - 1, current.selectedSessionIndex + 1)
-                hudState.value = current.copy(selectedSessionIndex = newIndex)
+                if (totalOptions > 0) {
+                    val newIndex = minOf(totalOptions - 1, current.selectedSessionIndex + 1)
+                    hudState.value = current.copy(selectedSessionIndex = newIndex)
+                }
             }
             Gesture.TAP -> {
                 if (totalOptions > 0) {
                     val selected = current.availableSessions[current.selectedSessionIndex]
                     if (selected.key == NEW_SESSION_KEY) {
+                        sessionPickerRequested = false
                         createNewSession()
                         hudState.value = current.copy(
-                            showSessionPicker = false,
-                            currentSessionName = null
+                            showSessionPicker = true,
+                            currentSessionName = null,
+                            isSessionOperationPending = true,
+                            sessionOperationMessage = "Creating session...",
+                            sessionOperationError = null
                         )
                     } else {
                         switchToSession(selected.key)
                         hudState.value = current.copy(
                             showSessionPicker = false,
-                            currentSessionName = selected.name
+                            currentSessionName = selected.name,
+                            sessionOperationError = null
                         )
                     }
                 } else {
+                    sessionPickerRequested = false
                     hudState.value = current.copy(showSessionPicker = false)
                 }
             }
             Gesture.DOUBLE_TAP -> {
+                sessionPickerRequested = false
                 hudState.value = current.copy(showSessionPicker = false)
             }
             Gesture.LONG_PRESS -> {}
@@ -778,6 +843,46 @@ class HudActivity : ComponentActivity() {
 
     private fun createNewSession() {
         phoneConnection.sendToPhone("""{"type":"create_session"}""")
+    }
+
+    // ============== Agent Picker Gestures ==============
+
+    private fun handleAgentPickerGesture(gesture: Gesture) {
+        val current = hudState.value
+        val totalOptions = current.availableAgents.size
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                if (totalOptions > 0) {
+                    hudState.value = current.copy(
+                        selectedAgentIndex = maxOf(0, current.selectedAgentIndex - 1)
+                    )
+                }
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                if (totalOptions > 0) {
+                    hudState.value = current.copy(
+                        selectedAgentIndex = minOf(totalOptions - 1, current.selectedAgentIndex + 1)
+                    )
+                }
+            }
+            Gesture.TAP -> {
+                val selected = current.availableAgents.getOrNull(current.selectedAgentIndex)
+                if (selected != null) {
+                    switchToAgent(selected.id, selected.name)
+                    hudState.value = current.copy(
+                        showAgentPicker = false,
+                        currentAgentId = selected.id,
+                        currentAgentName = selected.name,
+                        currentSessionName = selected.name
+                    )
+                } else {
+                    hudState.value = current.copy(showAgentPicker = false)
+                }
+            }
+            Gesture.DOUBLE_TAP -> hudState.value = current.copy(showAgentPicker = false)
+            Gesture.LONG_PRESS -> {}
+        }
     }
 
     // ============== More Menu Gestures ==============
@@ -845,6 +950,48 @@ class HudActivity : ComponentActivity() {
                 phoneConnection.sendToPhone(json.toString())
                 Log.d(GlassesApp.TAG, "TTS toggle: $newEnabled")
             }
+            MoreMenuItem.TALK -> {
+                val enabled = !current.talkModeEnabled
+                hudState.value = current.copy(
+                    talkModeEnabled = enabled,
+                    talkModePhase = if (enabled) "idle" else "off"
+                )
+                phoneConnection.sendToPhone(
+                    org.json.JSONObject().apply {
+                        put("type", "talk_mode_toggle")
+                        put("enabled", enabled)
+                    }.toString()
+                )
+            }
+            MoreMenuItem.CAPTIONS -> {
+                val enabled = !current.liveCaptionEnabled
+                hudState.value = current.copy(
+                    liveCaptionEnabled = enabled,
+                    liveCaption = if (enabled) LiveCaptionDisplay() else null,
+                )
+                phoneConnection.sendToPhone(
+                    JSONObject().apply {
+                        put("type", "live_caption_toggle")
+                        put("enabled", enabled)
+                    }.toString()
+                )
+            }
+            MoreMenuItem.TTS_STOP -> {
+                phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
+            }
+            MoreMenuItem.TTS_REPLAY -> {
+                phoneConnection.sendToPhone("""{"type":"tts_control","action":"replay"}""")
+            }
+            MoreMenuItem.STOP_RUN -> {
+                if (current.runCanAbort) {
+                    phoneConnection.sendToPhone("""{"type":"abort_run"}""")
+                    hudState.value = current.copy(
+                        runState = "aborting",
+                        runCanAbort = false,
+                        agentState = AgentState.ABORTING
+                    )
+                }
+            }
             else -> {}
         }
     }
@@ -906,13 +1053,18 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollUp() {
         val current = hudState.value
-        val newPosition = maxOf(0, current.scrollPosition - 5) // scroll by 5 messages
-        hudState.value = current.copy(scrollPosition = newPosition)
-
-        // If we've scrolled to the top and there might be more history, request it
-        if (newPosition == 0 && current.hasMoreHistory && !current.isLoadingMoreHistory && current.messages.isNotEmpty()) {
-            requestMoreHistory()
+        if (current.scrollPosition <= 0) {
+            if (current.hasMoreHistory && !current.isLoadingMoreHistory && current.messages.isNotEmpty()) {
+                requestMoreHistory()
+            }
+            hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
+            return
         }
+        val newPosition = maxOf(0, current.scrollPosition - scrollMessagesPerStep)
+        hudState.value = current.copy(
+            scrollPosition = newPosition,
+            scrollTrigger = current.scrollTrigger + 1,
+        )
     }
 
     private fun requestMoreHistory() {
@@ -932,8 +1084,15 @@ class HudActivity : ComponentActivity() {
     private fun scrollDown() {
         val current = hudState.value
         val maxScroll = maxOf(0, current.messages.size - 1)
-        val newPosition = minOf(maxScroll, current.scrollPosition + 5)
-        hudState.value = current.copy(scrollPosition = newPosition)
+        if (current.scrollPosition >= maxScroll) {
+            hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
+            return
+        }
+        val newPosition = minOf(maxScroll, current.scrollPosition + scrollMessagesPerStep)
+        hudState.value = current.copy(
+            scrollPosition = newPosition,
+            scrollTrigger = current.scrollTrigger + 1,
+        )
     }
 
     // ============== Voice Recognition ==============
@@ -954,7 +1113,7 @@ class HudActivity : ComponentActivity() {
      * Also clears voice UI state to prevent race condition with voice state collector.
      */
     private fun stageVoiceText(text: String) {
-        Log.d(GlassesApp.TAG, "Staging voice text: ${text.take(100)}")
+        Log.d(GlassesApp.TAG, "Staging voice text (${text.length} chars)")
         // Use atomic update to avoid race with concurrent state changes
         hudState.update { current ->
             val newStagingText = if (current.stagingText.isEmpty()) {
@@ -988,7 +1147,7 @@ class HudActivity : ComponentActivity() {
                 handleVoiceCommand(result.command)
             }
             is GlassesVoiceHandler.VoiceResult.Error -> {
-                Log.e(GlassesApp.TAG, "Voice error: ${result.message}")
+                Log.e(GlassesApp.TAG, "Voice command error")
                 lifecycleScope.launch {
                     delay(3000)
                     val current = hudState.value
@@ -1004,9 +1163,18 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun handleVoiceCommand(command: String) {
+        VisionCommands.promptFor(command)?.let { prompt ->
+            requestPhotoCapture(sendAfterCapture = true, visionPrompt = prompt)
+            return
+        }
         when (command) {
             "scroll up" -> scrollUp()
             "scroll down" -> scrollDown()
+            "take photo", "foto aufnehmen" -> requestPhotoCapture(sendAfterCapture = false)
+            "take and send photo", "foto aufnehmen und senden" -> requestPhotoCapture(sendAfterCapture = true)
+            "stop talk mode", "talk mode off", "talk modus stoppen", "talk modus aus" -> {
+                // The phone owns Talk Mode and has already disabled it before forwarding this result.
+            }
             "clear" -> {
                 // Clear staging area if visible, otherwise clear inputText
                 val current = hudState.value
@@ -1024,7 +1192,8 @@ class HudActivity : ComponentActivity() {
             "send", "enter" -> {
                 // Submit staging text if visible, otherwise submit inputText
                 val current = hudState.value
-                if (current.showInputStaging && current.stagingText.isNotBlank()) {
+                if (current.showInputStaging &&
+                    (current.stagingText.isNotBlank() || current.photoThumbnails.isNotEmpty())) {
                     hudState.value = current.copy(inputText = current.stagingText.trim())
                     submitInput()
                     hudState.value = hudState.value.copy(
@@ -1043,6 +1212,59 @@ class HudActivity : ComponentActivity() {
                     stageVoiceText(text)
                 }
             }
+        }
+    }
+
+    private fun handleHudCardGesture(gesture: Gesture) {
+        val current = hudState.value
+        val card = current.hudCards.firstOrNull() ?: return
+        val actions = card.actions.ifEmpty { listOf(HudCardActionDisplay("dismiss", "Dismiss")) }
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> hudState.value = current.copy(
+                selectedHudCardActionIndex = if (current.selectedHudCardActionIndex > 0) {
+                    current.selectedHudCardActionIndex - 1
+                } else {
+                    actions.lastIndex
+                }
+            )
+            Gesture.SWIPE_BACKWARD -> hudState.value = current.copy(
+                selectedHudCardActionIndex = if (current.selectedHudCardActionIndex < actions.lastIndex) {
+                    current.selectedHudCardActionIndex + 1
+                } else {
+                    0
+                }
+            )
+            Gesture.TAP -> dismissHudCard(card, actions[current.selectedHudCardActionIndex.coerceIn(actions.indices)])
+            Gesture.DOUBLE_TAP -> dismissHudCard(card, HudCardActionDisplay("dismiss", "Dismiss"))
+            Gesture.LONG_PRESS -> {}
+        }
+    }
+
+    private fun dismissHudCard(card: HudCardDisplay, action: HudCardActionDisplay) {
+        phoneConnection.sendToPhone(
+            JSONObject().apply {
+                put("type", "hud_card_action")
+                put("cardId", card.id)
+                put("actionId", action.id)
+            }.toString()
+        )
+        hudState.update { current ->
+            current.copy(
+                hudCards = current.hudCards.filterNot { it.id == card.id },
+                selectedHudCardActionIndex = 0,
+            )
+        }
+        scheduleActiveCardExpiry()
+    }
+
+    private fun scheduleActiveCardExpiry() {
+        cardExpiryJob?.cancel()
+        val card = hudState.value.hudCards.firstOrNull() ?: return
+        val expiresAt = card.expiresAt ?: return
+        cardExpiryJob = lifecycleScope.launch {
+            delay((expiresAt - System.currentTimeMillis()).coerceAtLeast(0L))
+            hudState.update { current -> current.copy(hudCards = current.hudCards.filterNot { it.id == card.id }) }
+            scheduleActiveCardExpiry()
         }
     }
 
@@ -1081,6 +1303,22 @@ class HudActivity : ComponentActivity() {
     // ============== Phone Communication ==============
 
     private fun requestSessionList() {
+        sessionPickerRequested = true
+        hudState.update { current ->
+            val options = if (current.availableSessions.any { it.key == NEW_SESSION_KEY }) {
+                current.availableSessions
+            } else {
+                listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) + current.availableSessions
+            }
+            current.copy(
+                showSessionPicker = true,
+                availableSessions = options,
+                selectedSessionIndex = current.selectedSessionIndex.coerceIn(options.indices),
+                isSessionOperationPending = true,
+                sessionOperationMessage = "Loading sessions...",
+                sessionOperationError = null
+            )
+        }
         phoneConnection.sendToPhone("""{"type":"list_sessions"}""")
     }
 
@@ -1092,11 +1330,31 @@ class HudActivity : ComponentActivity() {
         phoneConnection.sendToPhone(json.toString())
     }
 
+    private fun requestAgentList() {
+        agentPickerRequested = true
+        phoneConnection.sendToPhone("""{"type":"list_agents"}""")
+    }
+
+    private fun switchToAgent(agentId: String, agentName: String) {
+        val json = JSONObject().apply {
+            put("type", "switch_agent")
+            put("agentId", agentId)
+            put("agentName", agentName)
+        }
+        phoneConnection.sendToPhone(json.toString())
+    }
+
+    private fun agentIdFromSessionKey(key: String?): String? {
+        if (key.isNullOrBlank()) return null
+        val parts = key.split(':')
+        return parts.getOrNull(1)?.takeIf { parts.firstOrNull() == "agent" && it.isNotBlank() }
+    }
+
     // ============== Phone Message Handling ==============
 
     private fun handlePhoneMessage(json: String) {
         try {
-            Log.d(GlassesApp.TAG, "handlePhoneMessage: ${json.length} chars, preview=${json.take(120)}")
+            Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
             val msg = JSONObject(json)
             val type = msg.optString("type", "")
 
@@ -1106,6 +1364,7 @@ class HudActivity : ComponentActivity() {
                     val id = msg.optString("id", "")
                     val role = msg.optString("role", "assistant")
                     val content = unwrapContent(msg.optString("content", ""))
+                    val incomingThumbnails = parseAttachmentThumbnails(msg)
 
                     var current = hudState.value
                     val messages = current.messages.toMutableList()
@@ -1114,7 +1373,7 @@ class HudActivity : ComponentActivity() {
                         // Check if submitInput already added this message optimistically
                         val existingLocal = messages.indexOfLast { it.role == "user" && it.content == content }
                         if (existingLocal >= 0) {
-                            Log.d(GlassesApp.TAG, "User echo already displayed, skipping: ${content.take(50)}")
+                            Log.d(GlassesApp.TAG, "User echo already displayed; skipping duplicate")
                             // Clear any lingering photos (belt-and-suspenders)
                             if (current.photoThumbnails.isNotEmpty()) {
                                 hudState.value = current.copy(
@@ -1124,7 +1383,7 @@ class HudActivity : ComponentActivity() {
                             return
                         }
                         // Phone-originated user message — grab photos from strip if any
-                        val thumbnails = current.photoThumbnails.toList()
+                        val thumbnails = incomingThumbnails.ifEmpty { current.photoThumbnails.toList() }
                         val displayMsg = DisplayMessage(
                             id = id,
                             role = role,
@@ -1137,10 +1396,10 @@ class HudActivity : ComponentActivity() {
                             messages = messages,
                             agentState = AgentState.IDLE,
                             photoThumbnails = emptyList(),
-                            scrollPosition = messages.size - 1,
+                            scrollPosition = if (current.isScrolledToEnd) messages.size - 1 else current.scrollPosition,
                             scrollTrigger = current.scrollTrigger + 1
                         )
-                        Log.d(GlassesApp.TAG, "User message (phone): ${content.take(50)}, photos=${thumbnails.size}")
+                        Log.d(GlassesApp.TAG, "User message received (${content.length} chars, photos=${thumbnails.size})")
                     } else {
                         // Assistant message
                         val existingIndex = messages.indexOfFirst { it.id == id }
@@ -1148,7 +1407,8 @@ class HudActivity : ComponentActivity() {
                             id = id,
                             role = role,
                             content = content,
-                            isStreaming = false
+                            isStreaming = false,
+                            thumbnails = incomingThumbnails,
                         )
 
                         if (existingIndex >= 0) {
@@ -1160,10 +1420,10 @@ class HudActivity : ComponentActivity() {
                         hudState.value = current.copy(
                             messages = messages,
                             agentState = AgentState.IDLE,
-                            scrollPosition = messages.size - 1,
+                            scrollPosition = if (current.isScrolledToEnd) messages.size - 1 else current.scrollPosition,
                             scrollTrigger = current.scrollTrigger + 1
                         )
-                        Log.d(GlassesApp.TAG, "Assistant message: ${content.take(50)}")
+                        Log.d(GlassesApp.TAG, "Assistant message received (${content.length} chars)")
                     }
                 }
 
@@ -1180,11 +1440,13 @@ class HudActivity : ComponentActivity() {
                             val id = msgObj.optString("id", "")
                             val role = msgObj.optString("role", "assistant")
                             val content = unwrapContent(msgObj.optString("content", ""))
+                            val thumbnails = parseAttachmentThumbnails(msgObj)
                             messages.add(DisplayMessage(
                                 id = id,
                                 role = role,
                                 content = content,
-                                isStreaming = false
+                                isStreaming = false,
+                                thumbnails = thumbnails,
                             ))
                         }
                     }
@@ -1239,8 +1501,14 @@ class HudActivity : ComponentActivity() {
                 "agent_thinking" -> {
                     // Agent acknowledged request, waiting for first chunk
                     val current = hudState.value
-                    hudState.value = current.copy(agentState = AgentState.THINKING)
-                    Log.d(GlassesApp.TAG, "Agent thinking")
+                    val phase = msg.optString("phase", "thinking")
+                    val state = when (phase) {
+                        "reasoning" -> AgentState.REASONING
+                        "aborting" -> AgentState.ABORTING
+                        else -> AgentState.THINKING
+                    }
+                    hudState.value = current.copy(agentState = state)
+                    Log.d(GlassesApp.TAG, "Agent phase: $phase")
                 }
 
                 "chat_stream" -> {
@@ -1271,8 +1539,7 @@ class HudActivity : ComponentActivity() {
                     }
 
                     // Auto-scroll to bottom during streaming (unless user scrolled up)
-                    val shouldAutoScroll = current.focusedArea != ChatFocusArea.CONTENT ||
-                        current.scrollPosition >= current.messages.size - 2
+                    val shouldAutoScroll = current.isScrolledToEnd
 
                     hudState.value = current.copy(
                         messages = messages,
@@ -1319,10 +1586,23 @@ class HudActivity : ComponentActivity() {
                         isConnected = connected,
                         currentSessionKey = newSessionKey,
                         currentSessionName = newSessionName,
-                        showSessionPicker = if (sessionChanged) false else current.showSessionPicker
+                        currentAgentId = agentIdFromSessionKey(newSessionKey) ?: current.currentAgentId,
+                        currentAgentName = newSessionName?.takeIf { it.isNotBlank() }
+                            ?: current.currentAgentName,
+                        showSessionPicker = if (sessionChanged) false else current.showSessionPicker,
+                        isSessionOperationPending = if (sessionChanged) false else current.isSessionOperationPending,
+                        sessionOperationMessage = if (sessionChanged) null else current.sessionOperationMessage,
+                        sessionOperationError = if (sessionChanged) null else current.sessionOperationError
                     )
 
-                    Log.d(GlassesApp.TAG, "Connection update: connected=$connected, session=$sessionKey, name=$sessionName")
+                    Log.d(GlassesApp.TAG, "Connection update: connected=$connected, sessionChanged=$sessionChanged")
+                }
+
+                "scroll_settings" -> {
+                    scrollMessagesPerStep = ScrollSettings.normalizeMessagesPerStep(
+                        msg.optInt("messagesPerStep", ScrollSettings.DEFAULT_MESSAGES_PER_STEP)
+                    )
+                    Log.d(GlassesApp.TAG, "Scroll step updated: $scrollMessagesPerStep")
                 }
 
                 "session_list" -> {
@@ -1377,20 +1657,100 @@ class HudActivity : ComponentActivity() {
                     val resolvedSessionName = sessions.firstOrNull { it.key == currentSessionKey }?.name
                         ?: current.currentSessionName
                     hudState.value = current.copy(
-                        showSessionPicker = true,
+                        showSessionPicker = current.showSessionPicker,
                         availableSessions = sessionsWithNew,
                         currentSessionKey = currentSessionKey.ifEmpty { current.currentSessionKey },
                         currentSessionName = resolvedSessionName,
-                        selectedSessionIndex = currentIndex
+                        selectedSessionIndex = currentIndex,
+                        isSessionOperationPending = false,
+                        sessionOperationMessage = null,
+                        sessionOperationError = null
                     )
+                    sessionPickerRequested = false
 
-                    Log.d(GlassesApp.TAG, "Sessions: ${sessions.size}, current: $currentSessionKey")
+                    Log.d(GlassesApp.TAG, "Session list received (${sessions.size} entries)")
+                }
+
+                "session_operation" -> {
+                    val operation = msg.optString("operation")
+                    val state = msg.optString("state")
+                    val error = msg.optString("error").takeIf { it.isNotBlank() }
+                    hudState.update { current ->
+                        when (state) {
+                            "loading" -> current.copy(
+                                showSessionPicker = true,
+                                isSessionOperationPending = true,
+                                sessionOperationMessage = if (operation == "create") {
+                                    "Creating session..."
+                                } else {
+                                    "Loading sessions..."
+                                },
+                                sessionOperationError = null
+                            )
+                            "success" -> current.copy(
+                                showSessionPicker = if (operation == "create") false else current.showSessionPicker,
+                                isSessionOperationPending = false,
+                                sessionOperationMessage = null,
+                                sessionOperationError = null
+                            )
+                            "error" -> {
+                                val options = if (current.availableSessions.any { it.key == NEW_SESSION_KEY }) {
+                                    current.availableSessions
+                                } else {
+                                    listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) + current.availableSessions
+                                }
+                                current.copy(
+                                    showSessionPicker = true,
+                                    availableSessions = options,
+                                    selectedSessionIndex = current.selectedSessionIndex.coerceIn(options.indices),
+                                    isSessionOperationPending = false,
+                                    sessionOperationMessage = null,
+                                    sessionOperationError = error ?: "Session operation failed"
+                                )
+                            }
+                            else -> current
+                        }
+                    }
+                    if (state != "loading") sessionPickerRequested = false
+                    Log.d(GlassesApp.TAG, "Session operation: $operation/$state")
+                }
+
+                "agent_list" -> {
+                    val agentsArray = msg.optJSONArray("agents")
+                    val agents = mutableListOf<AgentPickerInfo>()
+                    if (agentsArray != null) {
+                        for (i in 0 until agentsArray.length()) {
+                            val agent = agentsArray.optJSONObject(i) ?: continue
+                            val id = agent.optString("id", "").takeIf { it.isNotBlank() } ?: continue
+                            agents += AgentPickerInfo(
+                                id = id,
+                                name = agent.optString("name", id).ifBlank { id },
+                                model = agent.optString("model", "").takeIf { it.isNotBlank() }
+                            )
+                        }
+                    }
+                    val current = hudState.value
+                    val currentAgentId = msg.optString("currentAgentId", "")
+                        .takeIf { it.isNotBlank() }
+                        ?: agentIdFromSessionKey(current.currentSessionKey)
+                    val selectedIndex = agents.indexOfFirst { it.id == currentAgentId }
+                        .coerceAtLeast(0)
+                    hudState.value = current.copy(
+                        showAgentPicker = agentPickerRequested,
+                        availableAgents = agents,
+                        currentAgentId = currentAgentId,
+                        currentAgentName = agents.firstOrNull { it.id == currentAgentId }?.name
+                            ?: current.currentAgentName,
+                        selectedAgentIndex = selectedIndex
+                    )
+                    agentPickerRequested = false
+                    Log.d(GlassesApp.TAG, "Agent list received (${agents.size} entries)")
                 }
 
                 "voice_state" -> {
                     val state = msg.optString("state", "")
                     val text = msg.optString("text", "")
-                    val mode = if (msg.has("mode")) msg.optString("mode", null) else null
+                    val mode = if (msg.has("mode") && !msg.isNull("mode")) msg.getString("mode") else null
                     voiceHandler.handleVoiceState(state, text, mode)
                 }
 
@@ -1404,7 +1764,7 @@ class HudActivity : ComponentActivity() {
                     when (resultType) {
                         "text" -> {
                             val trimmed = text.trim()
-                            if (trimmed.isNotEmpty()) {
+                            if (trimmed.isNotEmpty() && !msg.optBoolean("autoSent", false)) {
                                 stageVoiceText(trimmed)
                             }
                         }
@@ -1426,13 +1786,15 @@ class HudActivity : ComponentActivity() {
                                 val bytes = Base64.decode(thumbnailBase64, Base64.DEFAULT)
                                 val thumbnail = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                 hudState.value = current.copy(
-                                    photoThumbnails = current.photoThumbnails + thumbnail
+                                    photoThumbnails = current.photoThumbnails + thumbnail,
+                                    focusedArea = ChatFocusArea.INPUT,
+                                    inputActionIndex = current.photoThumbnails.size + 2,
                                 )
                                 Log.d(GlassesApp.TAG, "Photo captured, thumbnail added (total: ${current.photoThumbnails.size + 1})")
                             }
                         }
                     } else {
-                        Log.e(GlassesApp.TAG, "Photo capture failed: ${msg.optString("message", "")}")
+                        Log.e(GlassesApp.TAG, "Photo capture failed")
                     }
                 }
 
@@ -1447,12 +1809,7 @@ class HudActivity : ComponentActivity() {
                         val index = msg.optInt("index", -1)
                         if (index in current.photoThumbnails.indices) {
                             val updated = current.photoThumbnails.toMutableList().apply { removeAt(index) }
-                            // Clamp inputActionIndex: buttons only exist when text is staged
-                            val maxIndex = if (current.stagingText.isNotEmpty()) {
-                                updated.size + 1  // Send index
-                            } else {
-                                maxOf(0, updated.size - 1)  // last photo index
-                            }
+                            val maxIndex = updated.size + 1 // Send index
                             hudState.value = current.copy(
                                 photoThumbnails = updated,
                                 inputActionIndex = minOf(current.inputActionIndex, maxIndex)
@@ -1468,7 +1825,7 @@ class HudActivity : ComponentActivity() {
                     // the notification and sends ack.
                     val reason = msg.optString("reason", "")
                     val bufferedCount = msg.optInt("bufferedCount", 0)
-                    Log.i(GlassesApp.TAG, "Wake signal received: reason=$reason, buffered=$bufferedCount")
+                    Log.i(GlassesApp.TAG, "Wake signal received (buffered=$bufferedCount)")
 
                     // Show wake notification briefly
                     showWakeNotification(reason)
@@ -1482,12 +1839,93 @@ class HudActivity : ComponentActivity() {
                     // TTS state sync from phone
                     val enabled = msg.optBoolean("enabled", false)
                     val voiceName = if (msg.has("voiceName") && !msg.isNull("voiceName")) {
-                        msg.optString("voiceName", null)
+                        msg.getString("voiceName")
                     } else null
                     hudState.update { current ->
-                        current.copy(ttsEnabled = enabled)
+                        current.copy(
+                            ttsEnabled = enabled,
+                            ttsPlaybackState = msg.optString("playbackState", "idle"),
+                            ttsCanReplay = msg.optBoolean("canReplay", false),
+                        )
                     }
                     Log.d(GlassesApp.TAG, "TTS state: enabled=$enabled, voice=$voiceName")
+                }
+
+                "run_state" -> {
+                    val runState = msg.optString("state", "idle")
+                    val agentState = when (runState) {
+                        "waiting" -> AgentState.THINKING
+                        "reasoning" -> AgentState.REASONING
+                        "streaming" -> AgentState.STREAMING
+                        "aborting" -> AgentState.ABORTING
+                        else -> AgentState.IDLE
+                    }
+                    hudState.update { current ->
+                        current.copy(
+                            runState = runState,
+                            runCanAbort = msg.optBoolean("canAbort", false),
+                            agentState = agentState
+                        )
+                    }
+                }
+
+                "talk_mode_state" -> {
+                    hudState.update { current ->
+                        current.copy(
+                            talkModeEnabled = msg.optBoolean("enabled", false),
+                            talkModePhase = msg.optString("phase", "off")
+                        )
+                    }
+                }
+
+                "hud_card" -> {
+                    val actionsJson = msg.optJSONArray("actions")
+                    val actions = buildList {
+                        if (actionsJson != null) {
+                            for (index in 0 until actionsJson.length()) {
+                                val action = actionsJson.optJSONObject(index) ?: continue
+                                add(HudCardActionDisplay(action.optString("id"), action.optString("label")))
+                            }
+                        }
+                    }.filter { it.id.isNotBlank() && it.label.isNotBlank() }
+                    val card = HudCardDisplay(
+                        id = msg.optString("id"),
+                        source = msg.optString("source", "Clawsses"),
+                        title = msg.optString("title", "Update"),
+                        body = msg.optString("body"),
+                        priority = msg.optString("priority", "normal"),
+                        expiresAt = msg.optLong("expiresAt", 0L).takeIf { it > 0L },
+                        actions = actions,
+                    )
+                    if (card.id.isNotBlank() && card.body.isNotBlank()) {
+                        hudState.update { current ->
+                            current.copy(
+                                hudCards = (current.hudCards.filterNot { it.id == card.id } + card).takeLast(5),
+                                selectedHudCardActionIndex = 0,
+                            )
+                        }
+                        scheduleActiveCardExpiry()
+                    }
+                }
+
+                "live_caption" -> {
+                    val enabled = msg.optBoolean("enabled", false)
+                    hudState.update { current ->
+                        current.copy(
+                            liveCaptionEnabled = enabled,
+                            liveCaption = if (enabled) {
+                                LiveCaptionDisplay(
+                                    sourceText = msg.optString("sourceText"),
+                                    translatedText = msg.optString("translatedText").takeIf { it.isNotBlank() },
+                                    sourceLanguage = msg.optString("sourceLanguage").takeIf { it.isNotBlank() },
+                                    targetLanguage = msg.optString("targetLanguage").takeIf { it.isNotBlank() },
+                                    error = msg.optString("error").takeIf { it.isNotBlank() },
+                                )
+                            } else {
+                                null
+                            },
+                        )
+                    }
                 }
 
                 else -> {
@@ -1495,8 +1933,24 @@ class HudActivity : ComponentActivity() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(GlassesApp.TAG, "Error parsing message: ${json.take(100)}", e)
+            Log.e(GlassesApp.TAG, "Error parsing phone message (${json.length} chars)", e)
         }
+    }
+
+    private fun parseAttachmentThumbnails(message: JSONObject): List<Bitmap> {
+        val attachments = message.optJSONArray("attachments") ?: return emptyList()
+        val thumbnails = mutableListOf<Bitmap>()
+        for (index in 0 until minOf(attachments.length(), MAX_PHOTOS)) {
+            val encoded = attachments.optJSONObject(index)?.optString("thumbnail")
+                ?.takeIf { it.isNotBlank() }
+                ?: continue
+            val bitmap = runCatching {
+                val bytes = Base64.decode(encoded.substringAfter(',', encoded), Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+            if (bitmap != null) thumbnails += bitmap
+        }
+        return thumbnails
     }
 
     /**
@@ -1544,18 +1998,6 @@ class HudActivity : ComponentActivity() {
         return result.toString()
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                cameraCapture.capture()
-            } else {
-                Log.w(GlassesApp.TAG, "Camera permission denied")
-            }
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
         saveHudPreferences()
@@ -1563,6 +2005,7 @@ class HudActivity : ComponentActivity() {
         voiceHandler.cleanup()
         phoneConnection.stop()
         clearWakeNotificationJob?.cancel()
+        cardExpiryJob?.cancel()
         // Kill the process so the next launch starts completely fresh.
         // The CXR native layer may hold global state from the previous
         // CXRServiceBridge that prevents a second bridge in the same process

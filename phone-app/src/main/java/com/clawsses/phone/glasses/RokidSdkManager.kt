@@ -4,12 +4,14 @@ import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.util.Log
 import com.clawsses.phone.BuildConfig
+import com.clawsses.phone.util.SecurePreferences
 import com.rokid.cxr.Caps
 import com.rokid.cxr.client.extend.CxrApi
 import com.rokid.cxr.client.extend.callbacks.ApkStatusCallback
 import com.rokid.cxr.client.extend.callbacks.BluetoothStatusCallback
 import com.rokid.cxr.client.extend.callbacks.WifiP2PStatusCallback
 import com.rokid.cxr.client.extend.callbacks.PhotoResultCallback
+import com.rokid.cxr.client.extend.infos.RKAppInfo
 import com.rokid.cxr.client.extend.listeners.BrightnessUpdateListener
 import com.rokid.cxr.client.extend.listeners.CustomCmdListener
 import com.rokid.cxr.client.utils.ValueUtil
@@ -37,6 +39,8 @@ import javax.crypto.spec.SecretKeySpec
 object RokidSdkManager {
 
     private const val TAG = "RokidSdkManager"
+    private const val GLASSES_APP_PACKAGE = "com.clawsses.glasses"
+    private const val GLASSES_APP_ACTIVITY = "com.clawsses.glasses.HudActivity"
 
     private var isInitialized = false
     private var cxrApi: CxrApi? = null
@@ -92,9 +96,7 @@ object RokidSdkManager {
     private val bluetoothCallback = object : BluetoothStatusCallback {
         override fun onConnectionInfo(socketUuid: String?, macAddress: String?, rokidAccount: String?, deviceType: Int) {
             Log.i(TAG, "=== onConnectionInfo ===")
-            Log.i(TAG, "  socketUuid=$socketUuid")
-            Log.i(TAG, "  macAddress=$macAddress")
-            Log.i(TAG, "  rokidAccount=$rokidAccount")
+            Log.i(TAG, "  connection identifiers received")
             Log.i(TAG, "  deviceType=$deviceType")
 
             // Save for reconnection (both in memory and to SharedPreferences)
@@ -136,6 +138,7 @@ object RokidSdkManager {
             isBluetoothConnectedState = true
             pendingConnect = false
             snAutoRetryInProgress = false
+            openGlassesApp()
             onGlassesConnected?.invoke()
         }
 
@@ -159,7 +162,7 @@ object RokidSdkManager {
                     val clientSecret = BuildConfig.ROKID_CLIENT_SECRET.replace("-", "")
                     val encrypted = generateSnEncryptContent(glassesSn, clientSecret)
                     if (encrypted != null) {
-                        Log.i(TAG, "Generated snEncryptContent for SN=$glassesSn (${encrypted.size} bytes)")
+                        Log.i(TAG, "Generated SN verification content (${encrypted.size} bytes)")
                         generatedSnEncryptContent = encrypted
                         saveCachedSnEncryptContent(encrypted, glassesSn)
                         snAutoRetryInProgress = true
@@ -218,6 +221,7 @@ object RokidSdkManager {
 
         override fun onInstallApkSucceed() {
             Log.d(TAG, "APK installation succeeded")
+            openGlassesApp()
             onApkInstallSucceed?.invoke()
         }
 
@@ -241,6 +245,19 @@ object RokidSdkManager {
         override fun onOpenAppFailed() {
             Log.e(TAG, "Failed to open app")
         }
+
+        override fun onStopAppResult(success: Boolean) {
+            Log.d(TAG, "Stop app result: success=$success")
+        }
+
+        override fun onGlassAppResume(packageName: String?) {
+            Log.d(TAG, "Glasses app resume reported")
+        }
+
+        override fun onQueryAppResult(packageName: String?, installed: Boolean) {
+            Log.d(TAG, "Glasses app query result: installed=$installed")
+        }
+
     }
 
     /**
@@ -282,7 +299,7 @@ object RokidSdkManager {
                     if (caps != null && caps.size() > 0) {
                         try {
                             val message = caps.at(0).getString()
-                            Log.d(TAG, "Glasses message content (${message.length} chars): ${message.take(100)}")
+                            Log.d(TAG, "Glasses message received (${message.length} chars)")
                             onMessageFromGlasses?.invoke(message, caps)
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to read message from Caps", e)
@@ -372,11 +389,10 @@ object RokidSdkManager {
         }
 
         try {
-            val clientSecret = BuildConfig.ROKID_CLIENT_SECRET
+            val clientSecret = BuildConfig.ROKID_CLIENT_SECRET.replace("-", "")
 
             Log.i(TAG, "=== connectBluetoothInternal ===")
-            Log.i(TAG, "  socketUuid=$socketUuid")
-            Log.i(TAG, "  macAddress=$macAddress")
+            Log.i(TAG, "  connection identifiers available")
             Log.i(TAG, "  autoRetry=$snAutoRetryInProgress, cachedSn=${generatedSnEncryptContent != null}")
 
             // Use cached snEncryptContent if available (from previous SN auto-recovery).
@@ -431,7 +447,7 @@ object RokidSdkManager {
             // GlassInfo.getDeviceId() returns the serial number
             val getDeviceId = glassInfo.javaClass.getMethod("getDeviceId")
             val sn = getDeviceId.invoke(glassInfo) as? String
-            Log.i(TAG, "Read glasses SN from SDK: $sn")
+            Log.i(TAG, "Read glasses serial number from SDK")
             sn
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read glasses SN from SDK via reflection", e)
@@ -475,7 +491,7 @@ object RokidSdkManager {
     private fun saveCachedSnEncryptContent(encrypted: ByteArray, plainSn: String? = null) {
         val ctx = appContext ?: return
         val base64 = Base64.encodeToString(encrypted, Base64.NO_WRAP)
-        ctx.getSharedPreferences(SN_PREFS, Context.MODE_PRIVATE)
+        SecurePreferences.create(ctx, SN_PREFS)
             .edit()
             .putString(SN_KEY, base64)
             .apply {
@@ -490,7 +506,7 @@ object RokidSdkManager {
 
     private fun loadCachedSnEncryptContent() {
         val ctx = appContext ?: return
-        val prefs = ctx.getSharedPreferences(SN_PREFS, Context.MODE_PRIVATE)
+        val prefs = SecurePreferences.create(ctx, SN_PREFS)
         val base64 = prefs.getString(SN_KEY, null) ?: return
         try {
             generatedSnEncryptContent = Base64.decode(base64, Base64.NO_WRAP)
@@ -504,7 +520,7 @@ object RokidSdkManager {
 
     private fun saveDeviceName(name: String) {
         val ctx = appContext ?: return
-        ctx.getSharedPreferences(SN_PREFS, Context.MODE_PRIVATE)
+        SecurePreferences.create(ctx, SN_PREFS)
             .edit()
             .putString(DEVICE_NAME_KEY, name)
             .apply()
@@ -516,7 +532,7 @@ object RokidSdkManager {
      */
     private fun saveConnectionInfo(socketUuid: String, macAddress: String) {
         val ctx = appContext ?: return
-        ctx.getSharedPreferences(SN_PREFS, Context.MODE_PRIVATE)
+        SecurePreferences.create(ctx, SN_PREFS)
             .edit()
             .putString(SOCKET_UUID_KEY, socketUuid)
             .putString(MAC_ADDRESS_KEY, macAddress)
@@ -530,11 +546,11 @@ object RokidSdkManager {
      */
     private fun loadSavedConnectionInfo() {
         val ctx = appContext ?: return
-        val prefs = ctx.getSharedPreferences(SN_PREFS, Context.MODE_PRIVATE)
+        val prefs = SecurePreferences.create(ctx, SN_PREFS)
         savedSocketUuid = prefs.getString(SOCKET_UUID_KEY, null)
         savedMacAddress = prefs.getString(MAC_ADDRESS_KEY, null)
         if (savedSocketUuid != null && savedMacAddress != null) {
-            Log.i(TAG, "Loaded saved connection info (mac=${savedMacAddress})")
+            Log.i(TAG, "Loaded saved connection information")
         }
     }
 
@@ -556,7 +572,7 @@ object RokidSdkManager {
         savedSocketUuid = null
         savedMacAddress = null
         val ctx = appContext ?: return
-        ctx.getSharedPreferences(SN_PREFS, Context.MODE_PRIVATE)
+        SecurePreferences.create(ctx, SN_PREFS)
             .edit()
             .remove(SN_KEY)
             .remove(SN_PLAIN_KEY)
@@ -600,7 +616,7 @@ object RokidSdkManager {
             var truncated = if (command.length > 500) command.take(500) + "..." else command
             caps.write(truncated)
             cxrApi?.sendCustomCmd("terminal", caps)
-            Log.d(TAG, "Sent to glasses: ${command.take(50)}...")
+            Log.d(TAG, "Sent to glasses (${command.length} chars)")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error sending message to glasses", e)
@@ -707,15 +723,37 @@ object RokidSdkManager {
         }
     }
 
+    /**
+     * Launch the Clawsses HUD after installation or when reconnecting to glasses.
+     */
+    fun openGlassesApp(): Boolean {
+        if (!isInitialized || !isBluetoothConnectedState) {
+            Log.e(TAG, "Cannot open glasses app: SDK or Bluetooth is not ready")
+            return false
+        }
+
+        return try {
+            val status = cxrApi?.openApp(
+                RKAppInfo(GLASSES_APP_PACKAGE, GLASSES_APP_ACTIVITY),
+                apkCallback
+            )
+            Log.d(TAG, "Open glasses app request status: $status")
+            status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+        } catch (e: Exception) {
+            Log.e(TAG, "Error opening glasses app", e)
+            false
+        }
+    }
+
     // ============== Status Methods ==============
 
     fun isReady(): Boolean = isInitialized
 
     fun isConnected(): Boolean {
-        return try {
+        return isBluetoothConnectedState || try {
             cxrApi?.isBluetoothConnected ?: false
         } catch (e: Exception) {
-            isBluetoothConnectedState
+            false
         }
     }
 
@@ -733,6 +771,11 @@ object RokidSdkManager {
      *   works when SDK state is still alive from a previous session)
      */
     fun reconnect(attempt: Int = 1): Boolean {
+        if (isConnected()) {
+            Log.i(TAG, "Reconnect attempt $attempt skipped: glasses are already connected")
+            return true
+        }
+
         val mac = savedMacAddress
         if (mac.isNullOrEmpty()) {
             Log.w(TAG, "No saved MAC address for reconnection")
@@ -759,20 +802,20 @@ object RokidSdkManager {
                     as? android.bluetooth.BluetoothManager)?.adapter
                 if (adapter != null && adapter.isEnabled) {
                     val device = adapter.getRemoteDevice(mac)
-                    Log.i(TAG, "Reconnect attempt $attempt: initBluetooth with MAC=$mac")
+                    Log.i(TAG, "Reconnect attempt $attempt: initializing Bluetooth")
                     pendingConnect = true
                     cxrApi?.initBluetooth(context, device, bluetoothCallback)
                     return true
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "initBluetooth failed for MAC=$mac: ${e.message}")
+                Log.w(TAG, "Bluetooth initialization failed during reconnect")
             }
         }
 
         // Fast path or fallback: connectBluetooth with saved credentials
         val socketUuid = savedSocketUuid
         if (!socketUuid.isNullOrEmpty()) {
-            Log.i(TAG, "Reconnect attempt $attempt: connectBluetooth with socketUuid=$socketUuid, mac=$mac")
+            Log.i(TAG, "Reconnect attempt $attempt: connecting with saved identifiers")
             connectBluetoothInternal(socketUuid, mac, savedRokidAccount ?: "")
             return true
         }
@@ -816,7 +859,7 @@ object RokidSdkManager {
      * The glasses display this text in the AI scene UI.
      */
     fun sendAsrContent(content: String): ValueUtil.CxrStatus? {
-        Log.d(TAG, "Sending ASR content to glasses: ${content.take(50)}")
+        Log.d(TAG, "Sending ASR content to glasses (${content.length} chars)")
         return cxrApi?.sendAsrContent(content)
     }
 
@@ -856,7 +899,7 @@ object RokidSdkManager {
      * Send TTS content to the glasses AI scene (for displaying AI response text).
      */
     fun sendTtsContent(content: String): ValueUtil.CxrStatus? {
-        Log.d(TAG, "Sending TTS content to glasses: ${content.take(50)}")
+        Log.d(TAG, "Sending TTS content to glasses (${content.length} chars)")
         return cxrApi?.sendTtsContent(content)
     }
 

@@ -7,6 +7,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -76,11 +77,18 @@ class VoiceCommandHandler(private val context: Context) {
             "scroll down",
             "take screenshot",
             "take photo",
+            "take and send photo",
+            "foto aufnehmen",
+            "foto aufnehmen und senden",
+            "stop talk mode",
+            "talk mode off",
+            "talk modus stoppen",
+            "talk modus aus",
             "switch mode",
             "navigate mode",
             "scroll mode",
             "command mode"
-        )
+        ) + VisionCommands.phrases
     }
 
     sealed class VoiceResult {
@@ -228,7 +236,7 @@ class VoiceCommandHandler(private val context: Context) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val spokenText = matches?.firstOrNull() ?: ""
 
-            Log.i(TAG, ">>> Final recognition result: '$spokenText'")
+            Log.i(TAG, ">>> Final recognition result (${spokenText.length} chars)")
 
             val processedResult = processSpokenText(spokenText)
             _lastResult.value = processedResult
@@ -239,7 +247,7 @@ class VoiceCommandHandler(private val context: Context) {
             val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val partialText = matches?.firstOrNull() ?: ""
             if (partialText.isNotEmpty()) {
-                Log.d(TAG, "Partial: $partialText")
+                Log.d(TAG, "Partial recognition result (${partialText.length} chars)")
                 onPartialResult?.invoke(partialText)
             }
         }

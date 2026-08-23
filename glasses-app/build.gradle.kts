@@ -4,6 +4,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val clawssesVersionCode = providers.gradleProperty("clawsses.versionCode").get().toInt()
+val clawssesVersionName = providers.gradleProperty("clawsses.versionName").get()
+
 android {
     namespace = "com.clawsses.glasses"
     compileSdk = 34
@@ -12,8 +15,8 @@ android {
         applicationId = "com.clawsses.glasses"
         minSdk = 28  // Required for CXR-S SDK
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = clawssesVersionCode
+        versionName = clawssesVersionName
     }
 
     buildTypes {

@@ -22,16 +22,20 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -43,7 +47,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,23 +56,32 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.clawsses.phone.tts.ElevenLabsClient
+import com.clawsses.phone.tts.OpenAiTtsClient
+import com.clawsses.phone.tts.TtsPlaybackState
+import com.clawsses.phone.tts.TtsProvider
 import com.clawsses.phone.tts.TtsSettingsManager
 import com.clawsses.phone.tts.Voice
-import kotlinx.coroutines.launch
 
 @Composable
 fun TtsSection(
     ttsSettingsManager: TtsSettingsManager,
     elevenLabsClient: ElevenLabsClient,
+    playbackState: TtsPlaybackState = TtsPlaybackState.IDLE,
+    canReplay: Boolean = false,
+    onStop: () -> Unit = {},
+    onReplay: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val apiKey by ttsSettingsManager.apiKey.collectAsState()
+    val openAiApiKey by ttsSettingsManager.openAiApiKey.collectAsState()
+    val provider by ttsSettingsManager.provider.collectAsState()
     val selectedVoiceId by ttsSettingsManager.selectedVoiceId.collectAsState()
     val selectedVoiceName by ttsSettingsManager.selectedVoiceName.collectAsState()
     val isEnabled by ttsSettingsManager.isEnabled.collectAsState()
     val speed by ttsSettingsManager.speed.collectAsState()
 
-    var localApiKey by remember(apiKey) { mutableStateOf(apiKey) }
+    val activeApiKey = if (provider == TtsProvider.OPENAI) openAiApiKey else apiKey
+    var localApiKey by remember(provider, activeApiKey) { mutableStateOf(activeApiKey) }
     var showApiKey by remember { mutableStateOf(false) }
     var showVoiceSheet by remember { mutableStateOf(false) }
 
@@ -77,15 +89,19 @@ fun TtsSection(
     var isLoadingVoices by remember { mutableStateOf(false) }
     var voicesError by remember { mutableStateOf<String?>(null) }
 
-    val scope = rememberCoroutineScope()
-
     val hasApiKey = localApiKey.isNotBlank()
     val hasVoice = selectedVoiceId != null
     val isConfigured = hasApiKey && hasVoice && isEnabled
 
     // Fetch voices when API key changes and is valid
-    LaunchedEffect(apiKey) {
-        if (apiKey.isNotBlank()) {
+    LaunchedEffect(provider, apiKey, openAiApiKey) {
+        if (provider == TtsProvider.OPENAI) {
+            voices = OpenAiTtsClient.VOICES.map { id ->
+                Voice(id, id.replaceFirstChar { it.uppercase() })
+            }
+            voicesError = null
+            isLoadingVoices = false
+        } else if (apiKey.isNotBlank()) {
             isLoadingVoices = true
             voicesError = null
             elevenLabsClient.getVoices(apiKey)
@@ -155,16 +171,41 @@ fun TtsSection(
 
                 Spacer(Modifier.height(16.dp))
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = provider == TtsProvider.ELEVENLABS,
+                        onClick = { ttsSettingsManager.setProvider(TtsProvider.ELEVENLABS) },
+                        label = { Text("ElevenLabs") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(
+                        selected = provider == TtsProvider.OPENAI,
+                        onClick = { ttsSettingsManager.setProvider(TtsProvider.OPENAI) },
+                        label = { Text("OpenAI") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
                 // API Key input field
                 OutlinedTextField(
                     value = localApiKey,
                     onValueChange = { newKey ->
                         localApiKey = newKey
-                        ttsSettingsManager.setApiKey(newKey)
+                        if (provider == TtsProvider.OPENAI) {
+                            ttsSettingsManager.setOpenAiApiKey(newKey)
+                        } else {
+                            ttsSettingsManager.setApiKey(newKey)
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("ElevenLabs API Key") },
-                    placeholder = { Text("xi-...") },
+                    label = { Text(if (provider == TtsProvider.OPENAI) "OpenAI API Key" else "ElevenLabs API Key") },
+                    placeholder = { Text(if (provider == TtsProvider.OPENAI) "sk-..." else "xi-...") },
                     singleLine = true,
                     visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -179,7 +220,11 @@ fun TtsSection(
                             if (localApiKey.isNotEmpty()) {
                                 IconButton(onClick = {
                                     localApiKey = ""
-                                    ttsSettingsManager.setApiKey("")
+                                    if (provider == TtsProvider.OPENAI) {
+                                        ttsSettingsManager.setOpenAiApiKey("")
+                                    } else {
+                                        ttsSettingsManager.setApiKey("")
+                                    }
                                 }) {
                                     Icon(
                                         Icons.Default.Close,
@@ -208,7 +253,7 @@ fun TtsSection(
                                     color = Color(0xFF4CAF50),
                                 )
                             }
-                            else -> Text("Required for ElevenLabs voice synthesis")
+                            else -> Text("Required for ${if (provider == TtsProvider.OPENAI) "OpenAI" else "ElevenLabs"} voice synthesis")
                         }
                     },
                 )
@@ -266,6 +311,32 @@ fun TtsSection(
                     }
                 }
 
+                if (playbackState != TtsPlaybackState.IDLE || canReplay) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = onStop,
+                            enabled = playbackState == TtsPlaybackState.SYNTHESIZING ||
+                                playbackState == TtsPlaybackState.PLAYING,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Stop")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = onReplay,
+                            enabled = canReplay,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Default.Replay, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Replay")
+                        }
+                    }
+                }
+
                 // Speed slider (only show when API key is set)
                 if (hasApiKey) {
                     Spacer(Modifier.height(12.dp))
@@ -313,7 +384,11 @@ fun TtsSection(
                 // Info text
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "ElevenLabs provides high-quality AI voice synthesis to read assistant responses aloud.",
+                    if (provider == TtsProvider.OPENAI) {
+                        "OpenAI ${OpenAiTtsClient.MODEL} generates this synthetic AI voice. The same encrypted OpenAI key is shared with transcription."
+                    } else {
+                        "ElevenLabs provides AI-generated voice synthesis to read assistant responses aloud."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

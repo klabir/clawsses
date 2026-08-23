@@ -30,7 +30,8 @@ class ApkInstaller(private val context: Context) {
         private const val TAG = "ApkInstaller"
         private const val GLASSES_APP_ASSET = "glasses-app-release.apk"
         private const val DEFAULT_ADB_PORT = 5555
-        private const val OPERATION_TIMEOUT_MS = 60_000L
+        private const val ADB_OPERATION_TIMEOUT_MS = 60_000L
+        private const val SDK_OPERATION_TIMEOUT_MS = 240_000L
     }
 
     /**
@@ -107,11 +108,11 @@ class ApkInstaller(private val context: Context) {
 
         installJob = scope.launch {
             try {
-                withTimeout(OPERATION_TIMEOUT_MS) {
+                withTimeout(ADB_OPERATION_TIMEOUT_MS) {
                     doAdbInstall(targetHost, targetPort)
                 }
             } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "Installation timed out after ${OPERATION_TIMEOUT_MS}ms")
+                Log.e(TAG, "Installation timed out after ${ADB_OPERATION_TIMEOUT_MS}ms")
                 _installState.value = InstallState.Error("Installation timed out. Check glasses connection.")
             } catch (e: CancellationException) {
                 Log.d(TAG, "Installation cancelled")
@@ -206,11 +207,11 @@ class ApkInstaller(private val context: Context) {
 
         installJob = scope.launch {
             try {
-                withTimeout(OPERATION_TIMEOUT_MS) {
+                withTimeout(SDK_OPERATION_TIMEOUT_MS) {
                     doSdkInstall()
                 }
             } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "SDK installation timed out after ${OPERATION_TIMEOUT_MS}ms")
+                Log.e(TAG, "SDK installation timed out after ${SDK_OPERATION_TIMEOUT_MS}ms")
                 _installState.value = InstallState.Error("Installation timed out. Check glasses connection.")
             } catch (e: CancellationException) {
                 Log.d(TAG, "SDK installation cancelled")
@@ -218,6 +219,8 @@ class ApkInstaller(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "SDK installation failed", e)
                 _installState.value = InstallState.Error(formatError(e))
+            } finally {
+                cleanupTempApk()
             }
         }
     }
@@ -269,30 +272,43 @@ class ApkInstaller(private val context: Context) {
             }
         }
 
-        // Step 4: Initialize WiFi P2P if not connected
+        // Step 4: Initialize WiFi P2P if not connected. Rokid's WiFi controller is
+        // Handler/Looper based, so lifecycle calls must run on the main thread.
         if (!RokidSdkManager.isWifiP2PConnected()) {
-            Log.i(TAG, "Initializing WiFi P2P for APK transfer...")
             _installState.value = InstallState.InitializingWifiP2P
-
-            if (!RokidSdkManager.initWifiP2P()) {
-                throw Exception("Failed to initialize WiFi P2P. Ensure Bluetooth is connected.")
-            }
-
-            // Wait for WiFi P2P connection (up to 30 seconds)
-            var waitTime = 0
-            while (!RokidSdkManager.isWifiP2PConnected() && waitTime < 30000) {
-                delay(500)
-                waitTime += 500
-                if (waitTime % 5000 == 0) {
-                    Log.i(TAG, "Still waiting for WiFi P2P... (${waitTime / 1000}s)")
+            var connected = false
+            for (attempt in 1..2) {
+                Log.i(TAG, "Initializing WiFi P2P for APK transfer (attempt $attempt/2)...")
+                val started = withContext(Dispatchers.Main) {
+                    RokidSdkManager.initWifiP2P()
                 }
+                if (!started) {
+                    Log.w(TAG, "WiFi P2P initialization request was rejected")
+                } else {
+                    var waitTime = 0
+                    while (!RokidSdkManager.isWifiP2PConnected() && waitTime < 30_000) {
+                        delay(500)
+                        waitTime += 500
+                        if (waitTime % 5_000 == 0) {
+                            Log.i(TAG, "Still waiting for WiFi P2P... (${waitTime / 1000}s)")
+                        }
+                    }
+                    connected = RokidSdkManager.isWifiP2PConnected()
+                }
+                if (connected) break
+
+                withContext(Dispatchers.Main) {
+                    RokidSdkManager.deinitWifiP2P()
+                }
+                if (attempt == 1) delay(1_500)
             }
 
-            if (!RokidSdkManager.isWifiP2PConnected()) {
+            if (!connected) {
                 throw Exception(
                     "WiFi P2P connection timed out.\n\n" +
-                    "Ensure WiFi is enabled on both phone and glasses. " +
-                    "You may need to grant 'Nearby devices' permission in Android Settings."
+                    "Keep the glasses unfolded and awake, enable WiFi on both devices, " +
+                    "then put the glasses back into pairing mode by triple-pressing the " +
+                    "function button until the blue LED blinks."
                 )
             }
         }
@@ -301,7 +317,9 @@ class ApkInstaller(private val context: Context) {
         Log.d(TAG, "Starting APK upload via SDK...")
         _installState.value = InstallState.Uploading("Uploading ${apkFile.length() / 1024} KB via WiFi P2P...")
 
-        val started = RokidSdkManager.startUploadApk(apkFile.absolutePath)
+        val started = withContext(Dispatchers.Main) {
+            RokidSdkManager.startUploadApk(apkFile.absolutePath)
+        }
         if (!started) {
             throw Exception("Failed to start APK upload. Check SDK connection.")
         }

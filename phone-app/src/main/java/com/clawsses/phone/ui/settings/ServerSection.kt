@@ -183,6 +183,6 @@ private fun buildDisplayUrl(host: String, port: String): String {
         trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> {
             if (trimmed.contains(Regex(":\\d+$"))) trimmed else "$trimmed:$port"
         }
-        else -> "ws://$trimmed:$port"
+        else -> "wss://$trimmed:$port"
     }
 }
