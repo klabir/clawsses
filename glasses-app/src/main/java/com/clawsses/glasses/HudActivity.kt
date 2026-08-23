@@ -905,6 +905,19 @@ class HudActivity : ComponentActivity() {
                 phoneConnection.sendToPhone(json.toString())
                 Log.d(GlassesApp.TAG, "TTS toggle: $newEnabled")
             }
+            MoreMenuItem.TALK -> {
+                val enabled = !current.talkModeEnabled
+                hudState.value = current.copy(
+                    talkModeEnabled = enabled,
+                    talkModePhase = if (enabled) "idle" else "off"
+                )
+                phoneConnection.sendToPhone(
+                    org.json.JSONObject().apply {
+                        put("type", "talk_mode_toggle")
+                        put("enabled", enabled)
+                    }.toString()
+                )
+            }
             MoreMenuItem.TTS_STOP -> {
                 phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
             }
@@ -1097,6 +1110,9 @@ class HudActivity : ComponentActivity() {
             "scroll down" -> scrollDown()
             "take photo", "foto aufnehmen" -> requestPhotoCapture(sendAfterCapture = false)
             "take and send photo", "foto aufnehmen und senden" -> requestPhotoCapture(sendAfterCapture = true)
+            "stop talk mode", "talk mode off", "talk modus stoppen", "talk modus aus" -> {
+                // The phone owns Talk Mode and has already disabled it before forwarding this result.
+            }
             "clear" -> {
                 // Clear staging area if visible, otherwise clear inputText
                 val current = hudState.value
@@ -1561,7 +1577,7 @@ class HudActivity : ComponentActivity() {
                     when (resultType) {
                         "text" -> {
                             val trimmed = text.trim()
-                            if (trimmed.isNotEmpty()) {
+                            if (trimmed.isNotEmpty() && !msg.optBoolean("autoSent", false)) {
                                 stageVoiceText(trimmed)
                             }
                         }
@@ -1662,6 +1678,15 @@ class HudActivity : ComponentActivity() {
                             runState = runState,
                             runCanAbort = msg.optBoolean("canAbort", false),
                             agentState = agentState
+                        )
+                    }
+                }
+
+                "talk_mode_state" -> {
+                    hudState.update { current ->
+                        current.copy(
+                            talkModeEnabled = msg.optBoolean("enabled", false),
+                            talkModePhase = msg.optString("phase", "off")
                         )
                     }
                 }

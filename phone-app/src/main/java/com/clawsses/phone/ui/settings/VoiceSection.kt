@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Visibility
@@ -51,11 +52,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
+import com.clawsses.phone.talk.TalkModeState
 
 @Composable
 fun VoiceSection(
     voiceLanguageManager: VoiceLanguageManager,
     voiceRecognitionManager: VoiceRecognitionManager? = null,
+    talkModeState: TalkModeState? = null,
+    onTalkModeChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val availableLanguages by voiceLanguageManager.availableLanguages.collectAsState()
@@ -67,6 +71,11 @@ fun VoiceSection(
         ?.displayName ?: selectedLanguage.ifEmpty { "Default" }
 
     Column(modifier = modifier.padding(horizontal = 16.dp)) {
+        if (talkModeState != null) {
+            TalkModeSettings(talkModeState, onTalkModeChange)
+            Spacer(Modifier.height(12.dp))
+        }
+
         // OpenAI Voice Recognition settings
         if (voiceRecognitionManager != null) {
             OpenAIVoiceSettings(voiceRecognitionManager)
@@ -126,6 +135,56 @@ fun VoiceSection(
             },
             onDismiss = { showSheet = false },
         )
+    }
+}
+
+@Composable
+private fun TalkModeSettings(
+    state: TalkModeState,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = if (state.enabled) Color(0xFF4CAF50)
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp),
+                )
+                Spacer(Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Permanent Talk Mode", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (state.enabled) state.phase.name.lowercase().replaceFirstChar(Char::uppercase)
+                        else "Off",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (state.enabled) Color(0xFF4CAF50)
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = state.enabled, onCheckedChange = onEnabledChange)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Recognized speech is sent immediately. After the spoken answer, listening " +
+                    "starts again. Press the glasses AI key to interrupt an answer.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            state.error?.let { error ->
+                Spacer(Modifier.height(6.dp))
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+        }
     }
 }
 

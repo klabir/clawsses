@@ -120,6 +120,7 @@ enum class MoreMenuItem(val icon: String, val label: String, val displaySize: Hu
     FONT_COMFORTABLE("Aa", "Comfortable", HudDisplaySize.COMFORTABLE),
     FONT_LARGE("Aa", "Large", HudDisplaySize.LARGE),
     SLASH("/", "Slash Cmds"),
+    TALK("\u25C9", "Talk Mode"),
     VOICE("\uD83D\uDD0A", "Voice"),  // speaker icon - label is dynamic
     TTS_STOP("\u25A0", "Stop Voice"),
     TTS_REPLAY("\u21BB", "Replay Voice"),
@@ -253,6 +254,8 @@ data class ChatHudState(
     val ttsCanReplay: Boolean = false,
     val runState: String = "idle",
     val runCanAbort: Boolean = false,
+    val talkModeEnabled: Boolean = false,
+    val talkModePhase: String = "off",
 ) {
     /** Total number of messages */
     val totalMessages: Int get() = messages.size
@@ -438,6 +441,8 @@ fun HudScreen(
                     isLoadingMoreHistory = state.isLoadingMoreHistory,
                     showWakeNotification = state.showWakeNotification,
                     wakeReason = state.wakeReason,
+                    talkModeEnabled = state.talkModeEnabled,
+                    talkModePhase = state.talkModePhase,
                     fontFamily = monoFontFamily,
                     fontSize = fontSize
                 )
@@ -533,6 +538,7 @@ fun HudScreen(
                 ttsCanReplay = state.ttsCanReplay,
                 runState = state.runState,
                 runCanAbort = state.runCanAbort,
+                talkModeEnabled = state.talkModeEnabled,
                 fontFamily = monoFontFamily
             )
         }
@@ -589,6 +595,8 @@ private fun TopBar(
     isLoadingMoreHistory: Boolean = false,
     showWakeNotification: Boolean = false,
     wakeReason: String? = null,
+    talkModeEnabled: Boolean = false,
+    talkModePhase: String = "off",
     fontFamily: FontFamily,
     fontSize: androidx.compose.ui.unit.TextUnit
 ) {
@@ -661,6 +669,7 @@ private fun TopBar(
                     "processing$modeSuffix $processingDots"
                 }
                 voiceState is VoiceInputState.Error -> "voice error"
+                talkModeEnabled && agentState == AgentState.IDLE -> "talk $talkModePhase"
                 isLoadingMoreHistory -> "loading..."
                 agentState == AgentState.IDLE -> if (isConnected) "connected" else "disconnected"
                 agentState == AgentState.THINKING -> "thinking..."
@@ -1594,6 +1603,7 @@ private fun MoreMenuOverlay(
     ttsCanReplay: Boolean,
     runState: String,
     runCanAbort: Boolean,
+    talkModeEnabled: Boolean,
     fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
@@ -1627,6 +1637,7 @@ private fun MoreMenuOverlay(
                         MoreMenuItem.TTS_STOP -> ttsPlaybackState == "playing" || ttsPlaybackState == "synthesizing"
                         MoreMenuItem.TTS_REPLAY -> ttsCanReplay
                         MoreMenuItem.STOP_RUN -> runCanAbort || runState == "aborting"
+                        MoreMenuItem.TALK -> talkModeEnabled
                         else -> item.displaySize == currentDisplaySize
                     }
 
@@ -1636,6 +1647,7 @@ private fun MoreMenuOverlay(
                         MoreMenuItem.TTS_STOP -> "Stop Voice"
                         MoreMenuItem.TTS_REPLAY -> "Replay Voice"
                         MoreMenuItem.STOP_RUN -> if (runState == "aborting") "Stopping Run" else "Stop Run"
+                        MoreMenuItem.TALK -> if (talkModeEnabled) "Talk On" else "Talk Off"
                         else -> item.label
                     }
 

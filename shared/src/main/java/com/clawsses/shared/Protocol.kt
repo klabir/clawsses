@@ -192,6 +192,16 @@ data class RunStateUpdate(
     fun toJson(): String = gson.toJson(this)
 }
 
+data class TalkModeStateUpdate(
+    @SerializedName("type") val type: String = "talk_mode_state",
+    @SerializedName("enabled") val enabled: Boolean,
+    @SerializedName("phase") val phase: String,
+    @SerializedName("interruptible") val interruptible: Boolean,
+    @SerializedName("error") val error: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
 /**
  * OpenClaw connection state update.
  */

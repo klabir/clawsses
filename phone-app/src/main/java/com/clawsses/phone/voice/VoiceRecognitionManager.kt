@@ -206,7 +206,10 @@ class VoiceRecognitionManager(private val context: Context) {
         // Check for special commands
         val commands = setOf(
             "escape", "scroll up", "scroll down", "take screenshot",
-            "take photo", "switch mode", "navigate mode", "scroll mode", "command mode"
+            "take photo", "take and send photo", "foto aufnehmen",
+            "foto aufnehmen und senden", "stop talk mode", "talk mode off",
+            "talk modus stoppen", "talk modus aus", "switch mode",
+            "navigate mode", "scroll mode", "command mode"
         )
         for (command in commands) {
             if (lowerText == command || lowerText.startsWith("$command ")) {

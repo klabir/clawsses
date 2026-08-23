@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.OpenClawClient
+import com.clawsses.phone.talk.TalkModeState
 import com.clawsses.phone.tts.ElevenLabsClient
 import com.clawsses.phone.tts.TtsSettingsManager
 import com.clawsses.phone.tts.TtsPlaybackState
@@ -67,6 +68,8 @@ fun SettingsScreen(
     // Voice
     voiceLanguageManager: VoiceLanguageManager,
     voiceRecognitionManager: VoiceRecognitionManager? = null,
+    talkModeState: TalkModeState? = null,
+    onTalkModeChange: (Boolean) -> Unit = {},
     // TTS
     ttsSettingsManager: TtsSettingsManager? = null,
     elevenLabsClient: ElevenLabsClient? = null,
@@ -153,6 +156,8 @@ fun SettingsScreen(
                 VoiceSection(
                     voiceLanguageManager = voiceLanguageManager,
                     voiceRecognitionManager = voiceRecognitionManager,
+                    talkModeState = talkModeState,
+                    onTalkModeChange = onTalkModeChange,
                 )
             }
 
