@@ -56,6 +56,8 @@ fun SettingsScreen(
     // Wake on stream
     wakeOnStreamEnabled: Boolean = true,
     onWakeOnStreamChange: (Boolean) -> Unit = {},
+    savePhotosToGallery: Boolean = false,
+    onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
     // Software Update
     installState: ApkInstaller.InstallState,
     sdkConnected: Boolean,
@@ -124,6 +126,8 @@ fun SettingsScreen(
                     cachedDeviceName = cachedDeviceName,
                     wakeOnStreamEnabled = wakeOnStreamEnabled,
                     onWakeOnStreamChange = onWakeOnStreamChange,
+                    savePhotosToGallery = savePhotosToGallery,
+                    onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
                 )
             }
 

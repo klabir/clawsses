@@ -59,6 +59,7 @@ import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
+import com.clawsses.phone.media.MediaStoreSaver
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.ui.settings.SettingsScreen
@@ -73,6 +74,8 @@ import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
 import com.clawsses.shared.SessionInfo
 import com.clawsses.shared.TtsState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,6 +120,9 @@ fun MainScreen() {
     }
     var openClawToken by remember {
         mutableStateOf(prefs.getString("openclaw_token", "") ?: "")
+    }
+    var savePhotosToGallery by remember {
+        mutableStateOf(prefs.getBoolean("save_photos_to_gallery", false))
     }
     val phoneLoadingMore by openClawClient.isLoadingMoreHistory.collectAsState()
     var inputText by remember { mutableStateOf("") }
@@ -255,7 +261,7 @@ fun MainScreen() {
             val isNewMessage = msg.role == "assistant" && !glassesManager.wakeSignalManager.wakeState.value.let {
                 it is WakeSignalManager.WakeState.Awake || it is WakeSignalManager.WakeState.WakingUp
             }
-            glassesManager.sendRawMessage(msg.toJson(), isNewMessage = isNewMessage)
+            glassesManager.sendRawMessage(buildGlassesChatMessageJson(msg), isNewMessage = isNewMessage)
         }
         openClawClient.onChatHistory = { messages ->
             // Full history reload (initial load or session switch) — reset glasses limit
@@ -304,6 +310,46 @@ fun MainScreen() {
 
     // Handle AI scene events (glasses long-press triggers voice input)
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    fun capturePhoto(sendAfterCapture: Boolean) {
+        RokidSdkManager.onPhotoResult = { status, photoBytes ->
+            mainHandler.post {
+                if (photoBytes != null && photoBytes.isNotEmpty()) {
+                    if (savePhotosToGallery) {
+                        scope.launch(Dispatchers.IO) {
+                            MediaStoreSaver.saveImage(context, photoBytes)
+                        }
+                    }
+                    val base64 = android.util.Base64.encodeToString(
+                        photoBytes,
+                        android.util.Base64.NO_WRAP
+                    )
+                    if (sendAfterCapture) {
+                        openClawClient.sendMessage("", listOf(base64))
+                    } else {
+                        pendingPhotos = pendingPhotos + base64
+                        val resultMsg = org.json.JSONObject().apply {
+                            put("type", "photo_result")
+                            put("status", "captured")
+                            put("thumbnail", createThumbnailBase64(photoBytes, 80, 60))
+                        }
+                        glassesManager.sendRawMessage(resultMsg.toString())
+                    }
+                } else {
+                    android.util.Log.e("MainScreen", "Photo capture failed (status=$status)")
+                    glassesManager.sendRawMessage(
+                        org.json.JSONObject().apply {
+                            put("type", "photo_result")
+                            put("status", "error")
+                        }.toString()
+                    )
+                }
+                RokidSdkManager.onPhotoResult = null
+            }
+        }
+        RokidSdkManager.takeGlassPhotoGlobal(1280, 720, 80)
+    }
+
     LaunchedEffect(Unit) {
         glassesManager.onAiKeyDown = {
             android.util.Log.i("MainScreen", ">>> AI key down from glasses - starting voice recognition")
@@ -338,7 +384,7 @@ fun MainScreen() {
                         val text = json.optString("text", "")
                         val images = pendingPhotos.ifEmpty { null }
                         android.util.Log.d("MainScreen", "Received user input from glasses (${text.length} chars, photos=${pendingPhotos.size})")
-                        if (text.isNotEmpty()) {
+                        if (text.isNotEmpty() || images != null) {
                             openClawClient.sendMessage(text, images)
                         }
                         pendingPhotos = emptyList()
@@ -469,32 +515,7 @@ fun MainScreen() {
                     }
                     "take_photo" -> {
                         android.util.Log.d("MainScreen", "Glasses requested photo capture")
-                        RokidSdkManager.onPhotoResult = { status, photoBytes ->
-                            mainHandler.post {
-                                android.util.Log.d("MainScreen", "Photo callback: status=$status, bytes=${photoBytes?.size}")
-                                if (photoBytes != null && photoBytes.isNotEmpty()) {
-                                    val base64 = android.util.Base64.encodeToString(photoBytes, android.util.Base64.NO_WRAP)
-                                    pendingPhotos = pendingPhotos + base64
-                                    val thumbnail = createThumbnailBase64(photoBytes, 80, 60)
-                                    val resultMsg = org.json.JSONObject().apply {
-                                        put("type", "photo_result")
-                                        put("status", "captured")
-                                        put("thumbnail", thumbnail)
-                                    }
-                                    glassesManager.sendRawMessage(resultMsg.toString())
-                                } else {
-                                    android.util.Log.e("MainScreen", "Photo capture failed: status=$status")
-                                    val resultMsg = org.json.JSONObject().apply {
-                                        put("type", "photo_result")
-                                        put("status", "error")
-                                        put("message", "Capture failed: $status")
-                                    }
-                                    glassesManager.sendRawMessage(resultMsg.toString())
-                                }
-                                RokidSdkManager.onPhotoResult = null
-                            }
-                        }
-                        RokidSdkManager.takeGlassPhotoGlobal(640, 480, 75)
+                        capturePhoto(json.optBoolean("sendAfterCapture", false))
                     }
                     "remove_photo" -> {
                         val all = json.optBoolean("all", false)
@@ -623,9 +644,9 @@ fun MainScreen() {
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (inputText.isNotBlank()) {
+                            if (inputText.isNotBlank() || pendingPhotos.isNotEmpty()) {
                                 val hadPhotos = pendingPhotos.isNotEmpty()
-                                openClawClient.sendMessage(inputText, pendingPhotos.ifEmpty { null })
+                                openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
                                 inputText = ""
                                 pendingPhotos = emptyList()
                                 if (hadPhotos) {
@@ -642,29 +663,7 @@ fun MainScreen() {
                     onClick = {
                         android.util.Log.d("MainScreen", "Taking photo from glasses camera")
                         android.widget.Toast.makeText(context, "Capturing photo...", android.widget.Toast.LENGTH_SHORT).show()
-                        RokidSdkManager.onPhotoResult = { status, photoBytes ->
-                            mainHandler.post {
-                                android.util.Log.d("MainScreen", "Photo callback: status=$status, bytes=${photoBytes?.size}")
-                                if (photoBytes != null && photoBytes.isNotEmpty()) {
-                                    val base64 = android.util.Base64.encodeToString(photoBytes, android.util.Base64.NO_WRAP)
-                                    pendingPhotos = pendingPhotos + base64
-                                    android.util.Log.d("MainScreen", "Photo added (total: ${pendingPhotos.size})")
-                                    android.widget.Toast.makeText(context, "Photo ${pendingPhotos.size} captured!", android.widget.Toast.LENGTH_SHORT).show()
-                                    val thumbnail = createThumbnailBase64(photoBytes, 80, 60)
-                                    val resultMsg = org.json.JSONObject().apply {
-                                        put("type", "photo_result")
-                                        put("status", "captured")
-                                        put("thumbnail", thumbnail)
-                                    }
-                                    glassesManager.sendRawMessage(resultMsg.toString())
-                                } else {
-                                    android.util.Log.e("MainScreen", "Photo capture failed: status=$status")
-                                    android.widget.Toast.makeText(context, "Photo failed: $status", android.widget.Toast.LENGTH_LONG).show()
-                                }
-                                RokidSdkManager.onPhotoResult = null
-                            }
-                        }
-                        RokidSdkManager.takeGlassPhotoGlobal(640, 480, 75)
+                        capturePhoto(false)
                     },
                     enabled = glassesState is GlassesConnectionManager.ConnectionState.Connected
                 ) {
@@ -720,9 +719,9 @@ fun MainScreen() {
                 // Send button
                 IconButton(
                     onClick = {
-                        if (inputText.isNotBlank()) {
+                        if (inputText.isNotBlank() || pendingPhotos.isNotEmpty()) {
                             val hadPhotos = pendingPhotos.isNotEmpty()
-                            openClawClient.sendMessage(inputText, pendingPhotos.ifEmpty { null })
+                            openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
                             inputText = ""
                             pendingPhotos = emptyList()
                             if (hadPhotos) {
@@ -860,6 +859,11 @@ fun MainScreen() {
             onWakeOnStreamChange = { enabled ->
                 glassesManager.wakeSignalManager.setEnabled(enabled)
             },
+            savePhotosToGallery = savePhotosToGallery,
+            onSavePhotosToGalleryChange = { enabled ->
+                savePhotosToGallery = enabled
+                prefs.edit().putBoolean("save_photos_to_gallery", enabled).apply()
+            },
             // Software Update
             installState = installState,
             sdkConnected = sdkConnected,
@@ -899,10 +903,7 @@ fun ChatMessageRow(msg: ChatMessage) {
             .padding(vertical = 2.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        Text(
-            text = msg.content,
-            color = if (isUser) Color(0xFF4EC9B0) else Color(0xFFD4D4D4),
-            fontSize = 13.sp,
+        Column(
             modifier = Modifier
                 .background(
                     if (isUser) Color(0xFF2A3A2A) else Color.Transparent,
@@ -910,7 +911,33 @@ fun ChatMessageRow(msg: ChatMessage) {
                 )
                 .padding(horizontal = 8.dp, vertical = 4.dp)
                 .fillMaxWidth(0.85f)
-        )
+        ) {
+            msg.attachments.forEachIndexed { index, attachment ->
+                val image = remember(attachment.base64) {
+                    attachment.base64?.let { decodeBase64Image(it, 960, 720)?.asImageBitmap() }
+                }
+                if (image != null) {
+                    Image(
+                        bitmap = image,
+                        contentDescription = attachment.fileName ?: "Attached image ${index + 1}",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp)),
+                        contentScale = ContentScale.Fit,
+                    )
+                    if (index < msg.attachments.lastIndex || msg.content.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
+            }
+            if (msg.content.isNotBlank()) {
+                Text(
+                    text = msg.content,
+                    color = if (isUser) Color(0xFF4EC9B0) else Color(0xFFD4D4D4),
+                    fontSize = 13.sp,
+                )
+            }
+        }
     }
 }
 
@@ -1375,16 +1402,74 @@ private fun buildChatHistoryJson(
                 put("content", if (msg.content.length > maxContentLength)
                     msg.content.take(maxContentLength) + "..." else msg.content)
                 put("timestamp", msg.timestamp)
+                putThumbnailAttachments(this, msg)
             })
         }
         put("messages", arr)
     }.toString()
 }
 
+/**
+ * Build a CXR-safe chat message. Full image data stays on the phone; the glasses receive
+ * only small display thumbnails so a photo cannot overflow the Bluetooth command channel.
+ */
+private fun buildGlassesChatMessageJson(message: ChatMessage): String =
+    org.json.JSONObject().apply {
+        put("type", "chat_message")
+        put("id", message.id)
+        put("role", message.role)
+        put("content", message.content.take(2000))
+        put("timestamp", message.timestamp)
+        putThumbnailAttachments(this, message)
+    }.toString()
+
+private fun putThumbnailAttachments(target: org.json.JSONObject, message: ChatMessage) {
+    val attachments = org.json.JSONArray()
+    message.attachments.take(4).forEach { attachment ->
+        val bytes = decodeBase64Bytes(attachment.base64) ?: return@forEach
+        val thumbnail = createThumbnailBase64(bytes, 80, 60)
+        if (thumbnail.isNotBlank()) {
+            attachments.put(org.json.JSONObject().apply {
+                put("type", "image")
+                put("mimeType", "image/webp")
+                put("fileName", attachment.fileName ?: "photo")
+                put("thumbnail", thumbnail)
+            })
+        }
+    }
+    if (attachments.length() > 0) target.put("attachments", attachments)
+}
+
+private fun decodeBase64Bytes(encoded: String?): ByteArray? {
+    if (encoded.isNullOrBlank()) return null
+    val payload = encoded.substringAfter(',', encoded)
+    return runCatching {
+        android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+    }.getOrNull()
+}
+
+private fun decodeBase64Image(encoded: String, maxWidth: Int, maxHeight: Int): android.graphics.Bitmap? {
+    val bytes = decodeBase64Bytes(encoded) ?: return null
+    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (bounds.outWidth / sampleSize > maxWidth * 2 || bounds.outHeight / sampleSize > maxHeight * 2) {
+        sampleSize *= 2
+    }
+    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+}
+
 private fun createThumbnailBase64(imageBytes: ByteArray, maxWidth: Int, maxHeight: Int): String {
-    val bitmap = android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+    val encoded = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
+    val bitmap = decodeBase64Image(encoded, maxWidth, maxHeight)
         ?: return ""
-    val scaled = android.graphics.Bitmap.createScaledBitmap(bitmap, maxWidth, maxHeight, true)
+    val scale = minOf(maxWidth.toFloat() / bitmap.width, maxHeight.toFloat() / bitmap.height)
+    val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
+    val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
+    val scaled = android.graphics.Bitmap.createScaledBitmap(bitmap, width, height, true)
     // Convert to high-contrast grayscale for the monochrome green glasses display.
     // Store luminance in alpha channel so glasses can tint it green.
     val grayscale = android.graphics.Bitmap.createBitmap(scaled.width, scaled.height, android.graphics.Bitmap.Config.ARGB_8888)

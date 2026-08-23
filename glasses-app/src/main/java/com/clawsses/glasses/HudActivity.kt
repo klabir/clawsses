@@ -454,11 +454,7 @@ class HudActivity : ComponentActivity() {
                     // Push through: CONTENT → INPUT (if staging or photos) → MENU
                     if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
                         // Default focus on last visible item in combined row
-                        val lastIndex = if (current.stagingText.isNotEmpty()) {
-                            current.photoThumbnails.size + 1  // Send button
-                        } else {
-                            maxOf(0, current.photoThumbnails.size - 1)  // last photo
-                        }
+                        val lastIndex = current.photoThumbnails.size + 1 // Send button
                         hudState.value = current.copy(
                             focusedArea = ChatFocusArea.INPUT,
                             inputActionIndex = lastIndex
@@ -479,11 +475,7 @@ class HudActivity : ComponentActivity() {
             Gesture.DOUBLE_TAP -> {
                 val current = hudState.value
                 if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                    val lastIndex = if (current.stagingText.isNotEmpty()) {
-                        current.photoThumbnails.size + 1  // Send button
-                    } else {
-                        maxOf(0, current.photoThumbnails.size - 1)  // last photo
-                    }
+                    val lastIndex = current.photoThumbnails.size + 1 // Send button
                     hudState.value = current.copy(
                         focusedArea = ChatFocusArea.INPUT,
                         inputActionIndex = lastIndex
@@ -500,16 +492,14 @@ class HudActivity : ComponentActivity() {
     }
 
     // INPUT staging area gestures
-    // Combined row: [photo0..N-1, CLEAR, SEND] when text is staged
-    // Combined row: [photo0..N-1] when only photos (buttons hidden)
+    // Combined row: [photo0..N-1, CLEAR, SEND] for text, photos, or both.
     // inputActionIndex maps into this combined row.
     private fun handleInputGesture(gesture: Gesture) {
         val current = hudState.value
         val photoCount = current.photoThumbnails.size
-        val hasText = current.stagingText.isNotEmpty()
         val clearIndex = photoCount       // CLEAR is right after photos
         val sendIndex = photoCount + 1    // SEND is rightmost
-        val totalItems = if (hasText) photoCount + 2 else photoCount  // buttons only when text staged
+        val totalItems = photoCount + 2
 
         when (gesture) {
             Gesture.SWIPE_FORWARD -> {
@@ -549,12 +539,9 @@ class HudActivity : ComponentActivity() {
                             )
                             phoneConnection.sendToPhone("""{"type":"remove_photo","index":$idx}""")
                             return
-                        } else if (hasText) {
-                            // Text staged: buttons visible, move focus to Send
-                            newPhotoCount + 1
                         } else {
-                            // No text: buttons hidden, clamp to last photo
-                            maxOf(0, newPhotoCount - 1)
+                            // Keep the primary action focused after removing a photo.
+                            newPhotoCount + 1
                         }
                         hudState.value = current.copy(
                             photoThumbnails = newThumbnails,
@@ -563,18 +550,22 @@ class HudActivity : ComponentActivity() {
                         phoneConnection.sendToPhone("""{"type":"remove_photo","index":$idx}""")
                     }
                     idx == clearIndex -> {
-                        // Clear staged text and dismiss
+                        // Clear all staged content and dismiss.
                         hudState.value = current.copy(
                             showInputStaging = false,
                             stagingText = "",
+                            photoThumbnails = emptyList(),
                             inputActionIndex = 0,
                             focusedArea = ChatFocusArea.CONTENT
                         )
+                        if (current.photoThumbnails.isNotEmpty()) {
+                            phoneConnection.sendToPhone("""{"type":"remove_photo","all":true}""")
+                        }
                     }
                     idx == sendIndex -> {
-                        // Submit the staged text and dismiss
+                        // Submit staged text and/or photos, then dismiss.
                         val text = current.stagingText.trim()
-                        if (text.isNotEmpty()) {
+                        if (text.isNotEmpty() || current.photoThumbnails.isNotEmpty()) {
                             hudState.value = current.copy(inputText = text)
                             submitInput()
                         }
@@ -605,11 +596,7 @@ class HudActivity : ComponentActivity() {
                     // Push through: MENU → INPUT (if staging or photos) → CONTENT
                     if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
                         // Focus on last visible item in combined row
-                        val lastIndex = if (current.stagingText.isNotEmpty()) {
-                            current.photoThumbnails.size + 1  // Send button
-                        } else {
-                            maxOf(0, current.photoThumbnails.size - 1)  // last photo
-                        }
+                        val lastIndex = current.photoThumbnails.size + 1 // Send button
                         hudState.value = current.copy(
                             focusedArea = ChatFocusArea.INPUT,
                             inputActionIndex = lastIndex
@@ -661,18 +648,7 @@ class HudActivity : ComponentActivity() {
 
         when (item) {
             MenuBarItem.PHOTO -> {
-                if (current.photoThumbnails.size >= MAX_PHOTOS) {
-                    Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring photo request")
-                } else if (DEBUG_MODE) {
-                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        cameraCapture.capture()
-                    } else {
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
-                } else {
-                    phoneConnection.sendToPhone("""{"type":"take_photo"}""")
-                    Log.d(GlassesApp.TAG, "Requested photo capture from phone")
-                }
+                requestPhotoCapture(sendAfterCapture = false)
             }
             MenuBarItem.SESSION -> {
                 requestSessionList()
@@ -697,14 +673,37 @@ class HudActivity : ComponentActivity() {
         }
     }
 
+    private fun requestPhotoCapture(sendAfterCapture: Boolean) {
+        val current = hudState.value
+        if (!sendAfterCapture && current.photoThumbnails.size >= MAX_PHOTOS) {
+            Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring photo request")
+            return
+        }
+
+        if (DEBUG_MODE) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                cameraCapture.capture()
+            } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+            return
+        }
+
+        val request = JSONObject().apply {
+            put("type", "take_photo")
+            put("sendAfterCapture", sendAfterCapture)
+        }
+        phoneConnection.sendToPhone(request.toString())
+        Log.d(GlassesApp.TAG, "Requested photo capture from phone (autoSend=$sendAfterCapture)")
+    }
+
     // ============== Submit Input ==============
 
     private fun submitInput() {
         val current = hudState.value
         val text = current.inputText.trim()
-        if (text.isEmpty()) return
-
         val thumbnails = current.photoThumbnails.toList()
+        if (text.isEmpty() && thumbnails.isEmpty()) return
         Log.d(GlassesApp.TAG, "Submitting input (${text.length} chars, photos=${thumbnails.size}, focusArea=${current.focusedArea})")
 
         // Add user message to display immediately (optimistic update)
@@ -1015,6 +1014,8 @@ class HudActivity : ComponentActivity() {
         when (command) {
             "scroll up" -> scrollUp()
             "scroll down" -> scrollDown()
+            "take photo", "foto aufnehmen" -> requestPhotoCapture(sendAfterCapture = false)
+            "take and send photo", "foto aufnehmen und senden" -> requestPhotoCapture(sendAfterCapture = true)
             "clear" -> {
                 // Clear staging area if visible, otherwise clear inputText
                 val current = hudState.value
@@ -1032,7 +1033,8 @@ class HudActivity : ComponentActivity() {
             "send", "enter" -> {
                 // Submit staging text if visible, otherwise submit inputText
                 val current = hudState.value
-                if (current.showInputStaging && current.stagingText.isNotBlank()) {
+                if (current.showInputStaging &&
+                    (current.stagingText.isNotBlank() || current.photoThumbnails.isNotEmpty())) {
                     hudState.value = current.copy(inputText = current.stagingText.trim())
                     submitInput()
                     hudState.value = hudState.value.copy(
@@ -1114,6 +1116,7 @@ class HudActivity : ComponentActivity() {
                     val id = msg.optString("id", "")
                     val role = msg.optString("role", "assistant")
                     val content = unwrapContent(msg.optString("content", ""))
+                    val incomingThumbnails = parseAttachmentThumbnails(msg)
 
                     var current = hudState.value
                     val messages = current.messages.toMutableList()
@@ -1132,7 +1135,7 @@ class HudActivity : ComponentActivity() {
                             return
                         }
                         // Phone-originated user message — grab photos from strip if any
-                        val thumbnails = current.photoThumbnails.toList()
+                        val thumbnails = incomingThumbnails.ifEmpty { current.photoThumbnails.toList() }
                         val displayMsg = DisplayMessage(
                             id = id,
                             role = role,
@@ -1156,7 +1159,8 @@ class HudActivity : ComponentActivity() {
                             id = id,
                             role = role,
                             content = content,
-                            isStreaming = false
+                            isStreaming = false,
+                            thumbnails = incomingThumbnails,
                         )
 
                         if (existingIndex >= 0) {
@@ -1188,11 +1192,13 @@ class HudActivity : ComponentActivity() {
                             val id = msgObj.optString("id", "")
                             val role = msgObj.optString("role", "assistant")
                             val content = unwrapContent(msgObj.optString("content", ""))
+                            val thumbnails = parseAttachmentThumbnails(msgObj)
                             messages.add(DisplayMessage(
                                 id = id,
                                 role = role,
                                 content = content,
-                                isStreaming = false
+                                isStreaming = false,
+                                thumbnails = thumbnails,
                             ))
                         }
                     }
@@ -1434,7 +1440,9 @@ class HudActivity : ComponentActivity() {
                                 val bytes = Base64.decode(thumbnailBase64, Base64.DEFAULT)
                                 val thumbnail = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                 hudState.value = current.copy(
-                                    photoThumbnails = current.photoThumbnails + thumbnail
+                                    photoThumbnails = current.photoThumbnails + thumbnail,
+                                    focusedArea = ChatFocusArea.INPUT,
+                                    inputActionIndex = current.photoThumbnails.size + 2,
                                 )
                                 Log.d(GlassesApp.TAG, "Photo captured, thumbnail added (total: ${current.photoThumbnails.size + 1})")
                             }
@@ -1455,12 +1463,7 @@ class HudActivity : ComponentActivity() {
                         val index = msg.optInt("index", -1)
                         if (index in current.photoThumbnails.indices) {
                             val updated = current.photoThumbnails.toMutableList().apply { removeAt(index) }
-                            // Clamp inputActionIndex: buttons only exist when text is staged
-                            val maxIndex = if (current.stagingText.isNotEmpty()) {
-                                updated.size + 1  // Send index
-                            } else {
-                                maxOf(0, updated.size - 1)  // last photo index
-                            }
+                            val maxIndex = updated.size + 1 // Send index
                             hudState.value = current.copy(
                                 photoThumbnails = updated,
                                 inputActionIndex = minOf(current.inputActionIndex, maxIndex)
@@ -1505,6 +1508,22 @@ class HudActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e(GlassesApp.TAG, "Error parsing phone message (${json.length} chars)", e)
         }
+    }
+
+    private fun parseAttachmentThumbnails(message: JSONObject): List<Bitmap> {
+        val attachments = message.optJSONArray("attachments") ?: return emptyList()
+        val thumbnails = mutableListOf<Bitmap>()
+        for (index in 0 until minOf(attachments.length(), MAX_PHOTOS)) {
+            val encoded = attachments.optJSONObject(index)?.optString("thumbnail")
+                ?.takeIf { it.isNotBlank() }
+                ?: continue
+            val bitmap = runCatching {
+                val bytes = Base64.decode(encoded.substringAfter(',', encoded), Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+            if (bitmap != null) thumbnails += bitmap
+        }
+        return thumbnails
     }
 
     /**

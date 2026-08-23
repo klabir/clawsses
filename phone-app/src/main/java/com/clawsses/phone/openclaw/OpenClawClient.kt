@@ -193,10 +193,17 @@ class OpenClawClient(
             try {
                 // Add user message to local chat
                 val userMsgId = UUID.randomUUID().toString()
+                val localAttachments = images.orEmpty().map { base64 ->
+                    ChatAttachment(
+                        mimeType = detectImageMimeType(base64),
+                        base64 = base64
+                    )
+                }
                 val userMsg = ChatMessage(
                     id = userMsgId,
                     role = "user",
-                    content = text
+                    content = text,
+                    attachments = localAttachments
                 )
                 addChatMessage(userMsg)
                 onChatMessage?.invoke(userMsg)
@@ -366,23 +373,19 @@ class OpenClawClient(
 
                                 // content can be either a string or an array of {type,text} blocks
                                 val contentElement = msgObj.get("content")
-                                val content: String = when {
+                                var content = ""
+                                var attachments: List<ChatAttachment> = emptyList()
+                                when {
                                     contentElement == null -> continue
-                                    contentElement.isJsonPrimitive -> contentElement.asString
+                                    contentElement.isJsonPrimitive -> content = contentElement.asString
                                     contentElement.isJsonArray -> {
-                                        val textBuilder = StringBuilder()
-                                        for (block in contentElement.asJsonArray) {
-                                            val blockObj = block.asJsonObject
-                                            if (blockObj.get("type")?.asString == "text") {
-                                                val text = blockObj.get("text")?.asString
-                                                if (text != null) textBuilder.append(text)
-                                            }
-                                        }
-                                        textBuilder.toString()
+                                        val parsed = parseContentArray(contentElement.asJsonArray)
+                                        content = parsed.first
+                                        attachments = parsed.second
                                     }
                                     else -> continue
                                 }
-                                if (content.isEmpty()) continue
+                                if (content.isEmpty() && attachments.isEmpty()) continue
 
                                 val id = UUID.randomUUID().toString()
                                 val timestamp = msgObj.get("timestamp")?.asLong ?: System.currentTimeMillis()
@@ -390,7 +393,8 @@ class OpenClawClient(
                                     id = id,
                                     role = role,
                                     content = content,
-                                    timestamp = timestamp
+                                    timestamp = timestamp,
+                                    attachments = attachments
                                 ))
                             } catch (e: Exception) {
                                 Log.w(TAG, "Skipping unparseable history message", e)
@@ -457,30 +461,27 @@ class OpenClawClient(
                                 if (role != "user" && role != "assistant") continue
 
                                 val contentElement = msgObj.get("content")
-                                val content: String = when {
+                                var content = ""
+                                var attachments: List<ChatAttachment> = emptyList()
+                                when {
                                     contentElement == null -> continue
-                                    contentElement.isJsonPrimitive -> contentElement.asString
+                                    contentElement.isJsonPrimitive -> content = contentElement.asString
                                     contentElement.isJsonArray -> {
-                                        val textBuilder = StringBuilder()
-                                        for (block in contentElement.asJsonArray) {
-                                            val blockObj = block.asJsonObject
-                                            if (blockObj.get("type")?.asString == "text") {
-                                                val text = blockObj.get("text")?.asString
-                                                if (text != null) textBuilder.append(text)
-                                            }
-                                        }
-                                        textBuilder.toString()
+                                        val parsed = parseContentArray(contentElement.asJsonArray)
+                                        content = parsed.first
+                                        attachments = parsed.second
                                     }
                                     else -> continue
                                 }
-                                if (content.isEmpty()) continue
+                                if (content.isEmpty() && attachments.isEmpty()) continue
 
                                 val timestamp = msgObj.get("timestamp")?.asLong ?: System.currentTimeMillis()
                                 rawMessages.add(ChatMessage(
                                     id = "",  // placeholder, assigned below
                                     role = role,
                                     content = content,
-                                    timestamp = timestamp
+                                    timestamp = timestamp,
+                                    attachments = attachments
                                 ))
                             } catch (e: Exception) {
                                 Log.w(TAG, "Skipping unparseable history message", e)
@@ -897,6 +898,57 @@ class OpenClawClient(
             deferred.completeExceptionally(Exception(reason))
         }
         pendingRequests.clear()
+    }
+
+    /** Parse text and embedded image blocks without fetching remote image URLs. */
+    private fun parseContentArray(contentArray: JsonArray): Pair<String, List<ChatAttachment>> {
+        val text = StringBuilder()
+        val attachments = mutableListOf<ChatAttachment>()
+
+        for (element in contentArray) {
+            if (!element.isJsonObject) continue
+            val block = element.asJsonObject
+            when (block.get("type")?.asString) {
+                "text", "input_text", "output_text" -> {
+                    block.get("text")?.takeIf { it.isJsonPrimitive }?.asString?.let(text::append)
+                }
+                "image", "input_image" -> {
+                    val candidates = listOfNotNull(
+                        block.get("base64")?.takeIf { it.isJsonPrimitive }?.asString,
+                        block.get("content")?.takeIf { it.isJsonPrimitive }?.asString,
+                        block.get("url")?.takeIf { it.isJsonPrimitive }?.asString,
+                        nestedPrimitiveString(block, "data", "url"),
+                        nestedPrimitiveString(block, "image_url", "url")
+                    )
+                    val embedded = candidates.firstOrNull { value ->
+                        value.startsWith("data:image/") || !value.contains("://")
+                    } ?: continue
+                    val commaIndex = embedded.indexOf(',')
+                    val base64 = if (embedded.startsWith("data:") && commaIndex >= 0) {
+                        embedded.substring(commaIndex + 1)
+                    } else {
+                        embedded
+                    }
+                    if (base64.length > 12_000_000) continue
+                    val dataMime = embedded
+                        .takeIf { it.startsWith("data:") }
+                        ?.substringAfter("data:")
+                        ?.substringBefore(';')
+                    attachments += ChatAttachment(
+                        mimeType = block.get("mimeType")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?: dataMime,
+                        fileName = block.get("fileName")?.takeIf { it.isJsonPrimitive }?.asString,
+                        base64 = base64
+                    )
+                }
+            }
+        }
+        return text.toString() to attachments
+    }
+
+    private fun nestedPrimitiveString(parent: JsonObject, objectName: String, valueName: String): String? {
+        val nested = parent.get(objectName)?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+        return nested.get(valueName)?.takeIf { it.isJsonPrimitive }?.asString
     }
 
     /** Detect image MIME type from base64 magic bytes. */

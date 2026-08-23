@@ -33,7 +33,7 @@ class CameraCapture(private val context: Context) {
     companion object {
         private const val TAG = "CameraCapture"
         private const val MAX_WIDTH = 1280
-        private const val MAX_HEIGHT = 960
+        private const val MAX_HEIGHT = 720
         private const val JPEG_QUALITY = 75
         private const val THUMBNAIL_WIDTH = 80
         private const val THUMBNAIL_HEIGHT = 60

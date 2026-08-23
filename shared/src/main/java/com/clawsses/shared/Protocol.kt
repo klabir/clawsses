@@ -113,7 +113,8 @@ data class ChatMessage(
     @SerializedName("id") val id: String,
     @SerializedName("role") val role: String,  // "user" or "assistant"
     @SerializedName("content") val content: String,
-    @SerializedName("timestamp") val timestamp: Long = System.currentTimeMillis()
+    @SerializedName("timestamp") val timestamp: Long = System.currentTimeMillis(),
+    @SerializedName("attachments") val attachments: List<ChatAttachment> = emptyList()
 ) {
     fun toJson(): String = gson.toJson(this)
 
@@ -121,6 +122,14 @@ data class ChatMessage(
         fun fromJson(json: String): ChatMessage = gson.fromJson(json, ChatMessage::class.java)
     }
 }
+
+/** Embedded image attachment retained with a chat message. */
+data class ChatAttachment(
+    @SerializedName("type") val type: String = "image",
+    @SerializedName("mimeType") val mimeType: String? = null,
+    @SerializedName("fileName") val fileName: String? = null,
+    @SerializedName("base64") val base64: String? = null
+)
 
 /**
  * Agent has acknowledged the request but no content yet.

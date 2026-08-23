@@ -975,7 +975,7 @@ private fun InputStagingArea(
 ) {
     val commandFontSize = 8.sp  // Match menu bar fixed size
     val photoCount = photos.size
-    val hasContent = text.isNotEmpty()
+    val hasContent = text.isNotEmpty() || photos.isNotEmpty()
 
     // Blinking cursor for processing state
     val cursorVisible = if (isProcessing) {

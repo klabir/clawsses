@@ -64,6 +64,8 @@ fun GlassesSection(
     cachedDeviceName: String?,
     wakeOnStreamEnabled: Boolean = true,
     onWakeOnStreamChange: (Boolean) -> Unit = {},
+    savePhotosToGallery: Boolean = false,
+    onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -104,6 +106,8 @@ fun GlassesSection(
                         cachedDeviceName = cachedDeviceName,
                         wakeOnStreamEnabled = wakeOnStreamEnabled,
                         onWakeOnStreamChange = onWakeOnStreamChange,
+                        savePhotosToGallery = savePhotosToGallery,
+                        onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
                         onDisconnect = onDisconnectGlasses,
                         onInitWifiP2P = onInitWifiP2P,
                         onClearSn = onClearSn,
@@ -292,6 +296,8 @@ private fun ConnectedContent(
     cachedDeviceName: String?,
     wakeOnStreamEnabled: Boolean,
     onWakeOnStreamChange: (Boolean) -> Unit,
+    savePhotosToGallery: Boolean,
+    onSavePhotosToGalleryChange: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
     onInitWifiP2P: () -> Unit,
     onClearSn: () -> Unit,
@@ -370,6 +376,35 @@ private fun ConnectedContent(
             Switch(
                 checked = wakeOnStreamEnabled,
                 onCheckedChange = onWakeOnStreamChange,
+            )
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Save Photos", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Store captured images in Pictures/Clawsses",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                checked = savePhotosToGallery,
+                onCheckedChange = onSavePhotosToGalleryChange,
             )
         }
     }
