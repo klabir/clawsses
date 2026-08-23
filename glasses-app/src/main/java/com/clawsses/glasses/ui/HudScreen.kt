@@ -96,7 +96,8 @@ enum class AgentState {
     IDLE,       // No active request
     THINKING,   // Ack received, waiting for first chunk
     REASONING,  // Gateway reports a private reasoning phase (content is not forwarded)
-    STREAMING   // Receiving streaming chunks
+    STREAMING,  // Receiving streaming chunks
+    ABORTING    // A targeted chat.abort request is in flight
 }
 
 /**
@@ -122,6 +123,7 @@ enum class MoreMenuItem(val icon: String, val label: String, val displaySize: Hu
     VOICE("\uD83D\uDD0A", "Voice"),  // speaker icon - label is dynamic
     TTS_STOP("\u25A0", "Stop Voice"),
     TTS_REPLAY("\u21BB", "Replay Voice"),
+    STOP_RUN("\u25A0", "Stop Run"),
 }
 
 /**
@@ -249,6 +251,8 @@ data class ChatHudState(
     val ttsEnabled: Boolean = false,
     val ttsPlaybackState: String = "idle",
     val ttsCanReplay: Boolean = false,
+    val runState: String = "idle",
+    val runCanAbort: Boolean = false,
 ) {
     /** Total number of messages */
     val totalMessages: Int get() = messages.size
@@ -527,6 +531,8 @@ fun HudScreen(
                 ttsEnabled = state.ttsEnabled,
                 ttsPlaybackState = state.ttsPlaybackState,
                 ttsCanReplay = state.ttsCanReplay,
+                runState = state.runState,
+                runCanAbort = state.runCanAbort,
                 fontFamily = monoFontFamily
             )
         }
@@ -660,6 +666,7 @@ private fun TopBar(
                 agentState == AgentState.THINKING -> "thinking..."
                 agentState == AgentState.REASONING -> "reasoning..."
                 agentState == AgentState.STREAMING -> "streaming..."
+                agentState == AgentState.ABORTING -> "stopping..."
                 else -> ""
             }
             Text(
@@ -1585,6 +1592,8 @@ private fun MoreMenuOverlay(
     ttsEnabled: Boolean,
     ttsPlaybackState: String,
     ttsCanReplay: Boolean,
+    runState: String,
+    runCanAbort: Boolean,
     fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
@@ -1617,6 +1626,7 @@ private fun MoreMenuOverlay(
                         MoreMenuItem.VOICE -> ttsEnabled
                         MoreMenuItem.TTS_STOP -> ttsPlaybackState == "playing" || ttsPlaybackState == "synthesizing"
                         MoreMenuItem.TTS_REPLAY -> ttsCanReplay
+                        MoreMenuItem.STOP_RUN -> runCanAbort || runState == "aborting"
                         else -> item.displaySize == currentDisplaySize
                     }
 
@@ -1625,6 +1635,7 @@ private fun MoreMenuOverlay(
                         MoreMenuItem.VOICE -> if (ttsEnabled) "Voice On" else "Voice Off"
                         MoreMenuItem.TTS_STOP -> "Stop Voice"
                         MoreMenuItem.TTS_REPLAY -> "Replay Voice"
+                        MoreMenuItem.STOP_RUN -> if (runState == "aborting") "Stopping Run" else "Stop Run"
                         else -> item.label
                     }
 

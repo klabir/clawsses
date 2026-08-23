@@ -17,6 +17,7 @@
 - OpenAI `gpt-4o-mini-tts` alongside ElevenLabs, with selectable voices and shared encrypted OpenAI credentials.
 - TTS stop and replay controls on both the phone and glasses.
 - Agent selection on the phone and Rokid HUD using the read-only `agents.list` gateway method.
+- Targeted cancellation of the active OpenClaw run from the phone or glasses.
 
 ### Changed
 

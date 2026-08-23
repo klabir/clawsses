@@ -77,6 +77,7 @@ import com.clawsses.shared.AgentInfo
 import com.clawsses.shared.AgentListUpdate
 import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
+import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.SessionInfo
 import com.clawsses.shared.TtsState
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +108,8 @@ fun MainScreen() {
     // State
     val glassesState by glassesManager.connectionState.collectAsState()
     val openClawState by openClawClient.connectionState.collectAsState()
+    val runState by openClawClient.runState.collectAsState()
+    val runError by openClawClient.runError.collectAsState()
     val chatMessages by openClawClient.chatMessages.collectAsState()
     val isListening by voiceRecognitionManager.isListening.collectAsState()
     val voiceMode by voiceRecognitionManager.activeMode.collectAsState()
@@ -205,6 +208,22 @@ fun MainScreen() {
         }
     }
 
+    LaunchedEffect(runState, runError, glassesState) {
+        if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
+            glassesManager.sendRawMessage(
+                RunStateUpdate(
+                    state = runState.name.lowercase(),
+                    canAbort = runState !in setOf(
+                        OpenClawClient.RunState.IDLE,
+                        OpenClawClient.RunState.ERROR,
+                        OpenClawClient.RunState.ABORTING
+                    ),
+                    error = runError
+                ).toJson()
+            )
+        }
+    }
+
     // Start/stop foreground service based on glasses connection state,
     // and send current chat history when glasses connect.
     // IMPORTANT: Don't stop the service during Reconnecting — killing the foreground
@@ -230,6 +249,17 @@ fun MainScreen() {
                     canReplay = ttsPlaybackManager.canReplay.value,
                 )
                 glassesManager.sendRawMessage(ttsStateMsg.toJson())
+                glassesManager.sendRawMessage(
+                    RunStateUpdate(
+                        state = openClawClient.runState.value.name.lowercase(),
+                        canAbort = openClawClient.runState.value !in setOf(
+                            OpenClawClient.RunState.IDLE,
+                            OpenClawClient.RunState.ERROR,
+                            OpenClawClient.RunState.ABORTING
+                        ),
+                        error = openClawClient.runError.value
+                    ).toJson()
+                )
             }
             is GlassesConnectionManager.ConnectionState.Disconnected -> {
                 // Only stop the service if we're truly disconnected (no saved pairing to reconnect to).
@@ -315,8 +345,10 @@ fun MainScreen() {
             glassesManager.sendRawMessage(msg.toJson())
             // Trigger TTS if enabled
             val fullText = openClawClient.chatMessages.value.lastOrNull { it.id == msg.id }?.content
-            if (fullText != null) {
+            if (msg.state == "final" && fullText != null) {
                 ttsPlaybackManager.onMessageComplete(fullText)
+            } else if (msg.state != "final") {
+                ttsPlaybackManager.stop()
             }
         }
         openClawClient.onSessionList = { msg ->
@@ -510,10 +542,14 @@ fun MainScreen() {
                     }
                     "switch_agent" -> {
                         val agentId = json.optString("agentId", "")
-                        val agentName = json.optString("agentName", "").ifBlank { null }
+                        val agentName = json.optString("agentName", "").takeIf { it.isNotBlank() }
                         if (agentId.isNotEmpty()) {
                             openClawClient.switchAgent(agentId, agentName)
                         }
+                    }
+                    "abort_run" -> {
+                        ttsPlaybackManager.stop()
+                        openClawClient.abortActiveRun()
                     }
                     "slash_command" -> {
                         val command = json.optString("command", "")
@@ -528,7 +564,9 @@ fun MainScreen() {
                         val isConnected = openClawState is OpenClawClient.ConnectionState.Connected
                         val currentKey = openClawClient.currentSessionKey.value
                         val currentName = currentKey?.let { key ->
-                            openClawClient.sessionList.value.firstOrNull { it.key == key }?.name
+                            val agentId = openClawClient.agentIdFromSessionKey(key)
+                            openClawClient.agentList.value.firstOrNull { it.id == agentId }?.name
+                                ?: openClawClient.sessionList.value.firstOrNull { it.key == key }?.name
                         }
                         val connUpdate = ConnectionUpdate(
                             connected = isConnected,
@@ -554,6 +592,17 @@ fun MainScreen() {
                             canReplay = ttsPlaybackManager.canReplay.value,
                         )
                         glassesManager.sendRawMessage(ttsStateMsg.toJson())
+                        glassesManager.sendRawMessage(
+                            RunStateUpdate(
+                                state = openClawClient.runState.value.name.lowercase(),
+                                canAbort = openClawClient.runState.value !in setOf(
+                                    OpenClawClient.RunState.IDLE,
+                                    OpenClawClient.RunState.ERROR,
+                                    OpenClawClient.RunState.ABORTING
+                                ),
+                                error = openClawClient.runError.value
+                            ).toJson()
+                        )
                     }
                     "tts_toggle" -> {
                         val enabled = json.optBoolean("enabled", false)
@@ -708,7 +757,8 @@ fun MainScreen() {
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (inputText.isNotBlank() || pendingPhotos.isNotEmpty()) {
+                            if (runState in setOf(OpenClawClient.RunState.IDLE, OpenClawClient.RunState.ERROR) &&
+                                (inputText.isNotBlank() || pendingPhotos.isNotEmpty())) {
                                 val hadPhotos = pendingPhotos.isNotEmpty()
                                 openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
                                 inputText = ""
@@ -781,6 +831,18 @@ fun MainScreen() {
                 }
 
                 // Send button
+                if (runState !in setOf(OpenClawClient.RunState.IDLE, OpenClawClient.RunState.ERROR)) {
+                    IconButton(
+                        onClick = {
+                            ttsPlaybackManager.stop()
+                            openClawClient.abortActiveRun()
+                        },
+                        enabled = runState != OpenClawClient.RunState.ABORTING
+                    ) {
+                        Icon(Icons.Default.StopCircle, "Stop active run")
+                    }
+                }
+
                 IconButton(
                     onClick = {
                         if (inputText.isNotBlank() || pendingPhotos.isNotEmpty()) {
@@ -792,7 +854,8 @@ fun MainScreen() {
                                 glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
                             }
                         }
-                    }
+                    },
+                    enabled = runState in setOf(OpenClawClient.RunState.IDLE, OpenClawClient.RunState.ERROR)
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, "Send")
                 }

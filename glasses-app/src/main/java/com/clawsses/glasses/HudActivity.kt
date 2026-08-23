@@ -911,6 +911,16 @@ class HudActivity : ComponentActivity() {
             MoreMenuItem.TTS_REPLAY -> {
                 phoneConnection.sendToPhone("""{"type":"tts_control","action":"replay"}""")
             }
+            MoreMenuItem.STOP_RUN -> {
+                if (current.runCanAbort) {
+                    phoneConnection.sendToPhone("""{"type":"abort_run"}""")
+                    hudState.value = current.copy(
+                        runState = "aborting",
+                        runCanAbort = false,
+                        agentState = AgentState.ABORTING
+                    )
+                }
+            }
             else -> {}
         }
     }
@@ -1346,7 +1356,11 @@ class HudActivity : ComponentActivity() {
                     // Agent acknowledged request, waiting for first chunk
                     val current = hudState.value
                     val phase = msg.optString("phase", "thinking")
-                    val state = if (phase == "reasoning") AgentState.REASONING else AgentState.THINKING
+                    val state = when (phase) {
+                        "reasoning" -> AgentState.REASONING
+                        "aborting" -> AgentState.ABORTING
+                        else -> AgentState.THINKING
+                    }
                     hudState.value = current.copy(agentState = state)
                     Log.d(GlassesApp.TAG, "Agent phase: $phase")
                 }
@@ -1632,6 +1646,24 @@ class HudActivity : ComponentActivity() {
                         )
                     }
                     Log.d(GlassesApp.TAG, "TTS state: enabled=$enabled, voice=$voiceName")
+                }
+
+                "run_state" -> {
+                    val runState = msg.optString("state", "idle")
+                    val agentState = when (runState) {
+                        "waiting" -> AgentState.THINKING
+                        "reasoning" -> AgentState.REASONING
+                        "streaming" -> AgentState.STREAMING
+                        "aborting" -> AgentState.ABORTING
+                        else -> AgentState.IDLE
+                    }
+                    hudState.update { current ->
+                        current.copy(
+                            runState = runState,
+                            runCanAbort = msg.optBoolean("canAbort", false),
+                            agentState = agentState
+                        )
+                    }
                 }
 
                 else -> {

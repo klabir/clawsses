@@ -43,6 +43,15 @@ class OpenClawClient(
         data class Error(val message: String) : ConnectionState()
     }
 
+    enum class RunState {
+        IDLE,
+        WAITING,
+        REASONING,
+        STREAMING,
+        ABORTING,
+        ERROR
+    }
+
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
@@ -51,6 +60,12 @@ class OpenClawClient(
 
     private val _events = MutableSharedFlow<OpenClawEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<OpenClawEvent> = _events.asSharedFlow()
+
+    private val _runState = MutableStateFlow(RunState.IDLE)
+    val runState: StateFlow<RunState> = _runState.asStateFlow()
+
+    private val _runError = MutableStateFlow<String?>(null)
+    val runError: StateFlow<String?> = _runError.asStateFlow()
 
     // Callbacks for forwarding to glasses
     var onChatMessage: ((ChatMessage) -> Unit)? = null
@@ -81,9 +96,11 @@ class OpenClawClient(
     private var shouldReconnect = false
 
     // Active agent run tracking
-    private var activeRunId: String? = null
-    private var activeMessageId: String? = null
-    private var activeSessionKey: String? = null // session that initiated the current run
+    @Volatile private var activeRunId: String? = null
+    @Volatile private var activeMessageId: String? = null
+    @Volatile private var activeSessionKey: String? = null // session that initiated the current run
+    @Volatile private var abortingRunId: String? = null
+    private val completedAbortedRuns = ConcurrentHashMap<String, Long>()
     private var streamingContent = StringBuilder()
     private var lastAgentPhase: String? = null
 
@@ -194,6 +211,13 @@ class OpenClawClient(
      * Send a user message to OpenClaw and trigger an agent run.
      */
     fun sendMessage(text: String, images: List<String>? = null) {
+        val previousState = _runState.value
+        if (previousState !in setOf(RunState.IDLE, RunState.ERROR) ||
+            !_runState.compareAndSet(previousState, RunState.WAITING)) {
+            Log.w(TAG, "Ignoring send while another agent run is active")
+            return
+        }
+        _runError.value = null
         scope.launch {
             try {
                 // Add user message to local chat
@@ -215,8 +239,9 @@ class OpenClawClient(
 
                 // Send to OpenClaw as chat.send
                 val idempotencyKey = UUID.randomUUID().toString()
+                val sessionKey = _currentSessionKey.value ?: "main"
                 val params = JsonObject().apply {
-                    addProperty("sessionKey", _currentSessionKey.value ?: "main")
+                    addProperty("sessionKey", sessionKey)
                     addProperty("idempotencyKey", idempotencyKey)
                     addProperty("message", text)
                     if (!images.isNullOrEmpty()) {
@@ -237,25 +262,77 @@ class OpenClawClient(
 
                 val assistantMsgId = UUID.randomUUID().toString()
                 activeMessageId = assistantMsgId
-                activeSessionKey = _currentSessionKey.value
+                activeSessionKey = sessionKey
+                activeRunId = idempotencyKey
+                abortingRunId = null
                 streamingContent.clear()
                 lastAgentPhase = null
 
                 val response = sendRequest(OpenClawMethods.CHAT_SEND, params)
                 if (response.ok) {
-                    // Extract runId from response
-                    activeRunId = response.payload?.get("runId")?.asString
+                    if (activeRunId != idempotencyKey || completedAbortedRuns.containsKey(idempotencyKey)) {
+                        return@launch
+                    }
+                    // OpenClaw uses the idempotency key as runId. Honor the echoed value
+                    // if present while retaining pre-ACK cancellation support.
+                    activeRunId = response.payload?.get("runId")
+                        ?.takeIf { it.isJsonPrimitive }?.asString ?: idempotencyKey
                     Log.d(TAG, "Agent run started")
                     // Notify glasses that agent is thinking
                     notifyAgentPhase("thinking", onlyIfUnset = true)
                 } else {
                     val errorMsg = response.error?.get("message")?.asString ?: "Agent run failed"
                     Log.e(TAG, "Agent run failed")
-                    activeRunId = null
-                    activeMessageId = null
+                    finishRunWithoutContent("error", errorMsg)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending message", e)
+                finishRunWithoutContent("error", "Unable to start agent run")
+            }
+        }
+    }
+
+    /** Abort the exact active run without broad session cancellation. */
+    fun abortActiveRun() {
+        val frozenRunId = activeRunId ?: return
+        val frozenSessionKey = activeSessionKey ?: return
+        if (_runState.value == RunState.ABORTING) return
+
+        abortingRunId = frozenRunId
+        updateRunState(RunState.ABORTING)
+        notifyAgentPhase("aborting")
+
+        scope.launch {
+            val params = JsonObject().apply {
+                addProperty("sessionKey", frozenSessionKey)
+                addProperty("runId", frozenRunId)
+            }
+            try {
+                val response = sendRequest(OpenClawMethods.CHAT_ABORT, params)
+                if (response.ok) {
+                    rememberAbortedRun(frozenRunId)
+                    if (activeRunId == frozenRunId) finalizeStreaming("aborted")
+                } else {
+                    abortingRunId = null
+                    updateRunState(
+                        if (streamingContent.isNotEmpty()) RunState.STREAMING else RunState.WAITING,
+                        response.error?.get("message")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?: "Run could not be stopped"
+                    )
+                }
+            } catch (e: TimeoutCancellationException) {
+                // The server may have accepted the request even if its ACK was lost.
+                // Stop local rendering after the bounded request timeout and ignore late events.
+                rememberAbortedRun(frozenRunId)
+                if (activeRunId == frozenRunId) finalizeStreaming("aborted")
+                Log.w(TAG, "Run abort timed out; local run closed")
+            } catch (e: Exception) {
+                abortingRunId = null
+                updateRunState(
+                    if (streamingContent.isNotEmpty()) RunState.STREAMING else RunState.WAITING,
+                    "Run could not be stopped"
+                )
+                Log.e(TAG, "Run abort failed", e)
             }
         }
     }
@@ -637,10 +714,17 @@ class OpenClawClient(
 
         val json = request.toJson()
         Log.d(TAG, "Sending request: method=$method id=$id bytes=${json.length}")
-        webSocket?.send(json) ?: throw IllegalStateException("Not connected")
+        if (webSocket?.send(json) != true) {
+            pendingRequests.remove(id, deferred)
+            throw IllegalStateException("Not connected")
+        }
 
-        return withTimeout(30_000) {
-            deferred.await()
+        return try {
+            withTimeout(30_000) {
+                deferred.await()
+            }
+        } finally {
+            pendingRequests.remove(id, deferred)
         }
     }
 
@@ -709,7 +793,7 @@ class OpenClawClient(
     private fun handleAgentEvent(payload: JsonObject?) {
         payload ?: return
         val runId = payload.get("runId")?.takeIf { it.isJsonPrimitive }?.asString
-        if (runId != null && activeRunId != null && runId != activeRunId) return
+        if (runId != null && (completedAbortedRuns.containsKey(runId) || runId != activeRunId)) return
 
         when (payload.get("stream")?.takeIf { it.isJsonPrimitive }?.asString) {
             "thinking", "reasoning" -> notifyAgentPhase("reasoning")
@@ -720,6 +804,11 @@ class OpenClawClient(
         val messageId = activeMessageId ?: return
         if ((onlyIfUnset && lastAgentPhase != null) || lastAgentPhase == phase) return
         lastAgentPhase = phase
+        when (phase) {
+            "reasoning" -> updateRunState(RunState.REASONING)
+            "aborting" -> updateRunState(RunState.ABORTING)
+            else -> if (_runState.value != RunState.ABORTING) updateRunState(RunState.WAITING)
+        }
         onAgentThinking?.invoke(AgentThinking(id = messageId, phase = phase))
     }
 
@@ -842,6 +931,8 @@ class OpenClawClient(
         val runId = payload.get("runId")?.asString
         val eventSessionKey = payload.get("sessionKey")?.asString
 
+        if (runId != null && completedAbortedRuns.containsKey(runId)) return
+
         // Check if this event belongs to a different session than the currently active one.
         // If so, mark that session as having unread messages and don't render into the current view.
         val currentKey = _currentSessionKey.value
@@ -856,7 +947,9 @@ class OpenClawClient(
                     activeRunId = null
                     activeMessageId = null
                     activeSessionKey = null
+                    abortingRunId = null
                     streamingContent.clear()
+                    updateRunState(if (state == "error") RunState.ERROR else RunState.IDLE)
                 }
             }
             return
@@ -869,6 +962,7 @@ class OpenClawClient(
 
         when (state) {
             "delta" -> {
+                if (runId == abortingRunId) return
                 // Each delta contains the full accumulated text, not just the new chunk.
                 // Diff against what we already have to extract only the new portion.
                 val fullText = extractTextFromMessage(payload)
@@ -880,9 +974,15 @@ class OpenClawClient(
                     onChatStream?.invoke(ChatStream(id = msgId, chunk = newChunk))
                     // Update phone UI with streaming text
                     updateStreamingMessage(msgId, fullText)
+                    updateRunState(RunState.STREAMING)
                 }
             }
             "final" -> {
+                if (runId == abortingRunId) {
+                    rememberAbortedRun(runId)
+                    finalizeStreaming("aborted")
+                    return
+                }
                 val fullText = extractTextFromMessage(payload)
                 val previous = streamingContent.toString()
                 if (fullText.isNotEmpty() && fullText.length > previous.length) {
@@ -894,12 +994,14 @@ class OpenClawClient(
                     streamingContent.clear()
                     streamingContent.append(fullText)
                 }
-                finalizeStreaming()
+                finalizeStreaming("final")
             }
             "aborted", "error" -> {
-                val errorMsg = payload.get("errorMessage")?.asString
-                Log.e(TAG, "Chat run ended with state=$state")
-                finalizeStreaming()
+                if (state == "aborted" && runId != null) rememberAbortedRun(runId)
+                val errorMsg = payload.get("errorMessage")
+                    ?.takeIf { it.isJsonPrimitive }?.asString
+                Log.w(TAG, "Chat run ended with state=$state")
+                finalizeStreaming(state, errorMsg)
             }
         }
     }
@@ -922,7 +1024,7 @@ class OpenClawClient(
         return sb.toString()
     }
 
-    private fun finalizeStreaming() {
+    private fun finalizeStreaming(terminalState: String, errorMessage: String? = null) {
         val msgId = activeMessageId ?: return
         val content = streamingContent.toString()
 
@@ -939,13 +1041,48 @@ class OpenClawClient(
             onChatMessage?.invoke(assistantMsg)
         }
 
-        onChatStreamEnd?.invoke(ChatStreamEnd(id = msgId))
+        onChatStreamEnd?.invoke(ChatStreamEnd(id = msgId, state = terminalState))
 
         activeRunId = null
         activeMessageId = null
         activeSessionKey = null
+        abortingRunId = null
         streamingContent.clear()
         lastAgentPhase = null
+        updateRunState(
+            if (terminalState == "error") RunState.ERROR else RunState.IDLE,
+            errorMessage
+        )
+    }
+
+    private fun finishRunWithoutContent(terminalState: String, errorMessage: String? = null) {
+        activeMessageId?.let { onChatStreamEnd?.invoke(ChatStreamEnd(id = it, state = terminalState)) }
+        activeRunId = null
+        activeMessageId = null
+        activeSessionKey = null
+        abortingRunId = null
+        streamingContent.clear()
+        lastAgentPhase = null
+        updateRunState(
+            if (terminalState == "error") RunState.ERROR else RunState.IDLE,
+            errorMessage
+        )
+    }
+
+    private fun updateRunState(state: RunState, error: String? = null) {
+        _runError.value = error
+        _runState.value = state
+    }
+
+    private fun rememberAbortedRun(runId: String?) {
+        if (runId == null) return
+        completedAbortedRuns[runId] = System.currentTimeMillis()
+        if (completedAbortedRuns.size > 64) {
+            completedAbortedRuns.entries
+                .sortedBy { it.value }
+                .take(completedAbortedRuns.size - 64)
+                .forEach { completedAbortedRuns.remove(it.key, it.value) }
+        }
     }
 
     private fun addChatMessage(message: ChatMessage) {

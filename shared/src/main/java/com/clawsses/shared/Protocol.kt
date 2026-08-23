@@ -63,6 +63,7 @@ data class OpenClawEvent(
 object OpenClawMethods {
     const val CONNECT = "connect"
     const val CHAT_SEND = "chat.send"
+    const val CHAT_ABORT = "chat.abort"
     const val CHANNEL_SEND = "channel.send"
     const val CHANNEL_LIST = "channel.list"
     const val SESSION_CREATE = "session.create"
@@ -171,13 +172,24 @@ data class ChatStream(
  */
 data class ChatStreamEnd(
     @SerializedName("type") val type: String = "chat_stream_end",
-    @SerializedName("id") val id: String
+    @SerializedName("id") val id: String,
+    @SerializedName("state") val state: String = "final"
 ) {
     fun toJson(): String = gson.toJson(this)
 
     companion object {
         fun fromJson(json: String): ChatStreamEnd = gson.fromJson(json, ChatStreamEnd::class.java)
     }
+}
+
+/** Active OpenClaw run state mirrored from the phone to the glasses. */
+data class RunStateUpdate(
+    @SerializedName("type") val type: String = "run_state",
+    @SerializedName("state") val state: String,
+    @SerializedName("canAbort") val canAbort: Boolean,
+    @SerializedName("error") val error: String? = null
+) {
+    fun toJson(): String = gson.toJson(this)
 }
 
 /**
