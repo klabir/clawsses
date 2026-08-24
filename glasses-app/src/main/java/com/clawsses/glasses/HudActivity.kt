@@ -25,6 +25,7 @@ import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.ui.AgentState
+import com.clawsses.glasses.ui.AgentProgressDisplay
 import com.clawsses.glasses.ui.AgentPickerInfo
 import com.clawsses.glasses.ui.ChatFocusArea
 import com.clawsses.glasses.ui.ChatHudState
@@ -103,6 +104,12 @@ class HudActivity : ComponentActivity() {
     private var agentPickerRequested = false
     private var scrollMessagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
 
+    // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
+    // from visible HUD state and swap it in only after the matching end marker arrives.
+    private var pendingHistorySnapshotId: String? = null
+    private var pendingHistoryHasMore = false
+    private val pendingHistoryMessages = linkedMapOf<String, PendingHistoryMessage>()
+
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
 
@@ -113,6 +120,11 @@ class HudActivity : ComponentActivity() {
     // Wake signal handling
     private var clearWakeNotificationJob: Job? = null
     private var cardExpiryJob: Job? = null
+
+    private data class PendingHistoryMessage(
+        val role: String,
+        val content: StringBuilder = StringBuilder(),
+    )
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -1539,6 +1551,59 @@ class HudActivity : ComponentActivity() {
                     }
                 }
 
+                "chat_history_begin" -> {
+                    pendingHistorySnapshotId = msg.optString("s")
+                    pendingHistoryHasMore = msg.optBoolean("hasMore", false)
+                    pendingHistoryMessages.clear()
+                    Log.d(GlassesApp.TAG, "History snapshot started")
+                }
+
+                "chat_history_chunk" -> {
+                    val snapshotId = msg.optString("s")
+                    if (snapshotId != pendingHistorySnapshotId) {
+                        Log.w(GlassesApp.TAG, "Ignored stale history chunk")
+                    } else {
+                        val id = msg.optString("i")
+                        val role = when (msg.optString("r")) {
+                            "u" -> "user"
+                            "a" -> "assistant"
+                            else -> "assistant"
+                        }
+                        pendingHistoryMessages
+                            .getOrPut(id) { PendingHistoryMessage(role) }
+                            .content
+                            .append(msg.optString("c"))
+                    }
+                }
+
+                "chat_history_end" -> {
+                    val snapshotId = msg.optString("s")
+                    if (snapshotId != pendingHistorySnapshotId) {
+                        Log.w(GlassesApp.TAG, "Ignored stale history end")
+                    } else {
+                        val messages = pendingHistoryMessages.map { (id, pending) ->
+                            DisplayMessage(
+                                id = id,
+                                role = pending.role,
+                                content = unwrapContent(pending.content.toString()),
+                                isStreaming = false,
+                            )
+                        }
+                        val current = hudState.value
+                        hudState.value = current.copy(
+                            messages = messages,
+                            agentState = AgentState.IDLE,
+                            scrollPosition = maxOf(0, messages.size - 1),
+                            scrollTrigger = current.scrollTrigger + 1,
+                            isLoadingMoreHistory = false,
+                            hasMoreHistory = pendingHistoryHasMore,
+                        )
+                        pendingHistorySnapshotId = null
+                        pendingHistoryMessages.clear()
+                        Log.d(GlassesApp.TAG, "Loaded complete chunked history (${messages.size} messages)")
+                    }
+                }
+
                 "agent_thinking" -> {
                     // Agent acknowledged request, waiting for first chunk
                     val current = hudState.value
@@ -1550,6 +1615,32 @@ class HudActivity : ComponentActivity() {
                     }
                     hudState.value = current.copy(agentState = state)
                     Log.d(GlassesApp.TAG, "Agent phase: $phase")
+                }
+
+                "agent_progress" -> {
+                    val current = hudState.value
+                    val state = msg.optString("state", "active")
+                    if (state == "clear") {
+                        hudState.value = current.copy(agentProgress = emptyList())
+                    } else {
+                        val id = msg.optString("id", "")
+                        val label = msg.optString("label", "").trim()
+                        if (id.isNotBlank() && label.isNotBlank()) {
+                            val updated = current.agentProgress
+                                .filterNot { it.id == id }
+                                .plus(
+                                    AgentProgressDisplay(
+                                        id = id,
+                                        kind = msg.optString("kind", "status"),
+                                        label = label.take(96),
+                                        state = state,
+                                    )
+                                )
+                                .takeLast(3)
+                            hudState.value = current.copy(agentProgress = updated)
+                        }
+                    }
+                    Log.d(GlassesApp.TAG, "Agent progress state: $state")
                 }
 
                 "chat_stream" -> {
@@ -1585,6 +1676,7 @@ class HudActivity : ComponentActivity() {
                     hudState.value = current.copy(
                         messages = messages,
                         agentState = AgentState.STREAMING,
+                        agentProgress = emptyList(),
                         scrollPosition = if (shouldAutoScroll) messages.size - 1 else current.scrollPosition,
                         scrollTrigger = if (shouldAutoScroll) current.scrollTrigger + 1 else current.scrollTrigger
                     )
@@ -1608,7 +1700,8 @@ class HudActivity : ComponentActivity() {
 
                     hudState.value = current.copy(
                         messages = messages,
-                        agentState = AgentState.IDLE
+                        agentState = AgentState.IDLE,
+                        agentProgress = emptyList(),
                     )
 
                     Log.d(GlassesApp.TAG, "Stream ended for $id")

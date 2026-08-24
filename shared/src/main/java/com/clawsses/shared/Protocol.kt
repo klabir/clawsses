@@ -73,6 +73,8 @@ object OpenClawMethods {
     const val CHAT_HISTORY = "chat.history"
     const val CONFIG_GET = "config.get"
     const val AGENTS_LIST = "agents.list"
+    const val MODELS_LIST = "models.list"
+    const val SESSION_MODEL_SELECT = "sessions.model.select"
     const val SYSTEM_PRESENCE = "system-presence"
 }
 
@@ -146,6 +148,29 @@ data class AgentThinking(
 
     companion object {
         fun fromJson(json: String): AgentThinking = gson.fromJson(json, AgentThinking::class.java)
+    }
+}
+
+/**
+ * A privacy-filtered progress item for the glasses HUD.
+ * Raw reasoning, tool arguments, tool results, and error payloads never cross CXR.
+ */
+data class AgentProgressUpdate(
+    @SerializedName("type") val type: String = "agent_progress",
+    @SerializedName("id") val id: String,
+    @SerializedName("kind") val kind: String,
+    @SerializedName("label") val label: String,
+    @SerializedName("state") val state: String = "active",
+) {
+    fun toJson(): String = gson.toJson(this)
+
+    companion object {
+        fun clear(): AgentProgressUpdate = AgentProgressUpdate(
+            id = "all",
+            kind = "status",
+            label = "",
+            state = "clear",
+        )
     }
 }
 
@@ -315,6 +340,15 @@ data class AgentInfo(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
     @SerializedName("model") val model: String? = null
+)
+
+/** One configured model exposed by the OpenClaw gateway. */
+data class ModelInfo(
+    @SerializedName("ref") val ref: String,
+    @SerializedName("provider") val provider: String,
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("available") val available: Boolean = true,
 )
 
 // ============================================

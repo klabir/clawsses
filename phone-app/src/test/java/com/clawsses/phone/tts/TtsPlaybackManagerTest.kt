@@ -21,4 +21,12 @@ class TtsPlaybackManagerTest {
         assertTrue(chunks.all { it.length <= 3_500 })
         assertEquals(words, chunks.joinToString(" ").split(" "))
     }
+
+    @Test
+    fun activePlaybackBlocksVoiceCaptureButTerminalStatesDoNot() {
+        assertTrue(TtsPlaybackState.SYNTHESIZING.blocksVoiceCapture())
+        assertTrue(TtsPlaybackState.PLAYING.blocksVoiceCapture())
+        assertTrue(!TtsPlaybackState.IDLE.blocksVoiceCapture())
+        assertTrue(!TtsPlaybackState.ERROR.blocksVoiceCapture())
+    }
 }

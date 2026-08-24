@@ -176,6 +176,13 @@ data class AgentPickerInfo(
     val model: String? = null
 )
 
+data class AgentProgressDisplay(
+    val id: String,
+    val kind: String,
+    val label: String,
+    val state: String,
+)
+
 data class HudCardActionDisplay(val id: String, val label: String)
 
 data class HudCardDisplay(
@@ -227,6 +234,7 @@ data class ChatHudState(
     val photoThumbnails: List<Bitmap> = emptyList(),
     val isConnected: Boolean = false,
     val agentState: AgentState = AgentState.IDLE,
+    val agentProgress: List<AgentProgressDisplay> = emptyList(),
     val menuBarIndex: Int = 0,
     val hudPosition: HudPosition = HudPosition.FULL,
     val displaySize: HudDisplaySize = HudDisplaySize.NORMAL,
@@ -493,6 +501,7 @@ fun HudScreen(
                 ChatContentArea(
                     messages = state.messages,
                     agentState = state.agentState,
+                    progressItems = state.agentProgress,
                     listState = listState,
                     fontSize = fontSize,
                     fontFamily = monoFontFamily,
@@ -814,6 +823,7 @@ private fun TopBar(
 private fun ChatContentArea(
     messages: List<DisplayMessage>,
     agentState: AgentState,
+    progressItems: List<AgentProgressDisplay>,
     listState: androidx.compose.foundation.lazy.LazyListState,
     fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily,
@@ -826,8 +836,8 @@ private fun ChatContentArea(
     // Uses a pixel-based scrollBy after a frame delay so the LazyColumn
     // has laid out the new item before we scroll.
     val isThinking = agentState == AgentState.THINKING
-    LaunchedEffect(isThinking) {
-        if (isThinking && messages.isNotEmpty()) {
+    LaunchedEffect(isThinking, progressItems.size) {
+        if ((isThinking || progressItems.isNotEmpty()) && messages.isNotEmpty()) {
             // Wait for the thinking indicator item to be composed and laid out
             delay(50)
             // Only auto-scroll if the user is near the bottom
@@ -844,7 +854,7 @@ private fun ChatContentArea(
             .clipToBounds()
             .alpha(alpha)
     ) {
-        if (messages.isEmpty() && agentState == AgentState.IDLE) {
+        if (messages.isEmpty() && agentState == AgentState.IDLE && progressItems.isEmpty()) {
             Text(
                 text = "No messages yet",
                 color = HudColors.dimText,
@@ -892,8 +902,20 @@ private fun ChatContentArea(
                     }
                 }
 
+                if (progressItems.isNotEmpty()) {
+                    item(key = "agent_progress") {
+                        AgentProgressPanel(
+                            items = progressItems,
+                            fontSize = fontSize,
+                            fontFamily = fontFamily,
+                        )
+                    }
+                }
+
                 // Thinking indicator (shown after last message when agent is thinking)
-                if (agentState == AgentState.THINKING || agentState == AgentState.REASONING) {
+                if (progressItems.isEmpty() &&
+                    (agentState == AgentState.THINKING || agentState == AgentState.REASONING)
+                ) {
                     item {
                         ThinkingIndicator(
                             label = if (agentState == AgentState.REASONING) "reasoning" else "thinking",
@@ -903,6 +925,40 @@ private fun ChatContentArea(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AgentProgressPanel(
+    items: List<AgentProgressDisplay>,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    fontFamily: FontFamily,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(end = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        items.takeLast(3).forEach { item ->
+            val marker = when (item.state) {
+                "done" -> "✓"
+                "error" -> "!"
+                else -> "›"
+            }
+            Text(
+                text = "$marker ${item.label}",
+                color = when (item.state) {
+                    "error" -> HudColors.error
+                    "done" -> HudColors.dimText
+                    else -> HudColors.cyan
+                },
+                fontSize = fontSize,
+                fontFamily = fontFamily,
+                softWrap = true,
+                maxLines = 2,
+            )
         }
     }
 }

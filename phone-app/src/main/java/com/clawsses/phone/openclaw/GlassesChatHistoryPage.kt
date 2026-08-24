@@ -1,48 +1,102 @@
 package com.clawsses.phone.openclaw
 
 import com.clawsses.shared.ChatMessage
-import com.google.gson.JsonArray
+import com.clawsses.shared.CxrPayloadLimits
 import com.google.gson.JsonObject
+import java.util.concurrent.atomic.AtomicLong
 
-/** Builds a recent-history snapshot that fits in one Rokid CXR custom command. */
+/** Builds an atomic recent-history snapshot split across valid Rokid CXR commands. */
 object GlassesChatHistoryPage {
-    const val MAX_CXR_BYTES = 500
+    const val MAX_CXR_BYTES = CxrPayloadLimits.MAX_BYTES
     const val MAX_MESSAGES = 3
-    const val MAX_CONTENT_BYTES = 64
 
-    fun build(messages: List<ChatMessage>, maxBytes: Int = MAX_CXR_BYTES): String {
+    private val nextSnapshotId = AtomicLong()
+
+    fun buildPackets(
+        messages: List<ChatMessage>,
+        maxBytes: Int = MAX_CXR_BYTES,
+    ): List<String> {
         require(maxBytes > 0)
-        val selected = messages.takeLast(MAX_MESSAGES).map { message ->
+        val snapshotId = nextSnapshotId.incrementAndGet().toString(36)
+        val selected = messages.takeLast(MAX_MESSAGES)
+        val packets = mutableListOf(
             JsonObject().apply {
-                addProperty("i", message.id)
-                addProperty("r", message.role.take(1))
-                addProperty("c", truncateUtf8(message.content, MAX_CONTENT_BYTES))
-            }
-        }.toMutableList()
-
-        while (true) {
-            val payload = JsonObject().apply {
-                addProperty("type", "chat_history")
+                addProperty("type", "chat_history_begin")
+                addProperty("s", snapshotId)
                 addProperty("hasMore", false)
-                add("messages", JsonArray().also { array -> selected.forEach(array::add) })
             }.toString()
-            if (payload.toByteArray(Charsets.UTF_8).size <= maxBytes || selected.isEmpty()) return payload
-            selected.removeAt(0)
+        )
+
+        selected.forEach { message ->
+            packets += buildMessagePackets(snapshotId, message, maxBytes)
         }
+        packets += JsonObject().apply {
+            addProperty("type", "chat_history_end")
+            addProperty("s", snapshotId)
+        }.toString()
+
+        packets.forEach { packet ->
+            require(CxrPayloadLimits.byteSize(packet) <= maxBytes) {
+                "History packet exceeds CXR limit: ${CxrPayloadLimits.byteSize(packet)} bytes"
+            }
+        }
+        return packets
     }
 
-    internal fun truncateUtf8(value: String, maxBytes: Int): String {
-        if (value.toByteArray(Charsets.UTF_8).size <= maxBytes) return value
-        val result = StringBuilder()
-        var used = 0
-        val iterator = value.codePoints().iterator()
-        while (iterator.hasNext()) {
-            val text = String(Character.toChars(iterator.nextInt()))
-            val bytes = text.toByteArray(Charsets.UTF_8).size
-            if (used + bytes > maxBytes) break
-            result.append(text)
-            used += bytes
-        }
-        return result.toString()
+    private fun buildMessagePackets(
+        snapshotId: String,
+        message: ChatMessage,
+        maxBytes: Int,
+    ): List<String> {
+        val packets = mutableListOf<String>()
+        var charOffset = 0
+
+        do {
+            val remainingCodePoints = message.content.codePointCount(charOffset, message.content.length)
+            var low = if (remainingCodePoints == 0) 0 else 1
+            var high = remainingCodePoints
+            var bestPacket: String? = null
+            var bestEnd = charOffset
+
+            while (low <= high) {
+                val count = (low + high) ushr 1
+                val end = message.content.offsetByCodePoints(charOffset, count)
+                val packet = buildChunkPacket(
+                    snapshotId = snapshotId,
+                    message = message,
+                    content = message.content.substring(charOffset, end),
+                )
+                if (CxrPayloadLimits.byteSize(packet) <= maxBytes) {
+                    bestPacket = packet
+                    bestEnd = end
+                    low = count + 1
+                } else {
+                    high = count - 1
+                }
+            }
+
+            if (remainingCodePoints == 0) {
+                bestPacket = buildChunkPacket(snapshotId, message, "")
+            }
+            require(bestPacket != null) {
+                "CXR limit is too small for a history chunk header"
+            }
+            packets += bestPacket
+            charOffset = bestEnd
+        } while (charOffset < message.content.length)
+
+        return packets
     }
+
+    private fun buildChunkPacket(
+        snapshotId: String,
+        message: ChatMessage,
+        content: String,
+    ): String = JsonObject().apply {
+        addProperty("type", "chat_history_chunk")
+        addProperty("s", snapshotId)
+        addProperty("i", message.id)
+        addProperty("r", message.role.take(1))
+        addProperty("c", content)
+    }.toString()
 }

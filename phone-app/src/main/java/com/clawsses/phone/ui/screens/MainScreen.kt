@@ -79,18 +79,20 @@ import com.clawsses.phone.tts.ElevenLabsClient
 import com.clawsses.phone.tts.OpenAiTtsClient
 import com.clawsses.phone.tts.TtsPlaybackManager
 import com.clawsses.phone.tts.TtsSettingsManager
+import com.clawsses.phone.tts.blocksVoiceCapture
 import com.clawsses.phone.voice.VoiceCommandHandler
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.LiveCaptionManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
 import com.clawsses.shared.AgentInfo
-import com.clawsses.shared.AgentListUpdate
+import com.clawsses.shared.AgentProgressUpdate
 import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
 import com.clawsses.shared.CxrPayloadLimits
 import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
 import com.clawsses.shared.LiveCaptionUpdate
+import com.clawsses.shared.ModelInfo
 import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.ScrollSettings
 import com.clawsses.shared.ScrollSettingsUpdate
@@ -141,6 +143,10 @@ fun MainScreen() {
     val selectedVoiceLanguage by voiceLanguageManager.selectedLanguage.collectAsState()
     val sessionList by openClawClient.sessionList.collectAsState()
     val agentList by openClawClient.agentList.collectAsState()
+    val modelList by openClawClient.modelList.collectAsState()
+    val currentModelRef by openClawClient.currentModelRef.collectAsState()
+    val isSelectingModel by openClawClient.isSelectingModel.collectAsState()
+    val modelSelectionError by openClawClient.modelSelectionError.collectAsState()
     val currentSessionKey by openClawClient.currentSessionKey.collectAsState()
     val unreadSessions by openClawClient.unreadSessions.collectAsState()
     val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsState()
@@ -184,6 +190,7 @@ fun MainScreen() {
     var showSettings by remember { mutableStateOf(false) }
     var showSessionPicker by remember { mutableStateOf(false) }
     var showAgentPicker by remember { mutableStateOf(false) }
+    var showModelPicker by remember { mutableStateOf(false) }
     var pendingPhotos by remember { mutableStateOf<List<String>>(emptyList()) }
     val listState = rememberLazyListState()
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
@@ -192,9 +199,6 @@ fun MainScreen() {
     val latestOpenClawState = rememberUpdatedState(openClawState)
     val latestGlassesState = rememberUpdatedState(glassesState)
     val latestPendingPhotos = rememberUpdatedState(pendingPhotos)
-
-    // How many messages we send to glasses (starts at 20, grows on demand)
-    var glassesMessageLimit by remember { mutableIntStateOf(20) }
 
     fun syncTalkModeStateToGlasses() {
         if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
@@ -218,6 +222,16 @@ fun MainScreen() {
                 ).toJson()
             )
         }
+    }
+
+    fun sendHistoryToGlasses(messages: List<ChatMessage>, reason: String) {
+        val packets = GlassesChatHistoryPage.buildPackets(messages)
+        android.util.Log.i(
+            "MainScreen",
+            "Sending complete chunked history ($reason): ${messages.size} source messages, " +
+                "${packets.size} CXR packets, max=${packets.maxOf { CxrPayloadLimits.byteSize(it) }} bytes"
+        )
+        packets.forEach(glassesManager::sendRawMessage)
     }
 
     fun sendHudCard(card: HudCard) {
@@ -292,7 +306,17 @@ fun MainScreen() {
     }
 
     lateinit var scheduleTalkRestart: (Long) -> Unit
+    val prepareTtsPlayback = {
+        pendingTalkRestart?.let(mainHandler::removeCallbacks)
+        pendingTalkRestart = null
+        voiceRecognitionManager.stopListening()
+        RokidSdkManager.clearCommunicationDevice()
+    }
     val startTalkListening: (TalkModeSource, Boolean) -> Unit = startTalk@{ source, interruptCurrent ->
+        if (TtsPlaybackManager.isPlaybackActive()) {
+            android.util.Log.i("MainScreen", "Ignoring voice start while process-wide TTS is active")
+            return@startTalk
+        }
         pendingTalkRestart?.let(mainHandler::removeCallbacks)
         pendingTalkRestart = null
         val current = talkModeManager.state.value
@@ -439,8 +463,13 @@ fun MainScreen() {
         pendingTalkRestart?.let(mainHandler::removeCallbacks)
         val restart = Runnable {
             val state = talkModeManager.state.value
-            if (state.enabled) startTalkListening(state.source, false)
             pendingTalkRestart = null
+            if (state.enabled &&
+                !TtsPlaybackManager.isPlaybackActive() &&
+                !ttsPlaybackManager.state.value.blocksVoiceCapture()
+            ) {
+                startTalkListening(state.source, false)
+            }
         }
         pendingTalkRestart = restart
         mainHandler.postDelayed(restart, delayMs)
@@ -486,6 +515,7 @@ fun MainScreen() {
         if (openClawState is OpenClawClient.ConnectionState.Connected) {
             openClawClient.requestSessions()
             openClawClient.requestAgents()
+            openClawClient.requestModels()
         } else if (talkModeManager.state.value.enabled) {
             talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
         }
@@ -607,7 +637,8 @@ fun MainScreen() {
         when (ttsPlaybackState) {
             com.clawsses.phone.tts.TtsPlaybackState.SYNTHESIZING,
             com.clawsses.phone.tts.TtsPlaybackState.PLAYING -> {
-                talkModeManager.setPhase(TalkModePhase.SPEAKING)
+                prepareTtsPlayback()
+                if (talk.enabled) talkModeManager.setPhase(TalkModePhase.SPEAKING)
             }
             com.clawsses.phone.tts.TtsPlaybackState.IDLE -> {
                 if (talk.phase == TalkModePhase.SPEAKING) {
@@ -637,14 +668,7 @@ fun MainScreen() {
                 // Send current chat history to glasses if we have any
                 val currentMessages = openClawClient.chatMessages.value
                 if (currentMessages.isNotEmpty()) {
-                    val historyJson = GlassesChatHistoryPage.build(currentMessages)
-                    android.util.Log.i(
-                        "MainScreen",
-                        "Sending compact history snapshot to newly connected glasses: " +
-                            "${currentMessages.size} source messages, " +
-                            "${historyJson.toByteArray(Charsets.UTF_8).size} bytes"
-                    )
-                    glassesManager.sendRawMessage(historyJson)
+                    sendHistoryToGlasses(currentMessages, "glasses connected")
                 }
                 // Send TTS state to glasses
                 val ttsStateMsg = TtsState(
@@ -755,17 +779,15 @@ fun MainScreen() {
             }
         }
         openClawClient.onChatHistory = { messages ->
-            // Full history remains on the phone. The glasses receive a bounded recent snapshot
-            // because a Rokid CXR custom command must stay below 500 UTF-8 bytes.
-            glassesMessageLimit = 0
-            val json = GlassesChatHistoryPage.build(messages)
-            android.util.Log.i("MainScreen", "Forwarding compact chat_history to glasses: ${messages.size} source messages, ${json.toByteArray(Charsets.UTF_8).size} bytes")
-            glassesManager.sendRawMessage(json)
+            sendHistoryToGlasses(messages, "history callback")
         }
         openClawClient.onAgentThinking = { msg ->
             // Agent is about to start streaming — notify wake manager
             glassesManager.notifyStreamStart(msg.id)
             glassesManager.sendRawMessage(msg.toJson(), isStreamContent = true)
+        }
+        openClawClient.onAgentProgress = { update: AgentProgressUpdate ->
+            glassesManager.sendRawMessage(update.toJson(), isStreamContent = true)
         }
         openClawClient.onChatStream = { msg ->
             // Streaming content — mark as such for wake signal handling
@@ -783,6 +805,7 @@ fun MainScreen() {
                     if (ttsSettingsManager.isEnabled.value &&
                         ttsSettingsManager.isConfigured() && fullText.isNotBlank()
                     ) {
+                        prepareTtsPlayback()
                         talkModeManager.setPhase(TalkModePhase.SPEAKING)
                         ttsPlaybackManager.onMessageComplete(fullText)
                     } else {
@@ -790,6 +813,11 @@ fun MainScreen() {
                         scheduleTalkRestart(450L)
                     }
                 } else {
+                    if (ttsSettingsManager.isEnabled.value &&
+                        ttsSettingsManager.isConfigured() && fullText.isNotBlank()
+                    ) {
+                        prepareTtsPlayback()
+                    }
                     ttsPlaybackManager.onMessageComplete(fullText)
                 }
             } else if (msg.state != "final") {
@@ -833,17 +861,11 @@ fun MainScreen() {
             glassesManager.sendRawMessage(msg.toJson())
         }
         openClawClient.onMoreHistoryLoaded = { prependedCount, hasMore ->
-            // The phone keeps the expanded history. The glasses always receive one bounded
-            // recent snapshot because a complete history cannot fit in a CXR custom command.
             val allMessages = openClawClient.chatMessages.value
-            val json = GlassesChatHistoryPage.build(allMessages)
-            android.util.Log.i(
-                "MainScreen",
-                "Forwarding compact chat_history after phone history expansion: " +
-                    "${allMessages.size} source messages, prepended=$prependedCount, " +
-                    "phoneHasMore=$hasMore, ${json.toByteArray(Charsets.UTF_8).size} bytes"
+            sendHistoryToGlasses(
+                allMessages,
+                "phone history expansion; prepended=$prependedCount, phoneHasMore=$hasMore"
             )
-            glassesManager.sendRawMessage(json)
         }
     }
 
@@ -891,6 +913,15 @@ fun MainScreen() {
         glassesManager.onAiKeyDown = {
             android.util.Log.i("MainScreen", ">>> AI key down from glasses - starting voice recognition")
             mainHandler.post {
+                if (TtsPlaybackManager.isPlaybackActive() ||
+                    ttsPlaybackManager.state.value.blocksVoiceCapture()
+                ) {
+                    android.util.Log.i(
+                        "MainScreen",
+                        "Ignoring Rokid AI-key callback while TTS is active",
+                    )
+                    return@post
+                }
                 if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                 val talk = talkModeManager.state.value
                 if (talk.enabled) {
@@ -926,7 +957,7 @@ fun MainScreen() {
 
     // Handle messages from glasses and forward to OpenClaw
     LaunchedEffect(Unit) {
-        glassesManager.onMessageFromGlasses = { message ->
+        glassesManager.onMessageFromGlasses = onGlassesMessage@{ message ->
             try {
                 val json = org.json.JSONObject(message)
                 val type = json.optString("type", "")
@@ -942,6 +973,15 @@ fun MainScreen() {
                     }
                     "start_voice" -> {
                         android.util.Log.d("MainScreen", "Glasses requested voice recognition start")
+                        if (TtsPlaybackManager.isPlaybackActive() ||
+                            ttsPlaybackManager.state.value.blocksVoiceCapture()
+                        ) {
+                            android.util.Log.i(
+                                "MainScreen",
+                                "Ignoring automatic glasses voice restart while TTS is active",
+                            )
+                            return@onGlassesMessage
+                        }
                         if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                         val talk = talkModeManager.state.value
                         if (talk.enabled) {
@@ -1084,14 +1124,12 @@ fun MainScreen() {
                         )
                         glassesManager.sendRawMessage(connUpdate.toJson())
                         glassesManager.sendRawMessage(
-                            AgentListUpdate(
-                                agents = openClawClient.agentList.value,
-                                currentAgentId = openClawClient.agentIdFromSessionKey(currentKey)
-                            ).toJson()
+                            openClawClient.currentAgentListUpdate().toJson()
                         )
+                        openClawClient.requestModels()
                         // Send current chat history
                         val currentMessages = openClawClient.chatMessages.value
-                        glassesManager.sendRawMessage(GlassesChatHistoryPage.build(currentMessages))
+                        sendHistoryToGlasses(currentMessages, "HUD state request")
                         // Send TTS state
                         val ttsStateMsg = TtsState(
                             enabled = ttsSettingsManager.isEnabled.value,
@@ -1143,7 +1181,10 @@ fun MainScreen() {
                     "tts_control" -> {
                         when (json.optString("action", "")) {
                             "stop" -> ttsPlaybackManager.stop()
-                            "replay" -> ttsPlaybackManager.replay()
+                            "replay" -> {
+                                prepareTtsPlayback()
+                                ttsPlaybackManager.replay()
+                            }
                         }
                     }
                     "talk_mode_toggle" -> {
@@ -1205,10 +1246,10 @@ fun MainScreen() {
                         val allMessages = openClawClient.chatMessages.value
                         android.util.Log.d(
                             "MainScreen",
-                            "Glasses requested more history; returning bounded recent snapshot " +
+                            "Glasses requested more history; returning complete recent snapshot " +
                                 "from ${allMessages.size} cached messages"
                         )
-                        glassesManager.sendRawMessage(GlassesChatHistoryPage.build(allMessages))
+                        sendHistoryToGlasses(allMessages, "legacy history request")
                     }
                 }
             } catch (e: Exception) {
@@ -1477,6 +1518,23 @@ fun MainScreen() {
                         openClawClient.switchAgent(agent.id, agent.name)
                     },
                     onDismiss = { showAgentPicker = false }
+                )
+
+                ModelSelector(
+                    models = modelList,
+                    currentModelRef = currentModelRef,
+                    expanded = showModelPicker,
+                    selecting = isSelectingModel,
+                    error = modelSelectionError,
+                    onToggle = {
+                        if (!showModelPicker) openClawClient.requestModels()
+                        showModelPicker = !showModelPicker
+                    },
+                    onSelect = { model ->
+                        showModelPicker = false
+                        openClawClient.selectModel(model)
+                    },
+                    onDismiss = { showModelPicker = false }
                 )
             }
 
@@ -2019,6 +2077,125 @@ fun AgentSelector(
                             }
                         },
                         onClick = { onSelect(agent) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ModelSelector(
+    models: List<ModelInfo>,
+    currentModelRef: String?,
+    expanded: Boolean,
+    selecting: Boolean,
+    error: String?,
+    onToggle: () -> Unit,
+    onSelect: (ModelInfo) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val currentModel = models.firstOrNull { it.ref == currentModelRef }
+    val displayName = currentModel?.name ?: currentModelRef ?: "Select model"
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !selecting, onClick = onToggle)
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = "Model",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (selecting) "Changing model..." else displayName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1
+                    )
+                    currentModelRef?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse models" else "Expand models",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            error?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismiss,
+            modifier = Modifier.fillMaxWidth(0.9f)
+        ) {
+            if (models.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("Loading models...") },
+                    onClick = {},
+                    enabled = false
+                )
+            } else {
+                models.forEach { model ->
+                    val isCurrent = model.ref == currentModelRef
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isCurrent) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = "Current model",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = model.name,
+                                        color = when {
+                                            !model.available -> Color.Gray
+                                            isCurrent -> MaterialTheme.colorScheme.primary
+                                            else -> MaterialTheme.colorScheme.onSurface
+                                        },
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = if (model.available) model.ref else "${model.ref} (unavailable)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        },
+                        onClick = { onSelect(model) },
+                        enabled = model.available && !selecting && !isCurrent,
                     )
                 }
             }

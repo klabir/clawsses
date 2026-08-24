@@ -42,6 +42,8 @@
 - Vision commands `read this`, `translate this`, `identify this`, and `remember this` (plus German equivalents) that capture and send a photo with a task-specific prompt.
 - A safe Clawsses-to-Hi-Rokid handoff that releases the CXR connection before opening the official app.
 - A persistent phone setting for one to five chat messages per Rokid scroll gesture, defaulting to one.
+- Phone-side selection of the same configured model catalog shown by OpenClaw WebChat, with unavailable models visibly disabled.
+- A transient Rokid HUD progress panel for privacy-filtered reasoning phases, tool activity, and active plan steps until visible answer streaming begins.
 
 ### Changed
 
@@ -52,7 +54,10 @@
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
-- Phone and glasses are versioned together as 1.3.7 (build 16).
+- Phone and glasses are versioned together as 1.3.11 (build 20).
+- Raw private reasoning, tool arguments, tool results, paths, and error payloads remain excluded from the glasses protocol.
+- Model changes use a narrow `operator.write` gateway method that accepts only a session key and an allowlisted model; Clawsses does not receive `operator.admin`.
+- The effective session model is synchronized to the Rokid agent display after selection, session changes, reconnects, and HUD state requests.
 
 ### Fixed
 
@@ -65,6 +70,9 @@
 - `+ New Session` remains actionable while the first session page is loading, so a delayed list request cannot lock the picker.
 - Oversized CXR commands are rejected by UTF-8 byte size instead of being truncated into invalid JSON.
 - Added a top safe inset to prevent the Rokid optical compositor from reflecting the status row below the intended HUD area.
+- TTS uses the active Rokid SCO voice route while the glasses control link is connected, avoiding silent A2DP playback when Android reports the headset call as active.
+- Pending Talk Mode restarts cannot re-acquire the SCO microphone while TTS is synthesizing or playing.
+- Rokid history snapshots are split into bounded CXR packets and applied atomically, preserving complete chat text after HUD state replay or session changes.
 
 ### Removed
 

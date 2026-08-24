@@ -71,6 +71,7 @@ class OpenClawClient(
     var onChatMessage: ((ChatMessage) -> Unit)? = null
     var onChatHistory: ((List<ChatMessage>) -> Unit)? = null
     var onAgentThinking: ((AgentThinking) -> Unit)? = null
+    var onAgentProgress: ((AgentProgressUpdate) -> Unit)? = null
     var onChatStream: ((ChatStream) -> Unit)? = null
     var onChatStreamEnd: ((ChatStreamEnd) -> Unit)? = null
     var onSessionList: ((SessionListUpdate) -> Unit)? = null
@@ -104,6 +105,7 @@ class OpenClawClient(
     private val completedAbortedRuns = ConcurrentHashMap<String, Long>()
     private var streamingContent = StringBuilder()
     private var lastAgentPhase: String? = null
+    @Volatile private var agentProgressActive = false
 
     // Current session tracking (exposed as StateFlow for phone UI)
     private val _currentSessionKey = MutableStateFlow<String?>(null)
@@ -125,6 +127,18 @@ class OpenClawClient(
 
     private val _agentList = MutableStateFlow<List<AgentInfo>>(emptyList())
     val agentList: StateFlow<List<AgentInfo>> = _agentList.asStateFlow()
+
+    private val _modelList = MutableStateFlow<List<ModelInfo>>(emptyList())
+    val modelList: StateFlow<List<ModelInfo>> = _modelList.asStateFlow()
+
+    private val _currentModelRef = MutableStateFlow<String?>(null)
+    val currentModelRef: StateFlow<String?> = _currentModelRef.asStateFlow()
+
+    private val _isSelectingModel = MutableStateFlow(false)
+    val isSelectingModel: StateFlow<Boolean> = _isSelectingModel.asStateFlow()
+
+    private val _modelSelectionError = MutableStateFlow<String?>(null)
+    val modelSelectionError: StateFlow<String?> = _modelSelectionError.asStateFlow()
 
     // Challenge nonce for auth handshake
     private var challengeNonce: String? = null
@@ -220,6 +234,7 @@ class OpenClawClient(
             return
         }
         _runError.value = null
+        clearAgentProgress(force = true)
         scope.launch {
             try {
                 // Add user message to local chat
@@ -475,18 +490,115 @@ class OpenClawClient(
                     .orEmpty()
 
                 _agentList.value = agents
-                onAgentList?.invoke(
-                    AgentListUpdate(
-                        agents = agents,
-                        currentAgentId = agentIdFromSessionKey(_currentSessionKey.value)
-                            ?: response.payload?.get("defaultId")
-                                ?.takeIf { it.isJsonPrimitive }?.asString
-                    )
-                )
+                val defaultAgentId = response.payload?.get("defaultId")
+                    ?.takeIf { it.isJsonPrimitive }?.asString
+                onAgentList?.invoke(currentAgentListUpdate(defaultAgentId))
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting agents", e)
             }
         }
+    }
+
+    /** Load the same configured model catalog shown by OpenClaw WebChat. */
+    fun requestModels() {
+        scope.launch {
+            try {
+                val response = sendRequest(
+                    OpenClawMethods.MODELS_LIST,
+                    JsonObject().apply { addProperty("view", "configured") }
+                )
+                if (!response.ok) {
+                    _modelSelectionError.value = responseErrorMessage(
+                        response,
+                        "Could not load models"
+                    )
+                    return@launch
+                }
+                val models = parseConfiguredModels(response.payload)
+                val sessionKey = _currentSessionKey.value
+                val sessionModel = sessionKey?.let { key ->
+                    val sessionsResponse = sendRequest(
+                        OpenClawMethods.SESSION_LIST,
+                        JsonObject().apply {
+                            addProperty("search", key)
+                            addProperty("limit", 10)
+                            addProperty("includeGlobal", true)
+                        }
+                    )
+                    if (sessionsResponse.ok) {
+                        resolveSessionModelRef(
+                            payload = sessionsResponse.payload,
+                            sessionKey = key,
+                            models = models,
+                        )
+                    } else {
+                        null
+                    }
+                }
+                val agentModel = _agentList.value
+                    .firstOrNull { it.id == agentIdFromSessionKey(sessionKey) }
+                    ?.model
+                    ?.takeIf { candidate -> models.any { it.ref == candidate } }
+                val catalog = ParsedModelCatalog(
+                    models = models,
+                    currentModel = sessionModel ?: agentModel ?: _currentModelRef.value,
+                )
+                _modelList.value = catalog.models
+                _currentModelRef.value = catalog.currentModel
+                _modelSelectionError.value = null
+                onAgentList?.invoke(currentAgentListUpdate())
+            } catch (e: Exception) {
+                Log.e(TAG, "Error requesting models", e)
+                _modelSelectionError.value = "Could not load models"
+            }
+        }
+    }
+
+    /** Select one configured model through the narrow write-scoped gateway method. */
+    fun selectModel(model: ModelInfo) {
+        if (!model.available || _isSelectingModel.value) return
+        val sessionKey = _currentSessionKey.value
+        if (sessionKey.isNullOrBlank()) {
+            _modelSelectionError.value = "No active session"
+            return
+        }
+
+        _isSelectingModel.value = true
+        _modelSelectionError.value = null
+        scope.launch {
+            try {
+                val response = sendRequest(
+                    OpenClawMethods.SESSION_MODEL_SELECT,
+                    JsonObject().apply {
+                        addProperty("key", sessionKey)
+                        addProperty("model", model.ref)
+                    }
+                )
+                if (response.ok) {
+                    _currentModelRef.value = model.ref
+                    onAgentList?.invoke(currentAgentListUpdate())
+                } else {
+                    _modelSelectionError.value = responseErrorMessage(
+                        response,
+                        "Could not change model"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error selecting model", e)
+                _modelSelectionError.value = "Could not change model"
+            } finally {
+                _isSelectingModel.value = false
+            }
+        }
+    }
+
+    fun currentAgentListUpdate(defaultAgentId: String? = null): AgentListUpdate {
+        val currentAgentId = agentIdFromSessionKey(_currentSessionKey.value) ?: defaultAgentId
+        return buildAgentListUpdate(
+            agents = _agentList.value,
+            currentAgentId = currentAgentId,
+            currentModelRef = _currentModelRef.value,
+        )
     }
 
     /** Select an agent's canonical main session, which is created lazily if needed. */
@@ -509,6 +621,7 @@ class OpenClawClient(
                 )
             )
             loadSessionHistory(key)
+            requestModels()
         }
     }
 
@@ -554,6 +667,7 @@ class OpenClawClient(
                     onSessionOperation?.invoke(
                         SessionOperationUpdate(operation = "create", state = "success")
                     )
+                    requestModels()
                     requestSessions()
                 } else {
                     Log.e(TAG, "Session creation failed")
@@ -601,6 +715,7 @@ class OpenClawClient(
             _unreadSessions.value = _unreadSessions.value - sessionKey
             notifyConnectionUpdate(true, sessionKey)
             loadSessionHistory(sessionKey)
+            requestModels()
         }
     }
 
@@ -884,14 +999,20 @@ class OpenClawClient(
         scope.launch { _events.emit(event) }
     }
 
-    /** Forward only the reasoning phase, never private reasoning content. */
+    /** Forward phases and privacy-filtered progress, never private reasoning content. */
     private fun handleAgentEvent(payload: JsonObject?) {
         payload ?: return
         val runId = payload.get("runId")?.takeIf { it.isJsonPrimitive }?.asString
         if (runId != null && (completedAbortedRuns.containsKey(runId) || runId != activeRunId)) return
 
-        when (payload.get("stream")?.takeIf { it.isJsonPrimitive }?.asString) {
+        val stream = payload.get("stream")?.takeIf { it.isJsonPrimitive }?.asString ?: return
+        when (stream) {
             "thinking", "reasoning" -> notifyAgentPhase("reasoning")
+        }
+        val data = payload.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+        AgentProgressProjector.project(stream, data)?.let { update ->
+            agentProgressActive = true
+            onAgentProgress?.invoke(update)
         }
     }
 
@@ -905,6 +1026,12 @@ class OpenClawClient(
             else -> if (_runState.value != RunState.ABORTING) updateRunState(RunState.WAITING)
         }
         onAgentThinking?.invoke(AgentThinking(id = messageId, phase = phase))
+    }
+
+    private fun clearAgentProgress(force: Boolean = false) {
+        if (!force && !agentProgressActive) return
+        agentProgressActive = false
+        onAgentProgress?.invoke(AgentProgressUpdate.clear())
     }
 
     private fun performAuth() {
@@ -1067,6 +1194,7 @@ class OpenClawClient(
                     val newChunk = fullText.substring(previous.length)
                     streamingContent.clear()
                     streamingContent.append(fullText)
+                    clearAgentProgress()
                     onChatStream?.invoke(ChatStream(id = msgId, chunk = newChunk))
                     // Update phone UI with streaming text
                     updateStreamingMessage(msgId, fullText)
@@ -1083,6 +1211,7 @@ class OpenClawClient(
                 val previous = streamingContent.toString()
                 if (fullText.isNotEmpty() && fullText.length > previous.length) {
                     val newChunk = fullText.substring(previous.length)
+                    clearAgentProgress()
                     onChatStream?.invoke(ChatStream(id = msgId, chunk = newChunk))
                 }
                 // Use the final full text if available, otherwise keep what we accumulated
@@ -1123,6 +1252,7 @@ class OpenClawClient(
     private fun finalizeStreaming(terminalState: String, errorMessage: String? = null) {
         val msgId = activeMessageId ?: return
         val content = streamingContent.toString()
+        clearAgentProgress()
 
         if (content.isNotEmpty()) {
             val assistantMsg = ChatMessage(
@@ -1152,6 +1282,7 @@ class OpenClawClient(
     }
 
     private fun finishRunWithoutContent(terminalState: String, errorMessage: String? = null) {
+        clearAgentProgress()
         activeMessageId?.let { onChatStreamEnd?.invoke(ChatStreamEnd(id = it, state = terminalState)) }
         activeRunId = null
         activeMessageId = null
@@ -1314,3 +1445,56 @@ class OpenClawClient(
         }
     }
 }
+
+internal data class ParsedModelCatalog(
+    val models: List<ModelInfo>,
+    val currentModel: String?,
+)
+
+internal fun parseConfiguredModels(payload: JsonObject?): List<ModelInfo> =
+    payload?.getAsJsonArray("models")?.mapNotNull { element ->
+        val obj = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+        val provider = obj.get("provider")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val ref = if (id.startsWith("$provider/")) id else "$provider/$id"
+        val alias = obj.get("alias")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() }
+        val name = obj.get("name")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() }
+        val available = obj.get("available")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: true
+        ModelInfo(ref = ref, provider = provider, id = id, name = alias ?: name ?: ref, available = available)
+    }.orEmpty()
+
+internal fun resolveSessionModelRef(
+    payload: JsonObject?,
+    sessionKey: String,
+    models: List<ModelInfo>,
+): String? {
+    val row = payload?.getAsJsonArray("sessions")?.firstOrNull { element ->
+        element.isJsonObject && element.asJsonObject.get("key")
+            ?.takeIf { it.isJsonPrimitive }?.asString == sessionKey
+    }?.asJsonObject ?: return null
+    val provider = row.get("modelProvider")?.takeIf { it.isJsonPrimitive }?.asString
+        ?.takeIf { it.isNotBlank() } ?: return null
+    val model = row.get("model")?.takeIf { it.isJsonPrimitive }?.asString
+        ?.takeIf { it.isNotBlank() } ?: return null
+    val candidate = if (model.startsWith("$provider/")) model else "$provider/$model"
+    return models.firstOrNull { it.ref == candidate }?.ref
+}
+
+internal fun buildAgentListUpdate(
+    agents: List<AgentInfo>,
+    currentAgentId: String?,
+    currentModelRef: String?,
+): AgentListUpdate = AgentListUpdate(
+    agents = agents.map { agent ->
+        if (agent.id == currentAgentId && !currentModelRef.isNullOrBlank()) {
+            agent.copy(model = currentModelRef)
+        } else {
+            agent
+        }
+    },
+    currentAgentId = currentAgentId,
+)

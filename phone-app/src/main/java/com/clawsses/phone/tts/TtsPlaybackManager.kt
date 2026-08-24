@@ -1,6 +1,9 @@
 package com.clawsses.phone.tts
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -16,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 enum class TtsPlaybackState {
@@ -62,6 +66,7 @@ class TtsPlaybackManager(
         }
 
         stopInternal(updateState = false)
+        playbackActive.set(true)
         lastText = normalized
         _canReplay.value = true
         _state.value = TtsPlaybackState.SYNTHESIZING
@@ -96,6 +101,7 @@ class TtsPlaybackManager(
             } catch (error: Exception) {
                 if (generation.get() == requestGeneration) {
                     Log.e(TAG, "TTS synthesis failed: ${error.javaClass.simpleName}")
+                    playbackActive.set(false)
                     _state.value = TtsPlaybackState.ERROR
                     deleteTempFile()
                 }
@@ -114,33 +120,67 @@ class TtsPlaybackManager(
     private fun playAudioFile(file: File) {
         try {
             releasePlayer()
+            val scoOutput = preferredScoOutput()
             mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(
+                            if (scoOutput != null) {
+                                AudioAttributes.USAGE_VOICE_COMMUNICATION
+                            } else {
+                                AudioAttributes.USAGE_MEDIA
+                            }
+                        )
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
                 setDataSource(file.absolutePath)
+                setVolume(1f, 1f)
                 setOnCompletionListener {
+                    playbackActive.set(false)
                     releasePlayer()
                     deleteTempFile()
                     _state.value = TtsPlaybackState.IDLE
                 }
                 setOnErrorListener { _, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
+                    playbackActive.set(false)
                     releasePlayer()
                     deleteTempFile()
                     _state.value = TtsPlaybackState.ERROR
                     true
                 }
                 prepare()
+                scoOutput?.let { output ->
+                    val accepted = setPreferredDevice(output)
+                    Log.i(
+                        TAG,
+                        "TTS preferred SCO output: id=${output.id}, accepted=$accepted",
+                    )
+                }
                 start()
             }
             _state.value = TtsPlaybackState.PLAYING
         } catch (error: Exception) {
             Log.e(TAG, "TTS playback failed: ${error.javaClass.simpleName}")
+            playbackActive.set(false)
             releasePlayer()
             deleteTempFile()
             _state.value = TtsPlaybackState.ERROR
         }
     }
 
+    private fun preferredScoOutput(): AudioDeviceInfo? {
+        val audioManager = context.getSystemService(AudioManager::class.java) ?: return null
+        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .filter { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+        return outputs.firstOrNull {
+            it.productName?.toString()?.contains("Glasses", ignoreCase = true) == true
+        } ?: outputs.singleOrNull()
+    }
+
     private fun stopInternal(updateState: Boolean) {
+        playbackActive.set(false)
         generation.incrementAndGet()
         synthesisJob?.cancel()
         synthesisJob = null
@@ -182,6 +222,9 @@ class TtsPlaybackManager(
     companion object {
         private const val TAG = "TtsPlaybackManager"
         private const val MAX_CHUNK_CHARS = 3_500
+        private val playbackActive = AtomicBoolean(false)
+
+        fun isPlaybackActive(): Boolean = playbackActive.get()
 
         internal fun splitForSynthesis(text: String): List<String> {
             if (text.length <= MAX_CHUNK_CHARS) return listOf(text)
@@ -207,3 +250,6 @@ class TtsPlaybackManager(
         }
     }
 }
+
+internal fun TtsPlaybackState.blocksVoiceCapture(): Boolean =
+    this == TtsPlaybackState.SYNTHESIZING || this == TtsPlaybackState.PLAYING
