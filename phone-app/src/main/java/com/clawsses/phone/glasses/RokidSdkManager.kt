@@ -2,7 +2,11 @@ package com.clawsses.phone.glasses
 
 import android.bluetooth.BluetoothDevice
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import com.clawsses.shared.CxrPayloadLimits
 import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.util.SecurePreferences
 import com.rokid.cxr.Caps
@@ -41,10 +45,22 @@ object RokidSdkManager {
     private const val TAG = "RokidSdkManager"
     private const val GLASSES_APP_PACKAGE = "com.clawsses.glasses"
     private const val GLASSES_APP_ACTIVITY = "com.clawsses.glasses.HudActivity"
+    private const val ROKID_LAUNCHER_PACKAGE = "com.rokid.os.sprite.launcher"
+    private const val HUD_RECOVERY_DELAY_MS = 250L
 
     private var isInitialized = false
     private var cxrApi: CxrApi? = null
     private var appContext: Context? = null
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private val hudForegroundRecovery = HudForegroundRecovery(ROKID_LAUNCHER_PACKAGE)
+    private val reopenHudRunnable = Runnable {
+        if (isConnected()) {
+            Log.i(TAG, "Recovering Clawsses HUD after Rokid launcher takeover")
+            openGlassesApp()
+        } else {
+            Log.d(TAG, "Skipping HUD recovery because glasses disconnected")
+        }
+    }
 
     // Connection state
     private var isBluetoothConnectedState = false
@@ -145,6 +161,8 @@ object RokidSdkManager {
         override fun onDisconnected() {
             Log.i(TAG, "=== onDisconnected === Bluetooth disconnected from glasses")
             isBluetoothConnectedState = false
+            mainHandler.removeCallbacks(reopenHudRunnable)
+            hudForegroundRecovery.reset()
             onGlassesDisconnected?.invoke()
         }
 
@@ -251,7 +269,22 @@ object RokidSdkManager {
         }
 
         override fun onGlassAppResume(packageName: String?) {
-            Log.d(TAG, "Glasses app resume reported")
+            Log.i(TAG, "Glasses foreground app: ${packageName ?: "unknown"}")
+            if (packageName == GLASSES_APP_PACKAGE) {
+                mainHandler.removeCallbacks(reopenHudRunnable)
+                return
+            }
+
+            if (hudForegroundRecovery.shouldRecover(
+                    packageName = packageName,
+                    connected = isConnected(),
+                    nowMs = SystemClock.elapsedRealtime(),
+                )
+            ) {
+                Log.i(TAG, "Rokid launcher replaced Clawsses; scheduling one HUD recovery")
+                mainHandler.removeCallbacks(reopenHudRunnable)
+                mainHandler.postDelayed(reopenHudRunnable, HUD_RECOVERY_DELAY_MS)
+            }
         }
 
         override fun onQueryAppResult(packageName: String?, installed: Boolean) {
@@ -612,11 +645,16 @@ object RokidSdkManager {
             return false
         }
 
+        val payloadBytes = CxrPayloadLimits.byteSize(command)
+        if (payloadBytes > CxrPayloadLimits.MAX_BYTES) {
+            Log.e(TAG, "Refusing oversized glasses message ($payloadBytes bytes)")
+            return false
+        }
+
         return try {
-            var truncated = if (command.length > 500) command.take(500) + "..." else command
-            caps.write(truncated)
+            caps.write(command)
             cxrApi?.sendCustomCmd("terminal", caps)
-            Log.d(TAG, "Sent to glasses (${command.length} chars)")
+            Log.d(TAG, "Sent to glasses ($payloadBytes bytes)")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error sending message to glasses", e)
@@ -982,6 +1020,8 @@ object RokidSdkManager {
         if (!isInitialized) return
 
         try {
+            mainHandler.removeCallbacks(reopenHudRunnable)
+            hudForegroundRecovery.reset()
             deinitWifiP2P()
             cxrApi?.clearCommunicationDevice()
             cxrApi = null

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.7
+
+- Label the canonical OpenClaw main session `Home` and pin it to the first glasses session page.
+- Suppress Home's derived-title duplicate on later pages without skipping server pagination offsets.
+
+## 1.3.6
+
+- Reopen the Clawsses HUD when Rokid's launcher unexpectedly takes foreground while CXR remains connected.
+- Throttle duplicate launcher callbacks so one firmware transition produces at most one recovery request.
+- Keep one HUD activity/bridge instance and request a compact state replay when that instance resumes.
+
+## 1.3.5
+
+- Send a bounded recent-history snapshot after session switches instead of an oversized full-history payload.
+- Use compact history fields and UTF-8 byte limits so Rokid CXR commands remain valid.
+- Keep complete history on the phone and disable glasses-side automatic history expansion for this stable branch.
+
 ## [Unreleased]
 
 ### Breaking Changes
@@ -35,7 +52,7 @@
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
-- Phone and glasses are versioned together as 1.3.2 (build 6).
+- Phone and glasses are versioned together as 1.3.7 (build 16).
 
 ### Fixed
 
@@ -44,6 +61,10 @@
 - Updated Rokid CXR-M from 1.0.8 to hardware-verified 1.0.9, moved its Handler-based transfer lifecycle to the Android main thread, added a bounded retry, restored Bluetooth UI state after failures, and ignored non-JSON vendor status commands on the app protocol channel. CXR-M 1.2.2 was rejected because it consistently tore down P2P group negotiation with the current glasses firmware.
 - The Rokid session picker now opens immediately and reports loading or gateway failures instead of appearing unresponsive.
 - New Session now uses the least-privilege `sessions.create` gateway method instead of the admin-only `sessions.reset` method.
+- Session pages sent to the glasses are compact and limited to three entries, with a `More...` row for paging through the remaining sessions.
+- `+ New Session` remains actionable while the first session page is loading, so a delayed list request cannot lock the picker.
+- Oversized CXR commands are rejected by UTF-8 byte size instead of being truncated into invalid JSON.
+- Added a top safe inset to prevent the Rokid optical compositor from reflecting the status row below the intended HUD area.
 
 ### Removed
 

@@ -228,6 +228,26 @@ object ScrollSettings {
         value.coerceIn(MIN_MESSAGES_PER_STEP, MAX_MESSAGES_PER_STEP)
 }
 
+/** Hard limit imposed by the Rokid CXR custom-command transport. */
+object CxrPayloadLimits {
+    const val MAX_BYTES = 500
+
+    fun byteSize(payload: String): Int = payload.toByteArray(Charsets.UTF_8).size
+
+    fun fits(payload: String): Boolean = byteSize(payload) <= MAX_BYTES
+}
+
+/** Compact, bounded pages keep session messages valid on the CXR command channel. */
+object SessionPaging {
+    const val PAGE_SIZE = 3
+    const val MAX_DISPLAY_NAME_CHARS = 36
+
+    fun compactName(name: String): String = when {
+        name.length <= MAX_DISPLAY_NAME_CHARS -> name
+        else -> name.take(MAX_DISPLAY_NAME_CHARS - 3) + "..."
+    }
+}
+
 /** Phone-controlled chat scroll step sent to the glasses HUD. */
 data class ScrollSettingsUpdate(
     @SerializedName("type") val type: String = "scroll_settings",
@@ -241,9 +261,10 @@ data class ScrollSettingsUpdate(
  */
 data class SessionListUpdate(
     @SerializedName("type") val type: String = "session_list",
-    @SerializedName("sessions") val sessions: List<SessionInfo>,
-    @SerializedName("currentSessionKey") val currentSessionKey: String? = null,
-    @SerializedName("unreadSessionKeys") val unreadSessionKeys: List<String> = emptyList()
+    @SerializedName("sessions") val sessions: List<SessionPageItem>,
+    @SerializedName("offset") val offset: Int = 0,
+    @SerializedName("nextOffset") val nextOffset: Int? = null,
+    @SerializedName("hasMore") val hasMore: Boolean = false,
 ) {
     fun toJson(): String = gson.toJson(this)
 
@@ -251,6 +272,13 @@ data class SessionListUpdate(
         fun fromJson(json: String): SessionListUpdate = gson.fromJson(json, SessionListUpdate::class.java)
     }
 }
+
+/** Minimal session representation sent over the size-constrained CXR channel. */
+data class SessionPageItem(
+    @SerializedName("k") val key: String,
+    @SerializedName("n") val name: String,
+    @SerializedName("u") val hasUnread: Boolean? = null,
+)
 
 /** Progress or failure feedback for a glasses-initiated session operation. */
 data class SessionOperationUpdate(
@@ -325,7 +353,8 @@ data class UserInput(
  */
 data class SessionAction(
     @SerializedName("type") val type: String,  // "list_sessions" or "switch_session"
-    @SerializedName("sessionKey") val sessionKey: String? = null
+    @SerializedName("sessionKey") val sessionKey: String? = null,
+    @SerializedName("offset") val offset: Int? = null,
 ) {
     fun toJson(): String = gson.toJson(this)
 

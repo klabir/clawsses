@@ -1,6 +1,7 @@
 package com.clawsses.glasses
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -70,6 +71,8 @@ class HudActivity : ComponentActivity() {
         const val DEBUG_PORT = 8081
         /** Sentinel key for the "New Session" entry in the session picker. */
         const val NEW_SESSION_KEY = "__new_session__"
+        /** Sentinel key for loading the next bounded session page. */
+        const val MORE_SESSIONS_KEY = "__more_sessions__"
 
         private fun isEmulator(): Boolean {
             return (Build.FINGERPRINT.contains("generic")
@@ -96,6 +99,7 @@ class HudActivity : ComponentActivity() {
     // List updates also arrive during background state synchronization. These flags
     // ensure pickers open only after an explicit menu action.
     private var sessionPickerRequested = false
+    private var sessionNextOffset: Int? = null
     private var agentPickerRequested = false
     private var scrollMessagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
 
@@ -252,12 +256,7 @@ class HudActivity : ComponentActivity() {
                 if (current.isConnected != isConnected) {
                     hudState.value = current.copy(isConnected = isConnected)
                     if (isConnected) {
-                        phoneConnection.sendToPhone(
-                            GlassesStateRequest(
-                                versionName = BuildConfig.VERSION_NAME,
-                                versionCode = BuildConfig.VERSION_CODE,
-                            ).toJson()
-                        )
+                        requestCurrentPhoneState()
                     }
                 }
             }
@@ -293,6 +292,23 @@ class HudActivity : ComponentActivity() {
                 delay(delayMs)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        Log.i(GlassesApp.TAG, "HudActivity resumed through existing singleTask instance")
+        requestCurrentPhoneState()
+    }
+
+    private fun requestCurrentPhoneState() {
+        if (!::phoneConnection.isInitialized) return
+        phoneConnection.sendToPhone(
+            GlassesStateRequest(
+                versionName = BuildConfig.VERSION_NAME,
+                versionCode = BuildConfig.VERSION_CODE,
+            ).toJson()
+        )
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
@@ -784,14 +800,31 @@ class HudActivity : ComponentActivity() {
         val totalOptions = current.availableSessions.size
 
         if (current.isSessionOperationPending) {
-            if (gesture == Gesture.DOUBLE_TAP) {
-                sessionPickerRequested = false
-                hudState.value = current.copy(
-                    showSessionPicker = false,
-                    isSessionOperationPending = false,
-                    sessionOperationMessage = null,
-                    sessionOperationError = null
-                )
+            when (gesture) {
+                Gesture.TAP -> {
+                    val selected = current.availableSessions.getOrNull(current.selectedSessionIndex)
+                    if (selected?.key == NEW_SESSION_KEY) {
+                        sessionPickerRequested = false
+                        createNewSession()
+                        hudState.value = current.copy(
+                            showSessionPicker = true,
+                            currentSessionName = null,
+                            isSessionOperationPending = true,
+                            sessionOperationMessage = "Creating session...",
+                            sessionOperationError = null
+                        )
+                    }
+                }
+                Gesture.DOUBLE_TAP -> {
+                    sessionPickerRequested = false
+                    hudState.value = current.copy(
+                        showSessionPicker = false,
+                        isSessionOperationPending = false,
+                        sessionOperationMessage = null,
+                        sessionOperationError = null
+                    )
+                }
+                else -> Unit
             }
             return
         }
@@ -820,6 +853,8 @@ class HudActivity : ComponentActivity() {
                             sessionOperationMessage = "Creating session...",
                             sessionOperationError = null
                         )
+                    } else if (selected.key == MORE_SESSIONS_KEY) {
+                        requestSessionList(sessionNextOffset ?: 0)
                     } else {
                         switchToSession(selected.key)
                         hudState.value = current.copy(
@@ -1302,24 +1337,25 @@ class HudActivity : ComponentActivity() {
 
     // ============== Phone Communication ==============
 
-    private fun requestSessionList() {
+    private fun requestSessionList(offset: Int = 0) {
         sessionPickerRequested = true
+        sessionNextOffset = null
         hudState.update { current ->
-            val options = if (current.availableSessions.any { it.key == NEW_SESSION_KEY }) {
-                current.availableSessions
-            } else {
-                listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) + current.availableSessions
-            }
+            val options = listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session"))
             current.copy(
                 showSessionPicker = true,
                 availableSessions = options,
-                selectedSessionIndex = current.selectedSessionIndex.coerceIn(options.indices),
+                selectedSessionIndex = 0,
                 isSessionOperationPending = true,
                 sessionOperationMessage = "Loading sessions...",
                 sessionOperationError = null
             )
         }
-        phoneConnection.sendToPhone("""{"type":"list_sessions"}""")
+        val request = JSONObject().apply {
+            put("type", "list_sessions")
+            put("offset", offset.coerceAtLeast(0))
+        }
+        phoneConnection.sendToPhone(request.toString())
     }
 
     private fun switchToSession(sessionKey: String) {
@@ -1437,9 +1473,14 @@ class HudActivity : ComponentActivity() {
                     if (messagesArray != null) {
                         for (i in 0 until messagesArray.length()) {
                             val msgObj = messagesArray.optJSONObject(i) ?: continue
-                            val id = msgObj.optString("id", "")
-                            val role = msgObj.optString("role", "assistant")
-                            val content = unwrapContent(msgObj.optString("content", ""))
+                            val id = msgObj.optString("i", msgObj.optString("id", ""))
+                            val compactRole = msgObj.optString("r", "")
+                            val role = when (compactRole) {
+                                "u" -> "user"
+                                "a" -> "assistant"
+                                else -> msgObj.optString("role", "assistant")
+                            }
+                            val content = unwrapContent(msgObj.optString("c", msgObj.optString("content", "")))
                             val thumbnails = parseAttachmentThumbnails(msgObj)
                             messages.add(DisplayMessage(
                                 id = id,
@@ -1492,7 +1533,7 @@ class HudActivity : ComponentActivity() {
                             scrollPosition = maxOf(0, messages.size - 1),
                             scrollTrigger = current.scrollTrigger + 1,
                             isLoadingMoreHistory = false,
-                            hasMoreHistory = true  // Reset — new session may have more
+                            hasMoreHistory = hasMore
                         )
                         Log.d(GlassesApp.TAG, "Loaded ${messages.size} history messages")
                     }
@@ -1622,19 +1663,23 @@ class HudActivity : ComponentActivity() {
                         for (i in 0 until sessionsArray.length()) {
                             val sessionObj = sessionsArray.optJSONObject(i)
                             if (sessionObj != null) {
-                                val key = sessionObj.optString("key", "")
+                                val key = sessionObj.optString("k", sessionObj.optString("key", ""))
+                                if (key.isBlank()) continue
+                                val compactName = sessionObj.optString("n", "")
                                 val label = sessionObj.optString("label", "")
                                 val displayName = sessionObj.optString("displayName", "")
                                 val derivedTitle = sessionObj.optString("derivedTitle", "")
                                 val kind = sessionObj.optString("kind", "")
                                 val updatedAt = if (sessionObj.has("updatedAt")) sessionObj.optLong("updatedAt", 0L).takeIf { it > 0 } else null
                                 // Use best available name: label > displayName > derivedTitle > key
-                                val name = label.ifEmpty { displayName.ifEmpty { derivedTitle.ifEmpty { key } } }
+                                val name = compactName.ifEmpty {
+                                    label.ifEmpty { displayName.ifEmpty { derivedTitle.ifEmpty { key } } }
+                                }
                                 sessions.add(SessionPickerInfo(
                                     key = key,
                                     name = name,
                                     kind = kind.ifEmpty { null },
-                                    hasUnread = key in unreadKeys,
+                                    hasUnread = sessionObj.optBoolean("u", key in unreadKeys),
                                     updatedAt = updatedAt
                                 ))
                             }
@@ -1642,12 +1687,18 @@ class HudActivity : ComponentActivity() {
                     }
 
                     // Insert "New Session" as the first option
+                    val hasMore = msg.optBoolean("hasMore", false)
+                    sessionNextOffset = msg.optInt("nextOffset", -1).takeIf { hasMore && it >= 0 }
                     val sessionsWithNew = listOf(
                         SessionPickerInfo(
                             key = NEW_SESSION_KEY,
                             name = "+ New Session"
                         )
-                    ) + sessions
+                    ) + sessions + if (sessionNextOffset != null) {
+                        listOf(SessionPickerInfo(MORE_SESSIONS_KEY, "More..."))
+                    } else {
+                        emptyList()
+                    }
 
                     val current = hudState.value
                     // Default selection to the current session (offset by 1 for the New Session entry)

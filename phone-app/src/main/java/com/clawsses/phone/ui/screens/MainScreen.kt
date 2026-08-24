@@ -69,6 +69,7 @@ import com.clawsses.phone.media.MediaStoreSaver
 import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
+import com.clawsses.phone.openclaw.GlassesChatHistoryPage
 import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.talk.TalkModePhase
 import com.clawsses.phone.talk.TalkModeSource
@@ -86,6 +87,7 @@ import com.clawsses.shared.AgentInfo
 import com.clawsses.shared.AgentListUpdate
 import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
+import com.clawsses.shared.CxrPayloadLimits
 import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
 import com.clawsses.shared.LiveCaptionUpdate
@@ -94,6 +96,7 @@ import com.clawsses.shared.ScrollSettings
 import com.clawsses.shared.ScrollSettingsUpdate
 import com.clawsses.shared.TalkModeStateUpdate
 import com.clawsses.shared.SessionInfo
+import com.clawsses.shared.SessionOperationUpdate
 import com.clawsses.shared.TtsState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -634,8 +637,14 @@ fun MainScreen() {
                 // Send current chat history to glasses if we have any
                 val currentMessages = openClawClient.chatMessages.value
                 if (currentMessages.isNotEmpty()) {
-                    android.util.Log.i("MainScreen", "Sending ${currentMessages.size} history messages to newly connected glasses")
-                    glassesManager.sendRawMessage(buildChatHistoryJson(currentMessages))
+                    val historyJson = GlassesChatHistoryPage.build(currentMessages)
+                    android.util.Log.i(
+                        "MainScreen",
+                        "Sending compact history snapshot to newly connected glasses: " +
+                            "${currentMessages.size} source messages, " +
+                            "${historyJson.toByteArray(Charsets.UTF_8).size} bytes"
+                    )
+                    glassesManager.sendRawMessage(historyJson)
                 }
                 // Send TTS state to glasses
                 val ttsStateMsg = TtsState(
@@ -746,10 +755,11 @@ fun MainScreen() {
             }
         }
         openClawClient.onChatHistory = { messages ->
-            // Full history reload (initial load or session switch) — reset glasses limit
-            glassesMessageLimit = 20
-            val json = buildChatHistoryJson(messages)
-            android.util.Log.i("MainScreen", "Forwarding chat_history to glasses: ${messages.size} messages, ${json.length} chars")
+            // Full history remains on the phone. The glasses receive a bounded recent snapshot
+            // because a Rokid CXR custom command must stay below 500 UTF-8 bytes.
+            glassesMessageLimit = 0
+            val json = GlassesChatHistoryPage.build(messages)
+            android.util.Log.i("MainScreen", "Forwarding compact chat_history to glasses: ${messages.size} source messages, ${json.toByteArray(Charsets.UTF_8).size} bytes")
             glassesManager.sendRawMessage(json)
         }
         openClawClient.onAgentThinking = { msg ->
@@ -796,7 +806,22 @@ fun MainScreen() {
             }
         }
         openClawClient.onSessionList = { msg ->
-            glassesManager.sendRawMessage(msg.toJson())
+            val payload = msg.toJson()
+            if (CxrPayloadLimits.fits(payload)) {
+                glassesManager.sendRawMessage(payload)
+            } else {
+                android.util.Log.e(
+                    "MainScreen",
+                    "Session page exceeds CXR limit (${CxrPayloadLimits.byteSize(payload)} bytes)"
+                )
+                glassesManager.sendRawMessage(
+                    SessionOperationUpdate(
+                        operation = "list",
+                        state = "error",
+                        error = "Session page is too large"
+                    ).toJson()
+                )
+            }
         }
         openClawClient.onSessionOperation = { msg ->
             glassesManager.sendRawMessage(msg.toJson())
@@ -808,14 +833,16 @@ fun MainScreen() {
             glassesManager.sendRawMessage(msg.toJson())
         }
         openClawClient.onMoreHistoryLoaded = { prependedCount, hasMore ->
-            if (prependedCount > 0) {
-                // Increase glasses limit to include the new older messages
-                glassesMessageLimit += prependedCount
-            }
-            // Send the updated full list to glasses with the load-more flag
+            // The phone keeps the expanded history. The glasses always receive one bounded
+            // recent snapshot because a complete history cannot fit in a CXR custom command.
             val allMessages = openClawClient.chatMessages.value
-            val json = buildChatHistoryJson(allMessages, glassesMessageLimit, isLoadMore = true, hasMore = hasMore)
-            android.util.Log.i("MainScreen", "Forwarding expanded chat_history to glasses: limit=$glassesMessageLimit of ${allMessages.size}, prepended=$prependedCount, hasMore=$hasMore")
+            val json = GlassesChatHistoryPage.build(allMessages)
+            android.util.Log.i(
+                "MainScreen",
+                "Forwarding compact chat_history after phone history expansion: " +
+                    "${allMessages.size} source messages, prepended=$prependedCount, " +
+                    "phoneHasMore=$hasMore, ${json.toByteArray(Charsets.UTF_8).size} bytes"
+            )
             glassesManager.sendRawMessage(json)
         }
     }
@@ -996,7 +1023,7 @@ fun MainScreen() {
                     }
                     "list_sessions" -> {
                         android.util.Log.d("MainScreen", "Requesting session list for glasses")
-                        openClawClient.requestSessions(reportOperation = true)
+                        openClawClient.requestSessionPage(json.optInt("offset", 0))
                     }
                     "switch_session" -> {
                         val sessionKey = json.optString("sessionKey", "")
@@ -1064,7 +1091,7 @@ fun MainScreen() {
                         )
                         // Send current chat history
                         val currentMessages = openClawClient.chatMessages.value
-                        glassesManager.sendRawMessage(buildChatHistoryJson(currentMessages))
+                        glassesManager.sendRawMessage(GlassesChatHistoryPage.build(currentMessages))
                         // Send TTS state
                         val ttsStateMsg = TtsState(
                             enabled = ttsSettingsManager.isEnabled.value,
@@ -1173,19 +1200,15 @@ fun MainScreen() {
                         }
                     }
                     "request_more_history" -> {
-                        // Glasses scrolled to top and wants older messages
+                        // Full history remains phone-side. Re-send the bounded recent snapshot
+                        // for compatibility with an older glasses build requesting expansion.
                         val allMessages = openClawClient.chatMessages.value
-                        android.util.Log.d("MainScreen", "Glasses requesting more history (glassesLimit=$glassesMessageLimit, phoneCache=${allMessages.size})")
-
-                        if (glassesMessageLimit < allMessages.size) {
-                            // Phone has more cached messages — serve from cache
-                            glassesMessageLimit = (glassesMessageLimit + 15).coerceAtMost(allMessages.size)
-                            val chatJson = buildChatHistoryJson(allMessages, glassesMessageLimit, isLoadMore = true, hasMore = true)
-                            glassesManager.sendRawMessage(chatJson)
-                        } else {
-                            // Phone cache exhausted — fetch more from OpenClaw
-                            openClawClient.loadMoreHistory()
-                        }
+                        android.util.Log.d(
+                            "MainScreen",
+                            "Glasses requested more history; returning bounded recent snapshot " +
+                                "from ${allMessages.size} cached messages"
+                        )
+                        glassesManager.sendRawMessage(GlassesChatHistoryPage.build(allMessages))
                     }
                 }
             } catch (e: Exception) {

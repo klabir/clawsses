@@ -318,6 +318,13 @@ val SLASH_COMMANDS = listOf(
     SlashCommandItem("/subagents", "Sub-agents"),
 )
 
+/**
+ * Keep bright HUD text away from the upper optical/scan boundary. Content drawn
+ * in the first few rows can produce a vertically mirrored ghost on the physical
+ * Rokid micro-LED display even though Compose renders the row only once.
+ */
+private val HudTopSafeInset = 24.dp
+
 // ============================================================================
 // MAIN HUD SCREEN
 // ============================================================================
@@ -456,7 +463,12 @@ fun HudScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(hudHeight)
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(
+                        start = 12.dp,
+                        top = HudTopSafeInset,
+                        end = 12.dp,
+                        bottom = 6.dp,
+                    )
             ) {
                 // TOP BAR
                 TopBar(

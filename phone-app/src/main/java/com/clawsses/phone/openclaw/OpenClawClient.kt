@@ -108,6 +108,7 @@ class OpenClawClient(
     // Current session tracking (exposed as StateFlow for phone UI)
     private val _currentSessionKey = MutableStateFlow<String?>(null)
     val currentSessionKey: StateFlow<String?> = _currentSessionKey.asStateFlow()
+    @Volatile private var homeSessionKey = "agent:main:main"
 
     // History pagination: tracks how many messages were last requested from OpenClaw
     private var currentHistoryLimit = 50
@@ -343,12 +344,7 @@ class OpenClawClient(
      * The server returns GatewaySessionRow objects with key, displayName, label,
      * derivedTitle, updatedAt, kind, etc.
      */
-    fun requestSessions(reportOperation: Boolean = false) {
-        if (reportOperation) {
-            onSessionOperation?.invoke(
-                SessionOperationUpdate(operation = "list", state = "loading")
-            )
-        }
+    fun requestSessions() {
         scope.launch {
             try {
                 val params = JsonObject().apply {
@@ -356,52 +352,88 @@ class OpenClawClient(
                 }
                 val response = sendRequest(OpenClawMethods.SESSION_LIST, params)
                 if (response.ok) {
-                    val sessionsPayload = response.payload
-                    val sessions = mutableListOf<SessionInfo>()
-                    val sessionsArray = sessionsPayload?.getAsJsonArray("sessions")
-                    sessionsArray?.forEach { element ->
-                        val obj = element.asJsonObject
-                        sessions.add(SessionInfo(
-                            key = obj.get("key")?.asString ?: "",
-                            displayName = obj.get("displayName")?.asString,
-                            label = obj.get("label")?.asString,
-                            derivedTitle = obj.get("derivedTitle")?.asString,
-                            updatedAt = obj.get("updatedAt")?.asLong,
-                            kind = obj.get("kind")?.asString
-                        ))
-                    }
+                    val sessions = parseSessions(response.payload)
                     _sessionList.value = sessions
-                    onSessionList?.invoke(SessionListUpdate(
-                        sessions = sessions,
-                        currentSessionKey = _currentSessionKey.value,
-                        unreadSessionKeys = _unreadSessions.value.toList()
-                    ))
                 } else {
                     Log.e(TAG, "Session list request failed")
-                    if (reportOperation) {
-                        onSessionOperation?.invoke(
-                            SessionOperationUpdate(
-                                operation = "list",
-                                state = "error",
-                                error = responseErrorMessage(response, "Could not load sessions")
-                            )
-                        )
-                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting sessions", e)
-                if (reportOperation) {
+            }
+        }
+    }
+
+    /** Request one compact page for the CXR size-constrained glasses picker. */
+    fun requestSessionPage(offset: Int = 0) {
+        val safeOffset = offset.coerceAtLeast(0)
+        onSessionOperation?.invoke(
+            SessionOperationUpdate(operation = "list", state = "loading")
+        )
+        scope.launch {
+            try {
+                val response = sendRequest(
+                    OpenClawMethods.SESSION_LIST,
+                    SessionRequestFactory.listPageParams(safeOffset)
+                )
+                if (!response.ok) {
                     onSessionOperation?.invoke(
                         SessionOperationUpdate(
                             operation = "list",
                             state = "error",
-                            error = "Could not load sessions"
+                            error = responseErrorMessage(response, "Could not load sessions")
                         )
                     )
+                    return@launch
                 }
+
+                val sessions = parseSessions(response.payload)
+                val requestLimit = SessionRequestFactory.pageRequestLimit(safeOffset)
+                val hasMore = response.payload?.get("hasMore")?.asBoolean
+                    ?: (sessions.size == requestLimit)
+                val nextOffset = response.payload?.get("nextOffset")
+                    ?.takeIf { !it.isJsonNull }
+                    ?.asInt
+                    ?: if (hasMore) safeOffset + sessions.size else null
+                val unread = _unreadSessions.value
+                onSessionList?.invoke(
+                    SessionListUpdate(
+                        sessions = SessionRequestFactory.pageItems(
+                            sessions = sessions,
+                            offset = safeOffset,
+                            homeSessionKey = homeSessionKey,
+                            unreadSessionKeys = unread,
+                        ),
+                        offset = safeOffset,
+                        nextOffset = nextOffset,
+                        hasMore = hasMore,
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error requesting session page", e)
+                onSessionOperation?.invoke(
+                    SessionOperationUpdate(
+                        operation = "list",
+                        state = "error",
+                        error = "Could not load sessions"
+                    )
+                )
             }
         }
     }
+
+    private fun parseSessions(payload: JsonObject?): List<SessionInfo> =
+        payload?.getAsJsonArray("sessions")?.mapNotNull { element ->
+            val obj = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+            val key = obj.get("key")?.asString?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            SessionInfo(
+                key = key,
+                displayName = obj.get("displayName")?.takeIf { !it.isJsonNull }?.asString,
+                label = obj.get("label")?.takeIf { !it.isJsonNull }?.asString,
+                derivedTitle = obj.get("derivedTitle")?.takeIf { !it.isJsonNull }?.asString,
+                updatedAt = obj.get("updatedAt")?.takeIf { !it.isJsonNull }?.asLong,
+                kind = obj.get("kind")?.takeIf { !it.isJsonNull }?.asString,
+            )
+        } ?: emptyList()
 
     /** Request the read-only agent roster exposed by the gateway. */
     fun requestAgents() {
@@ -950,6 +982,7 @@ class OpenClawClient(
                     val sessionDefaults = snapshot?.getAsJsonObject("sessionDefaults")
                     val mainSessionKey = sessionDefaults?.get("mainSessionKey")?.asString
                     if (mainSessionKey != null) {
+                        homeSessionKey = mainSessionKey
                         _currentSessionKey.value = mainSessionKey
                         Log.d(TAG, "Default session selected from gateway snapshot")
                     } else {
@@ -1181,9 +1214,13 @@ class OpenClawClient(
 
     private fun notifyConnectionUpdate(connected: Boolean, sessionId: String? = null) {
         val sessionName = sessionId?.let { id ->
-            val agentId = agentIdFromSessionKey(id)
-            _agentList.value.firstOrNull { it.id == agentId }?.name
-                ?: _sessionList.value.firstOrNull { it.key == id }?.name
+            if (id == homeSessionKey) {
+                "Home"
+            } else {
+                val agentId = agentIdFromSessionKey(id)
+                _sessionList.value.firstOrNull { it.key == id }?.name
+                    ?: _agentList.value.firstOrNull { it.id == agentId }?.name
+            }
         }
         onConnectionUpdate?.invoke(ConnectionUpdate(
             connected = connected,
