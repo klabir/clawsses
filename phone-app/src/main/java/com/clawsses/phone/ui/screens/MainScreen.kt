@@ -98,6 +98,7 @@ import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.ScrollSettings
 import com.clawsses.shared.ScrollSettingsUpdate
 import com.clawsses.shared.TalkModeStateUpdate
+import com.clawsses.shared.TtsVoiceCommands
 import com.clawsses.shared.SessionInfo
 import com.clawsses.shared.SessionOperationUpdate
 import com.clawsses.shared.TtsState
@@ -318,6 +319,10 @@ fun MainScreen() {
         voiceRecognitionManager.stopListening()
         RokidSdkManager.clearCommunicationDevice()
     }
+    val stopCurrentTtsOutput = {
+        android.util.Log.i("MainScreen", "Stopping current TTS output by voice command")
+        ttsPlaybackManager.stop()
+    }
     val startTalkListening: (TalkModeSource, Boolean) -> Unit = startTalk@{ source, interruptCurrent ->
         if (TtsPlaybackManager.isPlaybackActive()) {
             android.util.Log.i("MainScreen", "Ignoring voice start while process-wide TTS is active")
@@ -438,7 +443,21 @@ fun MainScreen() {
                 }
                 is VoiceCommandHandler.VoiceResult.Command -> {
                     val command = result.command.lowercase()
-                    if (command in setOf(
+                    if (TtsVoiceCommands.isStopCurrentOutput(command)) {
+                        stopCurrentTtsOutput()
+                        if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
+                            glassesManager.sendRawMessage(
+                                org.json.JSONObject().apply {
+                                    put("type", "voice_result")
+                                    put("result_type", "command")
+                                    put("text", TtsVoiceCommands.STOP_CURRENT_OUTPUT)
+                                    put("autoSent", true)
+                                }.toString()
+                            )
+                        }
+                        talkModeManager.resetToIdle()
+                        scheduleTalkRestart(600L)
+                    } else if (command in setOf(
                             "stop talk mode",
                             "talk mode off",
                             "talk modus stoppen",
@@ -962,21 +981,21 @@ fun MainScreen() {
         glassesManager.onAiKeyDown = {
             android.util.Log.i("MainScreen", ">>> AI key down from glasses - starting voice recognition")
             mainHandler.post {
-                if (TtsPlaybackManager.isPlaybackActive() ||
+                val interruptedTts = TtsPlaybackManager.isPlaybackActive() ||
                     ttsPlaybackManager.state.value.blocksVoiceCapture()
-                ) {
+                if (interruptedTts) {
                     android.util.Log.i(
                         "MainScreen",
-                        "Ignoring Rokid AI-key callback while TTS is active",
+                        "Rokid AI key interrupted TTS so a voice command can be recognized",
                     )
-                    return@post
+                    stopCurrentTtsOutput()
                 }
                 if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                 val talk = talkModeManager.state.value
                 if (talk.enabled) {
                     startTalkListening(
                         TalkModeSource.GLASSES,
-                        talk.phase in setOf(
+                        !interruptedTts && talk.phase in setOf(
                             TalkModePhase.SENDING,
                             TalkModePhase.WAITING,
                             TalkModePhase.SPEAKING,
@@ -994,7 +1013,8 @@ fun MainScreen() {
                         isRetry = false,
                         languageTag = voiceLanguageManager.getActiveLanguageTag(),
                         pendingPhotos = { pendingPhotos },
-                        onPhotosConsumed = { pendingPhotos = emptyList() }
+                        onPhotosConsumed = { pendingPhotos = emptyList() },
+                        onStopTtsRequested = stopCurrentTtsOutput,
                     )
                 }
             }
@@ -1070,6 +1090,9 @@ fun MainScreen() {
                                 }
                                 is VoiceCommandHandler.VoiceResult.Command -> {
                                     android.util.Log.d("MainScreen", "Voice result command: ${result.command}")
+                                    if (TtsVoiceCommands.isStopCurrentOutput(result.command)) {
+                                        stopCurrentTtsOutput()
+                                    }
                                     val resultMsg = org.json.JSONObject().apply {
                                         put("type", "voice_result")
                                         put("result_type", "command")
@@ -1268,6 +1291,7 @@ fun MainScreen() {
                                     languageTag = voiceLanguageManager.getActiveLanguageTag(),
                                     pendingPhotos = { pendingPhotos },
                                     onPhotosConsumed = { pendingPhotos = emptyList() },
+                                    onStopTtsRequested = stopCurrentTtsOutput,
                                 )
                             }
                         }
@@ -2264,7 +2288,8 @@ private fun startVoiceRecognitionWithManager(
     isRetry: Boolean,
     languageTag: String? = null,
     pendingPhotos: () -> List<String> = { emptyList() },
-    onPhotosConsumed: () -> Unit = {}
+    onPhotosConsumed: () -> Unit = {},
+    onStopTtsRequested: () -> Unit = {},
 ) {
     // Send initial voice state with mode indicator
     val modeIndicator = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
@@ -2326,6 +2351,9 @@ private fun startVoiceRecognitionWithManager(
             is VoiceCommandHandler.VoiceResult.Command -> {
                 RokidSdkManager.clearCommunicationDevice()
                 android.util.Log.i("MainScreen", "Voice command ($actualMode): ${result.command}")
+                if (TtsVoiceCommands.isStopCurrentOutput(result.command)) {
+                    onStopTtsRequested()
+                }
                 RokidSdkManager.sendAsrContent(result.command)
                 RokidSdkManager.notifyAsrEnd()
                 val resultMsg = org.json.JSONObject().apply {
@@ -2343,7 +2371,17 @@ private fun startVoiceRecognitionWithManager(
                     android.util.Log.w("MainScreen", "Voice recognition failed; retrying with phone mic")
                     RokidSdkManager.clearCommunicationDevice()
                     mainHandler.postDelayed({
-                        startVoiceRecognition(voiceHandler, openClawClient, glassesManager, mainHandler, isRetry = true, languageTag = languageTag, pendingPhotos = pendingPhotos, onPhotosConsumed = onPhotosConsumed)
+                        startVoiceRecognition(
+                            voiceHandler = voiceHandler,
+                            openClawClient = openClawClient,
+                            glassesManager = glassesManager,
+                            mainHandler = mainHandler,
+                            isRetry = true,
+                            languageTag = languageTag,
+                            pendingPhotos = pendingPhotos,
+                            onPhotosConsumed = onPhotosConsumed,
+                            onStopTtsRequested = onStopTtsRequested,
+                        )
                     }, 200)
                 } else {
                     android.util.Log.e("MainScreen", "Voice recognition failed after retry")
@@ -2373,7 +2411,8 @@ private fun startVoiceRecognition(
     isRetry: Boolean,
     languageTag: String? = null,
     pendingPhotos: () -> List<String> = { emptyList() },
-    onPhotosConsumed: () -> Unit = {}
+    onPhotosConsumed: () -> Unit = {},
+    onStopTtsRequested: () -> Unit = {},
 ) {
     voiceHandler.startListening(languageTag = languageTag) { result ->
         android.util.Log.i("MainScreen", ">>> Voice result received (retry=$isRetry)")
@@ -2407,6 +2446,9 @@ private fun startVoiceRecognition(
             is VoiceCommandHandler.VoiceResult.Command -> {
                 RokidSdkManager.clearCommunicationDevice()
                 android.util.Log.i("MainScreen", "AI voice command: ${result.command}")
+                if (TtsVoiceCommands.isStopCurrentOutput(result.command)) {
+                    onStopTtsRequested()
+                }
                 RokidSdkManager.sendAsrContent(result.command)
                 RokidSdkManager.notifyAsrEnd()
                 val resultMsg = org.json.JSONObject().apply {
@@ -2422,7 +2464,17 @@ private fun startVoiceRecognition(
                     android.util.Log.w("MainScreen", "AI voice recognition failed; retrying with phone mic")
                     RokidSdkManager.clearCommunicationDevice()
                     mainHandler.postDelayed({
-                        startVoiceRecognition(voiceHandler, openClawClient, glassesManager, mainHandler, isRetry = true, languageTag = languageTag, pendingPhotos = pendingPhotos, onPhotosConsumed = onPhotosConsumed)
+                        startVoiceRecognition(
+                            voiceHandler = voiceHandler,
+                            openClawClient = openClawClient,
+                            glassesManager = glassesManager,
+                            mainHandler = mainHandler,
+                            isRetry = true,
+                            languageTag = languageTag,
+                            pendingPhotos = pendingPhotos,
+                            onPhotosConsumed = onPhotosConsumed,
+                            onStopTtsRequested = onStopTtsRequested,
+                        )
                     }, 200)
                 } else {
                     android.util.Log.e("MainScreen", "AI voice recognition failed after retry")

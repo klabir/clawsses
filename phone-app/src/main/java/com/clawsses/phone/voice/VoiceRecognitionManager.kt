@@ -3,6 +3,7 @@ package com.clawsses.phone.voice
 import android.content.Context
 import android.util.Log
 import com.clawsses.phone.util.SecurePreferences
+import com.clawsses.shared.TtsVoiceCommands
 import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -221,6 +222,10 @@ class VoiceRecognitionManager(private val context: Context) {
      */
     private fun processText(text: String): VoiceCommandHandler.VoiceResult {
         val lowerText = text.lowercase().trim()
+
+        TtsVoiceCommands.match(text)?.let { command ->
+            return VoiceCommandHandler.VoiceResult.Command(command)
+        }
 
         // Check for special commands
         val commands = setOf(

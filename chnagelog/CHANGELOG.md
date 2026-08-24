@@ -54,13 +54,14 @@
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
-- Phone and glasses are versioned together as 1.3.11 (build 20).
+- Phone and glasses are versioned together as 1.3.15 (build 24).
 - Raw private reasoning, tool arguments, tool results, paths, and error payloads remain excluded from the glasses protocol.
 - Model changes use a narrow `operator.write` gateway method that accepts only a session key and an allowlisted model; Clawsses does not receive `operator.admin`.
 - The effective session model is synchronized to the Rokid agent display after selection, session changes, reconnects, and HUD state requests.
 
 ### Fixed
 
+- Allow a deliberate Rokid AI-key activation during spoken chat output to stop only that TTS playback, then recognize explicit English or German stop-voice commands without aborting the OpenClaw run, disabling Talk Mode, or changing the TTS preference.
 - Pause glasses-sourced Talk Mode when the Rokid display enters standby, silently release the microphone route, and resume with a fresh recognition cycle after confirmed wake activity.
 - Ignore stale OpenAI Realtime and Android recognizer callbacks after Talk Mode standby, cancellation, or restart so an obsolete fallback cannot surface as a wake-time voice error.
 - Prevented competing reconnect jobs after Android activity recreation.

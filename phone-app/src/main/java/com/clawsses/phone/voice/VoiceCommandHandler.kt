@@ -7,6 +7,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import com.clawsses.shared.TtsVoiceCommands
 import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -272,6 +273,10 @@ class VoiceCommandHandler(private val context: Context) {
      */
     private fun processSpokenText(spokenText: String): VoiceResult {
         val lowerText = spokenText.lowercase().trim()
+
+        TtsVoiceCommands.match(spokenText)?.let { command ->
+            return VoiceResult.Command(command)
+        }
 
         // Check for special commands first
         for (command in SPECIAL_COMMANDS) {

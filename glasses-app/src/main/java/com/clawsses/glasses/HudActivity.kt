@@ -49,6 +49,7 @@ import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesStateRequest
 import com.clawsses.shared.ScrollSettings
 import com.clawsses.shared.VisionCommands
+import com.clawsses.shared.TtsVoiceCommands
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1215,6 +1216,9 @@ class HudActivity : ComponentActivity() {
             return
         }
         when (command) {
+            TtsVoiceCommands.STOP_CURRENT_OUTPUT -> {
+                phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
+            }
             "scroll up" -> scrollUp()
             "scroll down" -> scrollDown()
             "take photo", "foto aufnehmen" -> requestPhotoCapture(sendAfterCapture = false)
