@@ -226,6 +226,7 @@ class GlassesConnectionManager(private val context: Context) {
         // AI scene events (glasses long-press triggers voice input)
         RokidSdkManager.onAiKeyDown = {
             Log.d(TAG, "SDK: AI key down (voice activation)")
+            wakeSignalManager.handleGlassesActivity()
             onAiKeyDown?.invoke()
         }
         RokidSdkManager.onAiExit = {

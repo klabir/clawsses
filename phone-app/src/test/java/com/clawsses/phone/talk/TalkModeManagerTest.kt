@@ -56,4 +56,41 @@ class TalkModeManagerTest {
         assertFalse(disabled.interruptible)
         assertEquals(TalkModePhase.OFF, disabled.phase)
     }
+
+    @Test
+    fun standbyPausesGlassesCaptureAndInvalidatesItsCycle() {
+        val listening = TalkModeTransitions.beginListening(
+            TalkModeTransitions.setEnabled(TalkModeState(), true, TalkModeSource.GLASSES),
+            TalkModeSource.GLASSES,
+        )
+
+        assertTrue(TalkModeTransitions.shouldPauseForStandby(listening, glassesAwake = false))
+        val standby = TalkModeTransitions.pauseForStandby(listening)
+
+        assertEquals(TalkModePhase.STANDBY, standby.phase)
+        assertEquals(listening.cycleId + 1L, standby.cycleId)
+        assertTrue(TalkModeTransitions.shouldResumeFromStandby(standby, glassesAwake = true))
+    }
+
+    @Test
+    fun standbyDoesNotInterruptAnAnswerAlreadyInProgress() {
+        val waiting = TalkModeState(
+            enabled = true,
+            phase = TalkModePhase.WAITING,
+            source = TalkModeSource.GLASSES,
+        )
+
+        assertFalse(TalkModeTransitions.shouldPauseForStandby(waiting, glassesAwake = false))
+    }
+
+    @Test
+    fun phoneTalkModeIsIndependentOfGlassesStandby() {
+        val listening = TalkModeState(
+            enabled = true,
+            phase = TalkModePhase.LISTENING,
+            source = TalkModeSource.PHONE,
+        )
+
+        assertFalse(TalkModeTransitions.shouldPauseForStandby(listening, glassesAwake = false))
+    }
 }

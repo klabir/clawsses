@@ -73,6 +73,7 @@ import com.clawsses.phone.openclaw.GlassesChatHistoryPage
 import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.talk.TalkModePhase
 import com.clawsses.phone.talk.TalkModeSource
+import com.clawsses.phone.talk.TalkModeTransitions
 import com.clawsses.phone.ui.settings.SettingsScreen
 import com.clawsses.phone.util.SecurePreferences
 import com.clawsses.phone.tts.ElevenLabsClient
@@ -150,6 +151,7 @@ fun MainScreen() {
     val currentSessionKey by openClawClient.currentSessionKey.collectAsState()
     val unreadSessions by openClawClient.unreadSessions.collectAsState()
     val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsState()
+    val glassesWakeState by glassesManager.wakeSignalManager.wakeState.collectAsState()
     val ttsEnabled by ttsSettingsManager.isEnabled.collectAsState()
     val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsState()
     val ttsProvider by ttsSettingsManager.provider.collectAsState()
@@ -198,11 +200,15 @@ fun MainScreen() {
     val latestTalkModeState = rememberUpdatedState(talkModeState)
     val latestOpenClawState = rememberUpdatedState(openClawState)
     val latestGlassesState = rememberUpdatedState(glassesState)
+    val latestGlassesWakeState = rememberUpdatedState(glassesWakeState)
     val latestPendingPhotos = rememberUpdatedState(pendingPhotos)
 
     fun syncTalkModeStateToGlasses() {
+        val state = talkModeManager.state.value
+        if (state.phase == TalkModePhase.STANDBY &&
+            latestGlassesWakeState.value !is WakeSignalManager.WakeState.Awake
+        ) return
         if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
-            val state = talkModeManager.state.value
             glassesManager.sendRawMessage(
                 TalkModeStateUpdate(
                     enabled = state.enabled,
@@ -328,6 +334,15 @@ fun MainScreen() {
         ) {
             talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
             syncTalkModeStateToGlasses()
+            return@startTalk
+        }
+
+        if (source == TalkModeSource.GLASSES &&
+            latestGlassesWakeState.value !is WakeSignalManager.WakeState.Awake
+        ) {
+            voiceRecognitionManager.cancelListening()
+            RokidSdkManager.clearCommunicationDevice()
+            talkModeManager.pauseForStandby()
             return@startTalk
         }
 
@@ -468,6 +483,14 @@ fun MainScreen() {
                 !TtsPlaybackManager.isPlaybackActive() &&
                 !ttsPlaybackManager.state.value.blocksVoiceCapture()
             ) {
+                if (state.source == TalkModeSource.GLASSES &&
+                    latestGlassesWakeState.value !is WakeSignalManager.WakeState.Awake
+                ) {
+                    voiceRecognitionManager.cancelListening()
+                    RokidSdkManager.clearCommunicationDevice()
+                    talkModeManager.pauseForStandby()
+                    return@Runnable
+                }
                 startTalkListening(state.source, false)
             }
         }
@@ -523,6 +546,32 @@ fun MainScreen() {
 
     LaunchedEffect(talkModeState, glassesState) {
         syncTalkModeStateToGlasses()
+    }
+
+    LaunchedEffect(glassesWakeState, talkModeState.enabled, talkModeState.source, talkModeState.phase) {
+        val awake = glassesWakeState is WakeSignalManager.WakeState.Awake
+        val state = talkModeManager.state.value
+        when {
+            TalkModeTransitions.shouldPauseForStandby(state, awake) -> {
+                android.util.Log.i("MainScreen", "Pausing glasses Talk Mode for standby")
+                pendingTalkRestart?.let(mainHandler::removeCallbacks)
+                pendingTalkRestart = null
+                talkModeManager.pauseForStandby()
+                voiceRecognitionManager.cancelListening()
+                voiceRecognitionManager.onSpeechStopped = null
+                RokidSdkManager.clearCommunicationDevice()
+            }
+            TalkModeTransitions.shouldResumeFromStandby(state, awake) -> {
+                android.util.Log.i("MainScreen", "Glasses awake; resuming Talk Mode after audio-route settle")
+                delay(700L)
+                val latest = talkModeManager.state.value
+                if (latest.phase == TalkModePhase.STANDBY &&
+                    latestGlassesWakeState.value is WakeSignalManager.WakeState.Awake
+                ) {
+                    startTalkListening(TalkModeSource.GLASSES, false)
+                }
+            }
+        }
     }
 
     LaunchedEffect(liveCaptionState, glassesState) {

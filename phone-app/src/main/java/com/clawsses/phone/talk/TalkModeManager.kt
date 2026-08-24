@@ -16,6 +16,7 @@ enum class TalkModePhase {
     SPEAKING,
     ABORTING,
     ERROR,
+    STANDBY,
     DISCONNECTED,
 }
 
@@ -66,6 +67,30 @@ internal object TalkModeTransitions {
         if (cycleId != null && cycleId != state.cycleId) return state
         return state.copy(phase = phase, error = error)
     }
+
+    fun pauseForStandby(state: TalkModeState): TalkModeState =
+        if (!state.enabled || state.source != TalkModeSource.GLASSES) state else state.copy(
+            phase = TalkModePhase.STANDBY,
+            cycleId = state.cycleId + 1,
+            error = null,
+        )
+
+    fun shouldPauseForStandby(state: TalkModeState, glassesAwake: Boolean): Boolean =
+        state.enabled &&
+            state.source == TalkModeSource.GLASSES &&
+            !glassesAwake &&
+            state.phase in setOf(
+                TalkModePhase.IDLE,
+                TalkModePhase.LISTENING,
+                TalkModePhase.TRANSCRIBING,
+                TalkModePhase.ERROR,
+            )
+
+    fun shouldResumeFromStandby(state: TalkModeState, glassesAwake: Boolean): Boolean =
+        state.enabled &&
+            state.source == TalkModeSource.GLASSES &&
+            glassesAwake &&
+            state.phase == TalkModePhase.STANDBY
 }
 
 /** Persistent Talk Mode state. Only the preference is durable; active cycles never are. */
@@ -107,6 +132,10 @@ class TalkModeManager(context: Context) {
     }
 
     fun resetToIdle() = setPhase(TalkModePhase.IDLE)
+
+    fun pauseForStandby() {
+        _state.value = TalkModeTransitions.pauseForStandby(_state.value)
+    }
 
     companion object {
         private const val PREFS_NAME = "clawsses"

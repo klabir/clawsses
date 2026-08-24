@@ -184,6 +184,18 @@ class VoiceCommandHandler(private val context: Context) {
         _isListening.value = false
     }
 
+    /** Cancel recognition without delivering a stale result to the next voice cycle. */
+    fun cancelListening() {
+        onResult = null
+        onPartialResult = null
+        try {
+            speechRecognizer?.cancel()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error cancelling speech recognition", e)
+        }
+        _isListening.value = false
+    }
+
     private fun createRecognitionListener() = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             Log.i(TAG, ">>> Ready for speech (mic is active)")

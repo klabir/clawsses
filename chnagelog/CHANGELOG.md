@@ -61,6 +61,8 @@
 
 ### Fixed
 
+- Pause glasses-sourced Talk Mode when the Rokid display enters standby, silently release the microphone route, and resume with a fresh recognition cycle after confirmed wake activity.
+- Ignore stale OpenAI Realtime and Android recognizer callbacks after Talk Mode standby, cancellation, or restart so an obsolete fallback cannot surface as a wake-time voice error.
 - Prevented competing reconnect jobs after Android activity recreation.
 - Disabled Android backup for both companion applications.
 - Updated Rokid CXR-M from 1.0.8 to hardware-verified 1.0.9, moved its Handler-based transfer lifecycle to the Android main thread, added a bounded retry, restored Bluetooth UI state after failures, and ignored non-JSON vendor status commands on the app protocol channel. CXR-M 1.2.2 was rejected because it consistently tore down P2P group negotiation with the current glasses firmware.

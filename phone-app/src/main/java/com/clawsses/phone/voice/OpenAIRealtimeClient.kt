@@ -17,6 +17,7 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * OpenAI Realtime API client for streaming speech-to-text transcription.
@@ -79,6 +80,8 @@ class OpenAIRealtimeClient {
 
     // Guard: only the first call to deliverFinalResult/deliverError takes effect
     private val resultDelivered = AtomicBoolean(false)
+    private val sessionIds = AtomicLong(0L)
+    @Volatile private var activeSessionId = 0L
 
     @Volatile private var speechDetected = false
     @Volatile private var currentlySpeaking = false
@@ -140,6 +143,9 @@ class OpenAIRealtimeClient {
             cleanupSilently()
         }
 
+        val sessionId = sessionIds.incrementAndGet()
+        activeSessionId = sessionId
+
         // Reset all state
         resultDelivered.set(false)
         speechDetected = false
@@ -174,19 +180,23 @@ class OpenAIRealtimeClient {
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (activeSessionId != sessionId) {
+                    webSocket.close(1000, "stale session")
+                    return
+                }
                 Log.i(TAG, "WebSocket connected")
                 _connectionState.value = ConnectionState.Connected
                 configureSession(webSocket, languageTag)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                handleMessage(text)
+                if (activeSessionId == sessionId) handleMessage(text)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val errorMsg = t.message ?: "Connection failed"
                 Log.e(TAG, "Realtime transcription WebSocket failed: ${t.javaClass.simpleName}")
-                deliverError(errorMsg)
+                deliverError(errorMsg, sessionId)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -196,7 +206,7 @@ class OpenAIRealtimeClient {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket closed (code=$code)")
                 // If result wasn't delivered yet (unexpected close), deliver empty
-                deliverFinalResult()
+                deliverFinalResult(sessionId)
             }
         })
     }
@@ -525,7 +535,8 @@ class OpenAIRealtimeClient {
      * Deliver the final transcription result on the main thread.
      * Only the first call takes effect (guarded by AtomicBoolean).
      */
-    private fun deliverFinalResult() {
+    private fun deliverFinalResult(expectedSessionId: Long = activeSessionId) {
+        if (expectedSessionId == 0L || activeSessionId != expectedSessionId) return
         if (!resultDelivered.compareAndSet(false, true)) return
 
         val finalText = synchronized(transcriptLock) {
@@ -536,14 +547,15 @@ class OpenAIRealtimeClient {
         val callback = onFinalResult
         mainHandler.post { callback?.invoke(finalText) }
 
-        cleanupConnection()
+        cleanupConnection(expectedSessionId)
     }
 
     /**
      * Deliver an error on the main thread.
      * Only the first call takes effect (guarded by AtomicBoolean).
      */
-    private fun deliverError(message: String) {
+    private fun deliverError(message: String, expectedSessionId: Long = activeSessionId) {
+        if (expectedSessionId == 0L || activeSessionId != expectedSessionId) return
         if (!resultDelivered.compareAndSet(false, true)) return
 
         Log.e(TAG, "Delivering transcription error")
@@ -552,7 +564,7 @@ class OpenAIRealtimeClient {
         val callback = onError
         mainHandler.post { callback?.invoke(message) }
 
-        cleanupConnection()
+        cleanupConnection(expectedSessionId)
     }
 
     // --- Lifecycle ---
@@ -562,14 +574,23 @@ class OpenAIRealtimeClient {
      */
     fun stopListening() {
         Log.i(TAG, "stopListening() called")
+        val sessionId = activeSessionId
         stopRecording()
-        deliverFinalResult()
+        deliverFinalResult(sessionId)
+    }
+
+    /** Cancel the active session without delivering text or an error callback. */
+    fun cancelListening() {
+        Log.i(TAG, "cancelListening() called")
+        cleanupSilently()
     }
 
     /**
      * Clean up connection resources. Idempotent — safe to call multiple times.
      */
-    private fun cleanupConnection() {
+    private fun cleanupConnection(expectedSessionId: Long) {
+        if (activeSessionId != expectedSessionId) return
+        activeSessionId = 0L
         cancelNoSpeechTimeout()
         cancelTranscriptionTimeout()
         cancelDoneTimeout()
@@ -599,6 +620,7 @@ class OpenAIRealtimeClient {
      * Silent cleanup without delivering results. Used when re-starting a new session.
      */
     private fun cleanupSilently() {
+        activeSessionId = 0L
         cancelNoSpeechTimeout()
         cancelTranscriptionTimeout()
         cancelDoneTimeout()

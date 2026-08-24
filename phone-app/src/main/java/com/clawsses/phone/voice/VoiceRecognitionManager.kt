@@ -7,6 +7,16 @@ import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicLong
+
+internal class RecognitionAttemptGate {
+    private val generation = AtomicLong(0L)
+
+    fun begin(): Long = generation.incrementAndGet()
+    fun cancel() { generation.incrementAndGet() }
+    fun isCurrent(attemptId: Long): Boolean = generation.get() == attemptId
+    fun complete(attemptId: Long): Boolean = generation.compareAndSet(attemptId, attemptId + 1L)
+}
 
 /**
  * Manages voice recognition with OpenAI Realtime as primary and Android SpeechRecognizer as fallback.
@@ -48,6 +58,7 @@ class VoiceRecognitionManager(private val context: Context) {
 
     private val openAIClient = OpenAIRealtimeClient()
     private val fallbackHandler = VoiceCommandHandler(context)
+    private val attemptGate = RecognitionAttemptGate()
 
     private val _activeMode = MutableStateFlow(RecognitionMode.NONE)
     val activeMode: StateFlow<RecognitionMode> = _activeMode.asStateFlow()
@@ -119,8 +130,10 @@ class VoiceRecognitionManager(private val context: Context) {
     ) {
         if (_isListening.value) {
             Log.w(TAG, "Already listening, stopping first")
-            stopListening()
+            cancelListening()
         }
+
+        val attemptId = attemptGate.begin()
 
         _isListening.value = true
         _lastError.value = null
@@ -131,14 +144,14 @@ class VoiceRecognitionManager(private val context: Context) {
         if (apiKey.isEmpty()) {
             Log.i(TAG, "No OpenAI API key, using fallback")
             _fallbackReason.value = FallbackReason.NO_API_KEY
-            startFallbackRecognition(languageTag, onResult)
+            startFallbackRecognition(languageTag, onResult, attemptId)
             return
         }
 
         if (!openAIEnabled) {
             Log.i(TAG, "OpenAI voice disabled, using fallback")
             _fallbackReason.value = FallbackReason.DISABLED
-            startFallbackRecognition(languageTag, onResult)
+            startFallbackRecognition(languageTag, onResult, attemptId)
             return
         }
 
@@ -151,12 +164,13 @@ class VoiceRecognitionManager(private val context: Context) {
             apiKey = apiKey,
             languageTag = languageTag,
             onPartial = { partialText ->
-                onPartialResult?.invoke(partialText)
+                if (attemptGate.isCurrent(attemptId)) onPartialResult?.invoke(partialText)
             },
             onSpeechStopped = {
-                onSpeechStopped?.invoke()
+                if (attemptGate.isCurrent(attemptId)) onSpeechStopped?.invoke()
             },
             onFinal = { finalText ->
+                if (!attemptGate.complete(attemptId)) return@startListening
                 Log.i(TAG, "OpenAI transcription completed (${finalText.length} chars)")
                 _isListening.value = false
                 _activeMode.value = RecognitionMode.NONE
@@ -170,28 +184,32 @@ class VoiceRecognitionManager(private val context: Context) {
                 onResult(result)
             },
             onError = { errorMessage ->
+                if (!attemptGate.isCurrent(attemptId)) return@startListening
                 Log.w(TAG, "OpenAI error: $errorMessage, falling back to Android")
                 _lastError.value = errorMessage
                 _fallbackReason.value = FallbackReason.API_ERROR
 
                 // Fall back to Android speech recognition
-                startFallbackRecognition(languageTag, onResult)
+                startFallbackRecognition(languageTag, onResult, attemptId)
             }
         )
     }
 
     private fun startFallbackRecognition(
         languageTag: String?,
-        onResult: (VoiceCommandHandler.VoiceResult) -> Unit
+        onResult: (VoiceCommandHandler.VoiceResult) -> Unit,
+        attemptId: Long,
     ) {
+        if (!attemptGate.isCurrent(attemptId)) return
         Log.i(TAG, "Starting fallback (Android) voice recognition")
         _activeMode.value = RecognitionMode.FALLBACK
 
         fallbackHandler.onPartialResult = { partialText ->
-            onPartialResult?.invoke(partialText)
+            if (attemptGate.isCurrent(attemptId)) onPartialResult?.invoke(partialText)
         }
 
         fallbackHandler.startListening(languageTag = languageTag) { result ->
+            if (!attemptGate.complete(attemptId)) return@startListening
             _isListening.value = false
             _activeMode.value = RecognitionMode.NONE
             onResult(result)
@@ -250,12 +268,18 @@ class VoiceRecognitionManager(private val context: Context) {
      * Stop any active voice recognition.
      */
     fun stopListening() {
+        cancelListening()
+    }
+
+    /** Cancel recognition and invalidate every callback from the previous attempt. */
+    fun cancelListening() {
+        attemptGate.cancel()
         when (_activeMode.value) {
             RecognitionMode.OPENAI -> {
-                openAIClient.stopListening()
+                openAIClient.cancelListening()
             }
             RecognitionMode.FALLBACK -> {
-                fallbackHandler.stopListening()
+                fallbackHandler.cancelListening()
             }
             RecognitionMode.NONE -> {
                 // Nothing to stop
