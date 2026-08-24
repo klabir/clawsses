@@ -46,7 +46,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Display size presets for the 480x640 portrait HUD
@@ -68,6 +70,12 @@ enum class HudPosition(val label: String) {
     BOTTOM_HALF("Bottom"),
     TOP_HALF("Top")
 }
+
+data class HudTelemetry(
+    val batteryLevel: Int? = null,
+    val batteryCharging: Boolean = false,
+    val currentTime: String = "",
+)
 
 /**
  * Focus areas of the chat UI.
@@ -268,11 +276,6 @@ data class ChatHudState(
     val inputActionIndex: Int = 0,  // Index into combined row: [photo0..N-1, Clear, Send]. Default = Send (last)
     // Exit confirmation dialog
     val showExitConfirm: Boolean = false,
-    // Battery level (0-100), null = unavailable / hide indicator
-    val batteryLevel: Int? = null,
-    val batteryCharging: Boolean = false,
-    // Current time (HH:MM, 24-hour format)
-    val currentTime: String = "",
     // History loading state
     val isLoadingMoreHistory: Boolean = false,
     val hasMoreHistory: Boolean = true,  // Assume there's more until we're told otherwise
@@ -356,6 +359,7 @@ private val HudTopSafeInset = 24.dp
 @Composable
 fun HudScreen(
     state: ChatHudState,
+    telemetry: StateFlow<HudTelemetry>,
     onTap: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
     onLongPress: () -> Unit = {},
@@ -537,9 +541,7 @@ fun HudScreen(
                     selectedIndex = state.menuBarIndex,
                     isFocused = menuFocused,
                     hudPosition = state.hudPosition,
-                    batteryLevel = state.batteryLevel,
-                    batteryCharging = state.batteryCharging,
-                    currentTime = state.currentTime,
+                    telemetry = telemetry,
                     fontFamily = monoFontFamily,
                     alpha = menuAlpha
                 )
@@ -1363,13 +1365,12 @@ private fun ChatMenuBar(
     selectedIndex: Int,
     isFocused: Boolean,
     hudPosition: HudPosition,
-    batteryLevel: Int?,
-    batteryCharging: Boolean,
-    currentTime: String,
+    telemetry: StateFlow<HudTelemetry>,
     fontFamily: FontFamily,
     alpha: Float,
     modifier: Modifier = Modifier
 ) {
+    val telemetryState by telemetry.collectAsStateWithLifecycle()
     val commandFontSize = 8.sp  // Fixed size — FONT only affects content
     val items = MenuBarItem.entries
     val scrollState = rememberScrollState()
@@ -1437,9 +1438,9 @@ private fun ChatMenuBar(
         }
 
         // Current time (HH:MM, 24-hour format)
-        if (currentTime.isNotEmpty()) {
+        if (telemetryState.currentTime.isNotEmpty()) {
             Text(
-                text = currentTime,
+                text = telemetryState.currentTime,
                 color = HudColors.dimText,
                 fontSize = commandFontSize,
                 fontFamily = fontFamily,
@@ -1448,10 +1449,10 @@ private fun ChatMenuBar(
         }
 
         // Battery indicator (bottom-right, only shown when available)
-        if (batteryLevel != null) {
+        if (telemetryState.batteryLevel != null) {
             Text(
-                text = "${if (batteryCharging) "\u26A1" else "\uD83D\uDD0B"}${batteryLevel}%",  // ⚡ or 🔋
-                color = if (batteryLevel <= 15) HudColors.error else HudColors.dimText,
+                text = "${if (telemetryState.batteryCharging) "\u26A1" else "\uD83D\uDD0B"}${telemetryState.batteryLevel}%",
+                color = if (telemetryState.batteryLevel!! <= 15) HudColors.error else HudColors.dimText,
                 fontSize = commandFontSize,
                 fontFamily = fontFamily,
                 modifier = Modifier.padding(start = 4.dp)

@@ -9,6 +9,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +62,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.clawsses.phone.ClawssesApp
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
@@ -70,6 +73,7 @@ import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.openclaw.GlassesChatHistoryPage
+import com.clawsses.phone.runtime.ClawssesRuntime
 import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.talk.TalkModePhase
 import com.clawsses.phone.talk.TalkModeSource
@@ -114,51 +118,49 @@ import kotlinx.coroutines.yield
 fun MainScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    // Managers
-    val glassesManager = remember { GlassesConnectionManager(context) }
-    val deviceIdentity = remember { DeviceIdentity(context) }
-    val openClawClient = remember { OpenClawClient(deviceIdentity) }
-    val voiceHandler = remember { VoiceCommandHandler(context) }
-    val voiceLanguageManager = remember { VoiceLanguageManager(context) }
-    val voiceRecognitionManager = remember { VoiceRecognitionManager(context) }
-    val liveCaptionManager = remember { LiveCaptionManager(context) }
-    val talkModeManager = remember { TalkModeManager(context) }
-    val apkInstaller = remember { ApkInstaller(context) }
-    val ttsSettingsManager = remember { TtsSettingsManager(context) }
-    val elevenLabsClient = remember { ElevenLabsClient() }
-    val openAiTtsClient = remember { OpenAiTtsClient() }
-    val ttsPlaybackManager = remember {
-        TtsPlaybackManager(context, elevenLabsClient, openAiTtsClient, ttsSettingsManager)
+    val runtime = remember(context) {
+        (context.applicationContext as ClawssesApp).runtime
     }
 
+    // Process-scoped managers survive Activity and Compose recreation.
+    val glassesManager = runtime.glassesManager
+    val openClawClient = runtime.openClawClient
+    val voiceHandler = runtime.voiceHandler
+    val voiceLanguageManager = runtime.voiceLanguageManager
+    val voiceRecognitionManager = runtime.voiceRecognitionManager
+    val liveCaptionManager = runtime.liveCaptionManager
+    val talkModeManager = runtime.talkModeManager
+    val apkInstaller = runtime.apkInstaller
+    val ttsSettingsManager = runtime.ttsSettingsManager
+    val elevenLabsClient = runtime.elevenLabsClient
+    val ttsPlaybackManager = runtime.ttsPlaybackManager
+
     // State
-    val glassesState by glassesManager.connectionState.collectAsState()
-    val openClawState by openClawClient.connectionState.collectAsState()
-    val runState by openClawClient.runState.collectAsState()
-    val runError by openClawClient.runError.collectAsState()
-    val talkModeState by talkModeManager.state.collectAsState()
-    val chatMessages by openClawClient.chatMessages.collectAsState()
-    val isListening by voiceRecognitionManager.isListening.collectAsState()
-    val voiceMode by voiceRecognitionManager.activeMode.collectAsState()
-    val installState by apkInstaller.installState.collectAsState()
-    val selectedVoiceLanguage by voiceLanguageManager.selectedLanguage.collectAsState()
-    val sessionList by openClawClient.sessionList.collectAsState()
-    val agentList by openClawClient.agentList.collectAsState()
-    val modelList by openClawClient.modelList.collectAsState()
-    val currentModelRef by openClawClient.currentModelRef.collectAsState()
-    val isSelectingModel by openClawClient.isSelectingModel.collectAsState()
-    val modelSelectionError by openClawClient.modelSelectionError.collectAsState()
-    val currentSessionKey by openClawClient.currentSessionKey.collectAsState()
-    val unreadSessions by openClawClient.unreadSessions.collectAsState()
-    val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsState()
-    val glassesWakeState by glassesManager.wakeSignalManager.wakeState.collectAsState()
-    val ttsEnabled by ttsSettingsManager.isEnabled.collectAsState()
-    val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsState()
-    val ttsProvider by ttsSettingsManager.provider.collectAsState()
-    val ttsPlaybackState by ttsPlaybackManager.state.collectAsState()
-    val ttsCanReplay by ttsPlaybackManager.canReplay.collectAsState()
-    val liveCaptionState by liveCaptionManager.state.collectAsState()
+    val glassesState by glassesManager.connectionState.collectAsStateWithLifecycle()
+    val openClawState by openClawClient.connectionState.collectAsStateWithLifecycle()
+    val runState by openClawClient.runState.collectAsStateWithLifecycle()
+    val runError by openClawClient.runError.collectAsStateWithLifecycle()
+    val talkModeState by talkModeManager.state.collectAsStateWithLifecycle()
+    val isListening by voiceRecognitionManager.isListening.collectAsStateWithLifecycle()
+    val voiceMode by voiceRecognitionManager.activeMode.collectAsStateWithLifecycle()
+    val installState by apkInstaller.installState.collectAsStateWithLifecycle()
+    val selectedVoiceLanguage by voiceLanguageManager.selectedLanguage.collectAsStateWithLifecycle()
+    val sessionList by openClawClient.sessionList.collectAsStateWithLifecycle()
+    val agentList by openClawClient.agentList.collectAsStateWithLifecycle()
+    val modelList by openClawClient.modelList.collectAsStateWithLifecycle()
+    val currentModelRef by openClawClient.currentModelRef.collectAsStateWithLifecycle()
+    val isSelectingModel by openClawClient.isSelectingModel.collectAsStateWithLifecycle()
+    val modelSelectionError by openClawClient.modelSelectionError.collectAsStateWithLifecycle()
+    val currentSessionKey by openClawClient.currentSessionKey.collectAsStateWithLifecycle()
+    val unreadSessions by openClawClient.unreadSessions.collectAsStateWithLifecycle()
+    val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsStateWithLifecycle()
+    val glassesWakeState by glassesManager.wakeSignalManager.wakeState.collectAsStateWithLifecycle()
+    val ttsEnabled by ttsSettingsManager.isEnabled.collectAsStateWithLifecycle()
+    val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsStateWithLifecycle()
+    val ttsProvider by ttsSettingsManager.provider.collectAsStateWithLifecycle()
+    val ttsPlaybackState by ttsPlaybackManager.state.collectAsStateWithLifecycle()
+    val ttsCanReplay by ttsPlaybackManager.canReplay.collectAsStateWithLifecycle()
+    val liveCaptionState by liveCaptionManager.state.collectAsStateWithLifecycle()
 
     // Persist OpenClaw settings in Android Keystore-backed encrypted preferences.
     val prefs = remember { SecurePreferences.create(context, "clawsses") }
@@ -188,38 +190,17 @@ fun MainScreen() {
         mutableStateOf(prefs.getString("caption_target_language", "English") ?: "English")
     }
     val hudCardBodies = remember { mutableStateMapOf<String, String>() }
-    val phoneLoadingMore by openClawClient.isLoadingMoreHistory.collectAsState()
     var inputText by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
     var showSessionPicker by remember { mutableStateOf(false) }
     var showAgentPicker by remember { mutableStateOf(false) }
     var showModelPicker by remember { mutableStateOf(false) }
-    var pendingPhotos by remember { mutableStateOf<List<String>>(emptyList()) }
-    val listState = rememberLazyListState()
+    val pendingPhotos by runtime.pendingPhotos.collectAsStateWithLifecycle()
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
-    var pendingTalkRestart by remember { mutableStateOf<Runnable?>(null) }
     val latestTalkModeState = rememberUpdatedState(talkModeState)
     val latestOpenClawState = rememberUpdatedState(openClawState)
     val latestGlassesState = rememberUpdatedState(glassesState)
     val latestGlassesWakeState = rememberUpdatedState(glassesWakeState)
-    val latestPendingPhotos = rememberUpdatedState(pendingPhotos)
-
-    fun syncTalkModeStateToGlasses() {
-        val state = talkModeManager.state.value
-        if (state.phase == TalkModePhase.STANDBY &&
-            latestGlassesWakeState.value !is WakeSignalManager.WakeState.Awake
-        ) return
-        if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
-            glassesManager.sendRawMessage(
-                TalkModeStateUpdate(
-                    enabled = state.enabled,
-                    phase = state.phase.name.lowercase(),
-                    interruptible = state.interruptible,
-                    error = state.error,
-                ).toJson()
-            )
-        }
-    }
 
     fun syncScrollSettingsToGlasses(messagesPerStep: Int = scrollMessagesPerStep) {
         if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
@@ -260,16 +241,7 @@ fun MainScreen() {
     }
 
     fun stopTalkMode(disable: Boolean) {
-        pendingTalkRestart?.let(mainHandler::removeCallbacks)
-        pendingTalkRestart = null
-        voiceRecognitionManager.stopListening()
-        voiceRecognitionManager.onSpeechStopped = null
-        ttsPlaybackManager.stop()
-        openClawClient.abortActiveRun()
-        RokidSdkManager.clearCommunicationDevice()
-        if (disable) talkModeManager.setEnabled(false) else talkModeManager.resetToIdle()
-        sendTalkVoiceState("idle")
-        syncTalkModeStateToGlasses()
+        runtime.talkCoordinator.stopTalkMode(disable)
     }
 
     fun setLiveCaptionsEnabled(enabled: Boolean) {
@@ -312,285 +284,14 @@ fun MainScreen() {
         }, 900L)
     }
 
-    lateinit var scheduleTalkRestart: (Long) -> Unit
-    val prepareTtsPlayback = {
-        pendingTalkRestart?.let(mainHandler::removeCallbacks)
-        pendingTalkRestart = null
-        voiceRecognitionManager.stopListening()
-        RokidSdkManager.clearCommunicationDevice()
-    }
-    val stopCurrentTtsOutput = {
-        android.util.Log.i("MainScreen", "Stopping current TTS output by voice command")
-        ttsPlaybackManager.stop()
-    }
-    val startTalkListening: (TalkModeSource, Boolean) -> Unit = startTalk@{ source, interruptCurrent ->
-        if (TtsPlaybackManager.isPlaybackActive()) {
-            android.util.Log.i("MainScreen", "Ignoring voice start while process-wide TTS is active")
-            return@startTalk
-        }
-        pendingTalkRestart?.let(mainHandler::removeCallbacks)
-        pendingTalkRestart = null
-        val current = talkModeManager.state.value
-        if (!current.enabled) return@startTalk
+    val prepareTtsPlayback = runtime.talkCoordinator::prepareTtsPlayback
+    val stopCurrentTtsOutput = runtime.talkCoordinator::stopCurrentTtsOutput
+    val startTalkListening = runtime.talkCoordinator::startListening
+    val scheduleTalkRestart = runtime.talkCoordinator::scheduleRestart
 
-        if (latestOpenClawState.value !is OpenClawClient.ConnectionState.Connected ||
-            (source == TalkModeSource.GLASSES &&
-                latestGlassesState.value !is GlassesConnectionManager.ConnectionState.Connected)
-        ) {
-            talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
-            syncTalkModeStateToGlasses()
-            return@startTalk
-        }
-
-        if (source == TalkModeSource.GLASSES &&
-            latestGlassesWakeState.value !is WakeSignalManager.WakeState.Awake
-        ) {
-            voiceRecognitionManager.cancelListening()
-            RokidSdkManager.clearCommunicationDevice()
-            talkModeManager.pauseForStandby()
-            return@startTalk
-        }
-
-        if (interruptCurrent) {
-            talkModeManager.setPhase(TalkModePhase.ABORTING)
-            ttsPlaybackManager.stop()
-            openClawClient.abortActiveRun()
-        }
-
-        voiceRecognitionManager.stopListening()
-        val cycleId = talkModeManager.beginListening(source)
-        val mode = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
-        if (source == TalkModeSource.GLASSES) {
-            RokidSdkManager.setCommunicationDevice()
-            RokidSdkManager.sendAsrContent("...")
-            sendTalkVoiceState("listening", mode)
-        }
-
-        voiceRecognitionManager.onSpeechStopped = {
-            val latest = talkModeManager.state.value
-            if (latest.enabled && latest.cycleId == cycleId) {
-                talkModeManager.setPhase(TalkModePhase.TRANSCRIBING, cycleId)
-                if (source == TalkModeSource.GLASSES) sendTalkVoiceState("processing", mode)
-            }
-        }
-
-        voiceRecognitionManager.startListening(
-            languageTag = voiceLanguageManager.getActiveLanguageTag()
-        ) { result ->
-            val latest = talkModeManager.state.value
-            if (!latest.enabled || latest.cycleId != cycleId) return@startListening
-            if (source == TalkModeSource.GLASSES) RokidSdkManager.clearCommunicationDevice()
-
-            when (result) {
-                is VoiceCommandHandler.VoiceResult.Text -> {
-                    val text = result.text.trim()
-                    if (text.isEmpty()) {
-                        if (source == TalkModeSource.GLASSES) {
-                            RokidSdkManager.notifyAsrNone()
-                            sendTalkVoiceState("idle")
-                        }
-                        talkModeManager.resetToIdle()
-                        scheduleTalkRestart(800L)
-                        return@startListening
-                    }
-
-                    if (source == TalkModeSource.GLASSES) {
-                        RokidSdkManager.sendAsrContent(text)
-                        RokidSdkManager.notifyAsrEnd()
-                        glassesManager.sendRawMessage(
-                            org.json.JSONObject().apply {
-                                put("type", "voice_result")
-                                put("result_type", "text")
-                                put("text", text)
-                                put("autoSent", true)
-                            }.toString()
-                        )
-                        mainHandler.postDelayed({ RokidSdkManager.sendExitEvent() }, 500)
-                    }
-
-                    talkModeManager.setPhase(TalkModePhase.SENDING, cycleId)
-                    scope.launch {
-                        val runBusy = openClawClient.runState.value !in setOf(
-                            OpenClawClient.RunState.IDLE,
-                            OpenClawClient.RunState.ERROR,
-                        )
-                        if (runBusy) openClawClient.abortActiveRun()
-                        val ready = withTimeoutOrNull(12_000) {
-                            openClawClient.runState.first {
-                                it == OpenClawClient.RunState.IDLE || it == OpenClawClient.RunState.ERROR
-                            }
-                        } != null
-                        val stateBeforeSend = talkModeManager.state.value
-                        if (!stateBeforeSend.enabled || stateBeforeSend.cycleId != cycleId) return@launch
-                        if (!ready) {
-                            talkModeManager.setPhase(
-                                TalkModePhase.ERROR,
-                                cycleId,
-                                "Previous run did not stop",
-                            )
-                            scheduleTalkRestart(1_500L)
-                            return@launch
-                        }
-
-                        val images = latestPendingPhotos.value.ifEmpty { null }
-                        talkModeManager.setPhase(TalkModePhase.WAITING, cycleId)
-                        openClawClient.sendMessage(text, images)
-                        if (images != null) {
-                            pendingPhotos = emptyList()
-                            glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
-                        }
-                    }
-                }
-                is VoiceCommandHandler.VoiceResult.Command -> {
-                    val command = result.command.lowercase()
-                    if (TtsVoiceCommands.isStopCurrentOutput(command)) {
-                        stopCurrentTtsOutput()
-                        if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
-                            glassesManager.sendRawMessage(
-                                org.json.JSONObject().apply {
-                                    put("type", "voice_result")
-                                    put("result_type", "command")
-                                    put("text", TtsVoiceCommands.STOP_CURRENT_OUTPUT)
-                                    put("autoSent", true)
-                                }.toString()
-                            )
-                        }
-                        talkModeManager.resetToIdle()
-                        scheduleTalkRestart(600L)
-                    } else if (command in setOf(
-                            "stop talk mode",
-                            "talk mode off",
-                            "talk modus stoppen",
-                            "talk modus aus",
-                        )
-                    ) {
-                        stopTalkMode(disable = true)
-                    } else {
-                        if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
-                            glassesManager.sendRawMessage(
-                                org.json.JSONObject().apply {
-                                    put("type", "voice_result")
-                                    put("result_type", "command")
-                                    put("text", result.command)
-                                    put("autoSent", true)
-                                }.toString()
-                            )
-                        }
-                        talkModeManager.resetToIdle()
-                        scheduleTalkRestart(600L)
-                    }
-                }
-                is VoiceCommandHandler.VoiceResult.Error -> {
-                    if (source == TalkModeSource.GLASSES) {
-                        RokidSdkManager.notifyAsrError()
-                        sendTalkVoiceState("error")
-                    }
-                    talkModeManager.setPhase(TalkModePhase.ERROR, cycleId, result.message)
-                    scheduleTalkRestart(1_500L)
-                }
-            }
-            syncTalkModeStateToGlasses()
-        }
-    }
-
-    scheduleTalkRestart = { delayMs ->
-        pendingTalkRestart?.let(mainHandler::removeCallbacks)
-        val restart = Runnable {
-            val state = talkModeManager.state.value
-            pendingTalkRestart = null
-            if (state.enabled &&
-                !TtsPlaybackManager.isPlaybackActive() &&
-                !ttsPlaybackManager.state.value.blocksVoiceCapture()
-            ) {
-                if (state.source == TalkModeSource.GLASSES &&
-                    latestGlassesWakeState.value !is WakeSignalManager.WakeState.Awake
-                ) {
-                    voiceRecognitionManager.cancelListening()
-                    RokidSdkManager.clearCommunicationDevice()
-                    talkModeManager.pauseForStandby()
-                    return@Runnable
-                }
-                startTalkListening(state.source, false)
-            }
-        }
-        pendingTalkRestart = restart
-        mainHandler.postDelayed(restart, delayMs)
-    }
-
-    // Initialize voice handler and query available languages
+    // Start the process-scoped runtime exactly once after permissions are available.
     LaunchedEffect(Unit) {
-        voiceHandler.initialize()
-        voiceLanguageManager.queryAvailableLanguages()
-        // Set up partial result forwarding for both voice recognition managers
-        voiceHandler.onPartialResult = { partialText ->
-            RokidSdkManager.sendAsrContent(partialText)
-            val stateMsg = org.json.JSONObject().apply {
-                put("type", "voice_state")
-                put("state", "recognizing")
-                put("text", partialText)
-            }
-            glassesManager.sendRawMessage(stateMsg.toString())
-        }
-        voiceRecognitionManager.onPartialResult = { partialText ->
-            RokidSdkManager.sendAsrContent(partialText)
-            val stateMsg = org.json.JSONObject().apply {
-                put("type", "voice_state")
-                put("state", "recognizing")
-                put("text", partialText)
-            }
-            glassesManager.sendRawMessage(stateMsg.toString())
-        }
-
-        // Try to auto-reconnect to previously paired glasses on startup
-        glassesManager.tryAutoReconnectOnStartup()
-
-        // Restore the saved private OpenClaw connection after process/activity restart.
-        // Without this, the HUD can reconnect to the glasses while chat remains offline.
-        if (openClawHost.isNotBlank()) {
-            val portNum = openClawPort.toIntOrNull() ?: 18789
-            openClawClient.connect(openClawHost, portNum, openClawToken)
-        }
-    }
-
-    // Fetch session list when OpenClaw connects
-    LaunchedEffect(openClawState) {
-        if (openClawState is OpenClawClient.ConnectionState.Connected) {
-            openClawClient.requestSessions()
-            openClawClient.requestAgents()
-            openClawClient.requestModels()
-        } else if (talkModeManager.state.value.enabled) {
-            talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
-        }
-    }
-
-    LaunchedEffect(talkModeState, glassesState) {
-        syncTalkModeStateToGlasses()
-    }
-
-    LaunchedEffect(glassesWakeState, talkModeState.enabled, talkModeState.source, talkModeState.phase) {
-        val awake = glassesWakeState is WakeSignalManager.WakeState.Awake
-        val state = talkModeManager.state.value
-        when {
-            TalkModeTransitions.shouldPauseForStandby(state, awake) -> {
-                android.util.Log.i("MainScreen", "Pausing glasses Talk Mode for standby")
-                pendingTalkRestart?.let(mainHandler::removeCallbacks)
-                pendingTalkRestart = null
-                talkModeManager.pauseForStandby()
-                voiceRecognitionManager.cancelListening()
-                voiceRecognitionManager.onSpeechStopped = null
-                RokidSdkManager.clearCommunicationDevice()
-            }
-            TalkModeTransitions.shouldResumeFromStandby(state, awake) -> {
-                android.util.Log.i("MainScreen", "Glasses awake; resuming Talk Mode after audio-route settle")
-                delay(700L)
-                val latest = talkModeManager.state.value
-                if (latest.phase == TalkModePhase.STANDBY &&
-                    latestGlassesWakeState.value is WakeSignalManager.WakeState.Awake
-                ) {
-                    startTalkListening(TalkModeSource.GLASSES, false)
-                }
-            }
-        }
+        runtime.start()
     }
 
     LaunchedEffect(liveCaptionState, glassesState) {
@@ -629,18 +330,6 @@ fun MainScreen() {
         }
     }
 
-    // Resume the durable mode only when its selected audio endpoint and OpenClaw are ready.
-    LaunchedEffect(openClawState, glassesState, talkModeState.enabled, talkModeState.phase) {
-        val sourceReady = talkModeState.source != TalkModeSource.GLASSES ||
-            glassesState is GlassesConnectionManager.ConnectionState.Connected
-        if (talkModeState.enabled &&
-            talkModeState.phase == TalkModePhase.DISCONNECTED &&
-            openClawState is OpenClawClient.ConnectionState.Connected && sourceReady
-        ) {
-            startTalkListening(talkModeState.source, false)
-        }
-    }
-
     // Sync TTS state to glasses when settings change
     LaunchedEffect(ttsEnabled, ttsVoiceName, ttsProvider, ttsPlaybackState, ttsCanReplay) {
         if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
@@ -670,154 +359,34 @@ fun MainScreen() {
             )
         }
 
-        val talk = talkModeManager.state.value
-        if (talk.enabled) {
-            when (runState) {
-                OpenClawClient.RunState.WAITING,
-                OpenClawClient.RunState.REASONING,
-                OpenClawClient.RunState.STREAMING -> {
-                    if (talk.phase !in setOf(
-                            TalkModePhase.LISTENING,
-                            TalkModePhase.TRANSCRIBING,
-                            TalkModePhase.SENDING,
-                        )
-                    ) talkModeManager.setPhase(TalkModePhase.WAITING)
-                }
-                OpenClawClient.RunState.ABORTING -> {
-                    if (talk.phase != TalkModePhase.LISTENING) {
-                        talkModeManager.setPhase(TalkModePhase.ABORTING)
-                    }
-                }
-                OpenClawClient.RunState.ERROR -> {
-                    if (talk.phase == TalkModePhase.WAITING) {
-                        talkModeManager.setPhase(TalkModePhase.ERROR, error = runError)
-                        scheduleTalkRestart(1_500L)
-                    }
-                }
-                else -> {}
-            }
-        }
     }
 
-    LaunchedEffect(ttsPlaybackState) {
-        val talk = talkModeManager.state.value
-        if (!talk.enabled) return@LaunchedEffect
-        when (ttsPlaybackState) {
-            com.clawsses.phone.tts.TtsPlaybackState.SYNTHESIZING,
-            com.clawsses.phone.tts.TtsPlaybackState.PLAYING -> {
-                prepareTtsPlayback()
-                if (talk.enabled) talkModeManager.setPhase(TalkModePhase.SPEAKING)
-            }
-            com.clawsses.phone.tts.TtsPlaybackState.IDLE -> {
-                if (talk.phase == TalkModePhase.SPEAKING) {
-                    talkModeManager.resetToIdle()
-                    scheduleTalkRestart(450L)
-                }
-            }
-            com.clawsses.phone.tts.TtsPlaybackState.ERROR -> {
-                if (talk.phase == TalkModePhase.SPEAKING) {
-                    talkModeManager.setPhase(TalkModePhase.ERROR, error = "Voice playback failed")
-                    scheduleTalkRestart(1_500L)
-                }
-            }
-        }
-    }
-
-    // Start/stop foreground service based on glasses connection state,
-    // and send current chat history when glasses connect.
-    // IMPORTANT: Don't stop the service during Reconnecting — killing the foreground
-    // service drops the wake lock and lets Android kill the Bluetooth connection,
-    // making reconnection impossible. Only stop on true Disconnected (not reconnecting).
+    // Runtime owns service/reconnect lifetime; UI sends its latest display payload on connect.
     LaunchedEffect(glassesState) {
-        when (glassesState) {
-            is GlassesConnectionManager.ConnectionState.Connected -> {
-                android.util.Log.i("MainScreen", "Glasses connected — starting foreground service")
-                com.clawsses.phone.service.GlassesConnectionService.start(context)
-                // Send current chat history to glasses if we have any
-                val currentMessages = openClawClient.chatMessages.value
-                if (currentMessages.isNotEmpty()) {
-                    sendHistoryToGlasses(currentMessages, "glasses connected")
-                }
-                // Send TTS state to glasses
-                val ttsStateMsg = TtsState(
-                    enabled = ttsSettingsManager.isEnabled.value,
-                    voiceName = ttsSettingsManager.selectedVoiceName.value,
-                    provider = ttsSettingsManager.provider.value.name.lowercase(),
-                    playbackState = ttsPlaybackManager.state.value.name.lowercase(),
-                    canReplay = ttsPlaybackManager.canReplay.value,
-                )
-                glassesManager.sendRawMessage(ttsStateMsg.toJson())
-                glassesManager.sendRawMessage(
-                    RunStateUpdate(
-                        state = openClawClient.runState.value.name.lowercase(),
-                        canAbort = openClawClient.runState.value !in setOf(
-                            OpenClawClient.RunState.IDLE,
-                            OpenClawClient.RunState.ERROR,
-                            OpenClawClient.RunState.ABORTING
-                        ),
-                        error = openClawClient.runError.value
-                    ).toJson()
-                )
-                syncScrollSettingsToGlasses()
-            }
-            is GlassesConnectionManager.ConnectionState.Disconnected -> {
-                val talk = talkModeManager.state.value
-                if (talk.enabled && talk.source == TalkModeSource.GLASSES) {
-                    pendingTalkRestart?.let(mainHandler::removeCallbacks)
-                    pendingTalkRestart = null
-                    voiceRecognitionManager.stopListening()
-                    RokidSdkManager.clearCommunicationDevice()
-                    talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
-                }
-                // Only stop the service if we're truly disconnected (no saved pairing to reconnect to).
-                // If we have a pairing, the service keeps BT alive for auto-reconnect.
-                if (!RokidSdkManager.hasSavedConnectionInfo()) {
-                    android.util.Log.i("MainScreen", "Glasses disconnected (no pairing) — stopping foreground service")
-                    com.clawsses.phone.service.GlassesConnectionService.stop(context)
-                } else {
-                    android.util.Log.i("MainScreen", "Glasses disconnected but paired — keeping foreground service for reconnect")
-                }
-            }
-            is GlassesConnectionManager.ConnectionState.Reconnecting -> {
-                // Keep foreground service alive during reconnection attempts
-                android.util.Log.i("MainScreen", "Glasses reconnecting — keeping foreground service")
-                com.clawsses.phone.service.GlassesConnectionService.start(context)
-            }
-            else -> {}
-        }
-    }
-
-    // Auto-scroll to bottom when new messages arrive (but not during load-more).
-    // Detect prepend by checking if the first message ID changed — this is more
-    // reliable than checking phoneLoadingMore which may already be false by the
-    // time this effect runs (both StateFlows update in the same coroutine frame).
-    var previousFirstMsgId by remember { mutableStateOf<String?>(null) }
-    var followPhoneTail by remember { mutableStateOf(true) }
-    val phoneListDragged by listState.interactionSource.collectIsDraggedAsState()
-    LaunchedEffect(phoneListDragged, listState.canScrollForward) {
-        val isAtBottom = !listState.canScrollForward
-        if (phoneListDragged || isAtBottom) followPhoneTail = isAtBottom
-    }
-    val phoneTailVersion = chatMessages.lastOrNull()?.let { "${it.id}:${it.content.length}" }
-    LaunchedEffect(chatMessages.size, phoneTailVersion) {
-        if (chatMessages.isNotEmpty()) {
-            val currentFirstId = chatMessages.first().id
-            val wasPrepend = previousFirstMsgId != null && currentFirstId != previousFirstMsgId
-            if (!wasPrepend && followPhoneTail) {
-                listState.animateScrollToItem(chatMessages.size - 1)
-                yield()
-                listState.animateScrollBy(Float.MAX_VALUE)
-            }
-            previousFirstMsgId = currentFirstId
-        }
-    }
-
-    // Phone UI: detect scroll-to-top and load more history
-    val phoneCanScrollBackward by remember { derivedStateOf { listState.canScrollBackward } }
-    LaunchedEffect(phoneCanScrollBackward) {
-        if (!phoneCanScrollBackward && chatMessages.isNotEmpty() && !phoneLoadingMore) {
-            openClawClient.loadMoreHistory()
-        }
+        if (glassesState !is GlassesConnectionManager.ConnectionState.Connected) return@LaunchedEffect
+        val currentMessages = openClawClient.chatMessages.value
+        if (currentMessages.isNotEmpty()) sendHistoryToGlasses(currentMessages, "glasses connected")
+        glassesManager.sendRawMessage(
+            TtsState(
+                enabled = ttsSettingsManager.isEnabled.value,
+                voiceName = ttsSettingsManager.selectedVoiceName.value,
+                provider = ttsSettingsManager.provider.value.name.lowercase(),
+                playbackState = ttsPlaybackManager.state.value.name.lowercase(),
+                canReplay = ttsPlaybackManager.canReplay.value,
+            ).toJson(),
+        )
+        glassesManager.sendRawMessage(
+            RunStateUpdate(
+                state = openClawClient.runState.value.name.lowercase(),
+                canAbort = openClawClient.runState.value !in setOf(
+                    OpenClawClient.RunState.IDLE,
+                    OpenClawClient.RunState.ERROR,
+                    OpenClawClient.RunState.ABORTING,
+                ),
+                error = openClawClient.runError.value,
+            ).toJson(),
+        )
+        syncScrollSettingsToGlasses()
     }
 
     // Wire OpenClaw client callbacks to forward to glasses
@@ -954,7 +523,7 @@ fun MainScreen() {
                     if (sendAfterCapture) {
                         openClawClient.sendMessage(visionPrompt.orEmpty(), listOf(base64))
                     } else {
-                        pendingPhotos = pendingPhotos + base64
+                        runtime.addPendingPhoto(base64)
                         val resultMsg = org.json.JSONObject().apply {
                             put("type", "photo_result")
                             put("status", "captured")
@@ -1013,7 +582,7 @@ fun MainScreen() {
                         isRetry = false,
                         languageTag = voiceLanguageManager.getActiveLanguageTag(),
                         pendingPhotos = { pendingPhotos },
-                        onPhotosConsumed = { pendingPhotos = emptyList() },
+                        onPhotosConsumed = { runtime.replacePendingPhotos(emptyList()) },
                         onStopTtsRequested = stopCurrentTtsOutput,
                     )
                 }
@@ -1038,7 +607,7 @@ fun MainScreen() {
                         if (text.isNotEmpty() || images != null) {
                             openClawClient.sendMessage(text, images)
                         }
-                        pendingPhotos = emptyList()
+                        runtime.replacePendingPhotos(emptyList())
                     }
                     "start_voice" -> {
                         android.util.Log.d("MainScreen", "Glasses requested voice recognition start")
@@ -1222,7 +791,7 @@ fun MainScreen() {
                                 error = openClawClient.runError.value
                             ).toJson()
                         )
-                        syncTalkModeStateToGlasses()
+                        runtime.talkCoordinator.syncTalkModeStateToGlasses()
                         glassesManager.sendRawMessage(
                             LiveCaptionUpdate(
                                 enabled = liveCaptionManager.state.value.enabled,
@@ -1268,7 +837,7 @@ fun MainScreen() {
                         } else {
                             stopTalkMode(disable = true)
                         }
-                        syncTalkModeStateToGlasses()
+                        runtime.talkCoordinator.syncTalkModeStateToGlasses()
                     }
                     "live_caption_toggle" -> {
                         setLiveCaptionsEnabled(json.optBoolean("enabled", false))
@@ -1290,7 +859,7 @@ fun MainScreen() {
                                     isRetry = false,
                                     languageTag = voiceLanguageManager.getActiveLanguageTag(),
                                     pendingPhotos = { pendingPhotos },
-                                    onPhotosConsumed = { pendingPhotos = emptyList() },
+                                    onPhotosConsumed = { runtime.replacePendingPhotos(emptyList()) },
                                     onStopTtsRequested = stopCurrentTtsOutput,
                                 )
                             }
@@ -1308,9 +877,9 @@ fun MainScreen() {
                         val all = json.optBoolean("all", false)
                         val index = json.optInt("index", -1)
                         if (all) {
-                            pendingPhotos = emptyList()
+                            runtime.replacePendingPhotos(emptyList())
                         } else if (index in pendingPhotos.indices) {
-                            pendingPhotos = pendingPhotos.toMutableList().apply { removeAt(index) }
+                            runtime.removePendingPhoto(index)
                         }
                     }
                     "request_more_history" -> {
@@ -1328,24 +897,6 @@ fun MainScreen() {
             } catch (e: Exception) {
                 android.util.Log.e("MainScreen", "Error parsing glasses message", e)
             }
-        }
-    }
-
-    // Cleanup
-    DisposableEffect(Unit) {
-        onDispose {
-            // MainScreen can be recreated for configuration/lifecycle changes.
-            // Stop jobs owned by this UI instance without tearing down the shared
-            // Rokid SDK connection used by the foreground service.
-            pendingTalkRestart?.let(mainHandler::removeCallbacks)
-            pendingTalkRestart = null
-            voiceRecognitionManager.onSpeechStopped = null
-            glassesManager.dispose()
-            openClawClient.cleanup()
-            voiceHandler.cleanup()
-            voiceRecognitionManager.cleanup()
-            liveCaptionManager.cleanup()
-            ttsPlaybackManager.dispose()
         }
     }
 
@@ -1405,9 +956,7 @@ fun MainScreen() {
                                                 RoundedCornerShape(9.dp)
                                             )
                                             .clickable {
-                                                pendingPhotos = pendingPhotos
-                                                    .toMutableList()
-                                                    .apply { removeAt(index) }
+                                                runtime.removePendingPhoto(index)
                                                 glassesManager.sendRawMessage(
                                                     """{"type":"remove_photo","index":$index}"""
                                                 )
@@ -1437,7 +986,7 @@ fun MainScreen() {
                                 val hadPhotos = pendingPhotos.isNotEmpty()
                                 openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
                                 inputText = ""
-                                pendingPhotos = emptyList()
+                                runtime.replacePendingPhotos(emptyList())
                                 if (hadPhotos) {
                                     glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
                                 }
@@ -1528,7 +1077,7 @@ fun MainScreen() {
                             val hadPhotos = pendingPhotos.isNotEmpty()
                             openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
                             inputText = ""
-                            pendingPhotos = emptyList()
+                            runtime.replacePendingPhotos(emptyList())
                             if (hadPhotos) {
                                 glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
                             }
@@ -1611,38 +1160,21 @@ fun MainScreen() {
                 )
             }
 
-            // Chat messages
-            Box(
+            PhoneChatPane(
+                openClawClient = openClawClient,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .background(Color(0xFF1E1E1E))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                if (chatMessages.isEmpty()) {
-                    Text(
-                        "No messages yet. Connect to OpenClaw and send a message.",
-                        color = Color.Gray,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(chatMessages) { msg ->
-                            ChatMessageRow(msg)
-                        }
-                    }
-                }
-            }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
         }
     }
 
     // Glasses state for settings
-    val debugModeEnabled by glassesManager.debugModeEnabled.collectAsState()
-    val discoveredDevices by glassesManager.discoveredDevices.collectAsState()
-    val wifiP2PConnected by glassesManager.wifiP2PConnected.collectAsState()
+    val debugModeEnabled by glassesManager.debugModeEnabled.collectAsStateWithLifecycle()
+    val discoveredDevices by glassesManager.discoveredDevices.collectAsStateWithLifecycle()
+    val wifiP2PConnected by glassesManager.wifiP2PConnected.collectAsStateWithLifecycle()
     var hasCachedSn by remember { mutableStateOf(RokidSdkManager.hasCachedSn()) }
     var cachedSn by remember { mutableStateOf(RokidSdkManager.getCachedSn()) }
     var cachedDeviceName by remember { mutableStateOf(RokidSdkManager.getCachedDeviceName()) }
@@ -1771,6 +1303,61 @@ fun MainScreen() {
         )
     }
     } // Box
+}
+
+/** Streaming chat owns its own lifecycle-aware state and no longer invalidates MainScreen. */
+@Composable
+private fun PhoneChatPane(
+    openClawClient: OpenClawClient,
+    modifier: Modifier = Modifier,
+) {
+    val messages by openClawClient.chatMessages.collectAsStateWithLifecycle()
+    val loadingMore by openClawClient.isLoadingMoreHistory.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+    var previousFirstMessageId by remember { mutableStateOf<String?>(null) }
+    var followTail by remember { mutableStateOf(true) }
+    val listDragged by listState.interactionSource.collectIsDraggedAsState()
+
+    LaunchedEffect(listDragged, listState.canScrollForward) {
+        val isAtBottom = !listState.canScrollForward
+        if (listDragged || isAtBottom) followTail = isAtBottom
+    }
+
+    val tailVersion = messages.lastOrNull()?.let { "${it.id}:${it.content.length}" }
+    LaunchedEffect(messages.size, tailVersion) {
+        if (messages.isEmpty()) return@LaunchedEffect
+        val currentFirstId = messages.first().id
+        val wasPrepend = previousFirstMessageId != null && currentFirstId != previousFirstMessageId
+        if (!wasPrepend && followTail) {
+            listState.scrollToItem(messages.lastIndex)
+            yield()
+            listState.scrollBy(Float.MAX_VALUE)
+        }
+        previousFirstMessageId = currentFirstId
+    }
+
+    val canScrollBackward by remember { derivedStateOf { listState.canScrollBackward } }
+    LaunchedEffect(canScrollBackward) {
+        if (!canScrollBackward && messages.isNotEmpty() && !loadingMore) {
+            openClawClient.loadMoreHistory()
+        }
+    }
+
+    Box(modifier = modifier) {
+        if (messages.isEmpty()) {
+            Text(
+                text = "No messages yet. Connect to OpenClaw and send a message.",
+                color = Color.Gray,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        } else {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                items(messages, key = { it.id }) { message ->
+                    ChatMessageRow(message)
+                }
+            }
+        }
+    }
 }
 
 @Composable

@@ -3,8 +3,12 @@ package com.clawsses.phone
 import android.app.Application
 import android.util.Log
 import com.clawsses.phone.glasses.RokidSdkManager
+import com.clawsses.phone.runtime.ClawssesRuntime
 
 class ClawssesApp : Application() {
+
+    lateinit var runtime: ClawssesRuntime
+        private set
 
     companion object {
         const val TAG = "Clawsses"
@@ -23,10 +27,12 @@ class ClawssesApp : Application() {
         } else {
             Log.w(TAG, "Rokid SDK initialization failed - check rokid.accessKey in local.properties")
         }
+        runtime = ClawssesRuntime(this)
     }
 
     override fun onTerminate() {
         super.onTerminate()
+        runtime.cleanup()
         RokidSdkManager.cleanup()
     }
 }

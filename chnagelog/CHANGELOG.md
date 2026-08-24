@@ -47,6 +47,9 @@
 
 ### Changed
 
+- Coalesce high-frequency OpenClaw stream deltas into bounded 64 ms phone/HUD publications while preserving immediate lossless final delivery.
+- Keep Rokid, gateway, voice, Talk Mode, and TTS managers in one process-scoped runtime instead of recreating them with Compose.
+- Isolate phone chat streaming and Rokid battery/time telemetry into lifecycle-aware Compose state boundaries.
 - OpenClaw connections now require WSS.
 - Realtime transcription uses the current GA transcription-session protocol.
 - Diagnostic logs record metadata only and no longer include chat, voice, device, or credential payloads.
@@ -54,7 +57,7 @@
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
-- Phone and glasses are versioned together as 1.3.15 (build 24).
+- Phone and glasses are versioned together as 1.3.16 (build 25).
 - Raw private reasoning, tool arguments, tool results, paths, and error payloads remain excluded from the glasses protocol.
 - Model changes use a narrow `operator.write` gateway method that accepts only a session key and an allowlisted model; Clawsses does not receive `operator.admin`.
 - The effective session model is synchronized to the Rokid agent display after selection, session changes, reconnects, and HUD state requests.

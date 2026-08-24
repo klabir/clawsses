@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.clawsses.glasses.camera.CameraCapture
 import com.clawsses.glasses.camera.PhotoCaptureState
@@ -35,6 +36,7 @@ import com.clawsses.glasses.ui.HudCardActionDisplay
 import com.clawsses.glasses.ui.HudCardDisplay
 import com.clawsses.glasses.ui.HudPosition
 import com.clawsses.glasses.ui.HudScreen
+import com.clawsses.glasses.ui.HudTelemetry
 import com.clawsses.glasses.ui.InputActionItem
 import com.clawsses.glasses.ui.MenuBarItem
 import com.clawsses.glasses.ui.MoreMenuItem
@@ -91,6 +93,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private val hudState = MutableStateFlow(ChatHudState())
+    private val hudTelemetry = MutableStateFlow(HudTelemetry())
     private lateinit var gestureHandler: GestureHandler
     private lateinit var phoneConnection: PhoneConnectionService
     private lateinit var voiceHandler: GlassesVoiceHandler
@@ -238,9 +241,10 @@ class HudActivity : ComponentActivity() {
 
         setContent {
             GlassesHudTheme {
-                val state by hudState.collectAsState()
+                val state by hudState.collectAsStateWithLifecycle()
                 HudScreen(
                     state = state,
+                    telemetry = hudTelemetry,
                     onTap = { handleGesture(Gesture.TAP) },
                     onDoubleTap = { handleGesture(Gesture.DOUBLE_TAP) },
                     onLongPress = { handleGesture(Gesture.LONG_PRESS) },
@@ -282,9 +286,9 @@ class HudActivity : ComponentActivity() {
                 val level = batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                     ?.takeIf { it in 0..100 }
                 val charging = batteryManager?.isCharging == true
-                val current = hudState.value
+                val current = hudTelemetry.value
                 if (current.batteryLevel != level || current.batteryCharging != charging) {
-                    hudState.value = current.copy(batteryLevel = level, batteryCharging = charging)
+                    hudTelemetry.value = current.copy(batteryLevel = level, batteryCharging = charging)
                 }
                 delay(5_000)
             }
@@ -295,9 +299,9 @@ class HudActivity : ComponentActivity() {
             val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
             while (true) {
                 val time = timeFormat.format(Date())
-                val current = hudState.value
+                val current = hudTelemetry.value
                 if (current.currentTime != time) {
-                    hudState.value = current.copy(currentTime = time)
+                    hudTelemetry.value = current.copy(currentTime = time)
                 }
                 // Calculate delay until next minute boundary for precise updates
                 val now = System.currentTimeMillis()

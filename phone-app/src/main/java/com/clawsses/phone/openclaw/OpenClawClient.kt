@@ -32,6 +32,7 @@ class OpenClawClient(
         private const val TAG = "OpenClawClient"
         private const val RECONNECT_DELAY_MS = 3000L
         private const val PROTOCOL_VERSION = 4
+        private const val STREAM_PUBLICATION_INTERVAL_MS = 64L
     }
 
     sealed class ConnectionState {
@@ -104,6 +105,7 @@ class OpenClawClient(
     @Volatile private var abortingRunId: String? = null
     private val completedAbortedRuns = ConcurrentHashMap<String, Long>()
     private var streamingContent = StringBuilder()
+    private val streamUpdateBuffer = StreamUpdateBuffer()
     private var lastAgentPhase: String? = null
     @Volatile private var agentProgressActive = false
 
@@ -283,6 +285,7 @@ class OpenClawClient(
                 activeRunId = idempotencyKey
                 abortingRunId = null
                 streamingContent.clear()
+                streamUpdateBuffer.reset()
                 lastAgentPhase = null
 
                 val response = sendRequest(OpenClawMethods.CHAT_SEND, params)
@@ -1187,18 +1190,16 @@ class OpenClawClient(
             "delta" -> {
                 if (runId == abortingRunId) return
                 // Each delta contains the full accumulated text, not just the new chunk.
-                // Diff against what we already have to extract only the new portion.
+                // Track only the prior length so growing responses are not copied twice per event.
                 val fullText = extractTextFromMessage(payload)
-                val previous = streamingContent.toString()
-                if (fullText.length > previous.length) {
-                    val newChunk = fullText.substring(previous.length)
+                val previousLength = streamingContent.length
+                if (fullText.length > previousLength) {
+                    val newChunk = fullText.substring(previousLength)
                     streamingContent.clear()
                     streamingContent.append(fullText)
                     clearAgentProgress()
-                    onChatStream?.invoke(ChatStream(id = msgId, chunk = newChunk))
-                    // Update phone UI with streaming text
-                    updateStreamingMessage(msgId, fullText)
                     updateRunState(RunState.STREAMING)
+                    enqueueStreamingUpdate(msgId, fullText, newChunk)
                 }
             }
             "final" -> {
@@ -1208,17 +1209,14 @@ class OpenClawClient(
                     return
                 }
                 val fullText = extractTextFromMessage(payload)
-                val previous = streamingContent.toString()
-                if (fullText.isNotEmpty() && fullText.length > previous.length) {
-                    val newChunk = fullText.substring(previous.length)
-                    clearAgentProgress()
-                    onChatStream?.invoke(ChatStream(id = msgId, chunk = newChunk))
-                }
-                // Use the final full text if available, otherwise keep what we accumulated
-                if (fullText.isNotEmpty()) {
+                val previousLength = streamingContent.length
+                if (fullText.length > previousLength) {
+                    val newChunk = fullText.substring(previousLength)
                     streamingContent.clear()
                     streamingContent.append(fullText)
+                    enqueueStreamingUpdate(msgId, fullText, newChunk)
                 }
+                flushPendingStreamingUpdate()
                 finalizeStreaming("final")
             }
             "aborted", "error" -> {
@@ -1249,6 +1247,20 @@ class OpenClawClient(
         return sb.toString()
     }
 
+    private fun enqueueStreamingUpdate(messageId: String, fullText: String, chunk: String) {
+        if (!streamUpdateBuffer.offer(messageId, fullText, chunk)) return
+        scope.launch {
+            delay(STREAM_PUBLICATION_INTERVAL_MS)
+            flushPendingStreamingUpdate()
+        }
+    }
+
+    private fun flushPendingStreamingUpdate() {
+        val update = streamUpdateBuffer.drain() ?: return
+        onChatStream?.invoke(ChatStream(id = update.messageId, chunk = update.chunk))
+        updateStreamingMessage(update.messageId, update.fullText)
+    }
+
     private fun finalizeStreaming(terminalState: String, errorMessage: String? = null) {
         val msgId = activeMessageId ?: return
         val content = streamingContent.toString()
@@ -1274,6 +1286,7 @@ class OpenClawClient(
         activeSessionKey = null
         abortingRunId = null
         streamingContent.clear()
+        streamUpdateBuffer.reset()
         lastAgentPhase = null
         updateRunState(
             if (terminalState == "error") RunState.ERROR else RunState.IDLE,
@@ -1289,6 +1302,7 @@ class OpenClawClient(
         activeSessionKey = null
         abortingRunId = null
         streamingContent.clear()
+        streamUpdateBuffer.reset()
         lastAgentPhase = null
         updateRunState(
             if (terminalState == "error") RunState.ERROR else RunState.IDLE,
