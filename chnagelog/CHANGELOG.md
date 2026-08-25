@@ -47,6 +47,7 @@
 
 ### Changed
 
+- Serialize phone-to-glasses CXR traffic through a bounded FIFO transport that coalesces safe transient updates, preserves dependent message order, and retries acknowledged final state on Build 26 peers.
 - Coalesce high-frequency OpenClaw stream deltas into bounded 64 ms phone/HUD publications while preserving immediate lossless final delivery.
 - Keep Rokid, gateway, voice, Talk Mode, and TTS managers in one process-scoped runtime instead of recreating them with Compose.
 - Isolate phone chat streaming and Rokid battery/time telemetry into lifecycle-aware Compose state boundaries.
@@ -57,7 +58,7 @@
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
-- Phone and glasses are versioned together as 1.3.16 (build 25).
+- Phone and glasses are versioned together as 1.3.17 (build 26).
 - Raw private reasoning, tool arguments, tool results, paths, and error payloads remain excluded from the glasses protocol.
 - Model changes use a narrow `operator.write` gateway method that accepts only a session key and an allowlisted model; Clawsses does not receive `operator.admin`.
 - The effective session model is synchronized to the Rokid agent display after selection, session changes, reconnects, and HUD state requests.

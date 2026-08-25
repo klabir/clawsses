@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clawsses.phone.ClawssesApp
 import com.clawsses.phone.glasses.ApkInstaller
+import com.clawsses.phone.glasses.CxrOutboundTransport
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
@@ -213,7 +214,11 @@ fun MainScreen() {
     }
 
     fun sendHistoryToGlasses(messages: List<ChatMessage>, reason: String) {
-        val packets = GlassesChatHistoryPage.buildPackets(messages)
+        val packets = GlassesChatHistoryPage.buildPackets(
+            messages,
+            maxBytes = CxrPayloadLimits.MAX_BYTES -
+                CxrOutboundTransport.ACK_METADATA_RESERVE_BYTES,
+        )
         android.util.Log.i(
             "MainScreen",
             "Sending complete chunked history ($reason): ${messages.size} source messages, " +
@@ -397,7 +402,18 @@ fun MainScreen() {
             val isNewMessage = msg.role == "assistant" && !glassesManager.wakeSignalManager.wakeState.value.let {
                 it is WakeSignalManager.WakeState.Awake || it is WakeSignalManager.WakeState.WakingUp
             }
-            glassesManager.sendRawMessage(buildGlassesChatMessageJson(msg), isNewMessage = isNewMessage)
+            val payload = buildGlassesChatMessageJson(msg)
+            if (CxrPayloadLimits.fits(payload)) {
+                glassesManager.sendRawMessage(payload, isNewMessage = isNewMessage)
+            } else {
+                // A completed assistant response may exceed one CXR command even though all
+                // streaming chunks fit. Replace the HUD atomically with the existing bounded,
+                // lossless history protocol instead of dropping the final snapshot.
+                sendHistoryToGlasses(
+                    openClawClient.chatMessages.value,
+                    "oversized completed message",
+                )
+            }
             if (isNewMessage && msg.content.isNotBlank()) {
                 sendHudCard(
                     HudCard(
@@ -742,6 +758,7 @@ fun MainScreen() {
                     "request_state" -> {
                         val glassesVersionName = json.optString("versionName").takeIf { it.isNotBlank() }
                         val glassesVersionCode = json.optInt("versionCode", -1).takeIf { it >= 0 }
+                        glassesManager.updatePeerVersion(glassesVersionCode)
                         android.util.Log.d(
                             "MainScreen",
                             if (glassesVersionName != null && glassesVersionCode != null) {

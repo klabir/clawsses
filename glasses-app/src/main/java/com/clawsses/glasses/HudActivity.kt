@@ -63,6 +63,7 @@ import android.os.BatteryManager
 import android.os.Build
 import com.clawsses.glasses.BuildConfig
 import java.text.SimpleDateFormat
+import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 
@@ -113,6 +114,7 @@ class HudActivity : ComponentActivity() {
     private var pendingHistorySnapshotId: String? = null
     private var pendingHistoryHasMore = false
     private val pendingHistoryMessages = linkedMapOf<String, PendingHistoryMessage>()
+    private val processedTransportTransactions = ArrayDeque<String>()
 
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
@@ -1413,6 +1415,11 @@ class HudActivity : ComponentActivity() {
             Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
             val msg = JSONObject(json)
             val type = msg.optString("type", "")
+            val transactionId = msg.optString("_tx").takeIf { it.isNotBlank() }
+            if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
+                phoneConnection.sendToPhone("""{"type":"transport_ack","tx":"$transactionId"}""")
+                return
+            }
 
             when (type) {
                 "chat_message" -> {
@@ -2083,6 +2090,13 @@ class HudActivity : ComponentActivity() {
                 else -> {
                     Log.d(GlassesApp.TAG, "Unknown message type: $type")
                 }
+            }
+            if (transactionId != null) {
+                processedTransportTransactions.addLast(transactionId)
+                while (processedTransportTransactions.size > 64) {
+                    processedTransportTransactions.removeFirst()
+                }
+                phoneConnection.sendToPhone("""{"type":"transport_ack","tx":"$transactionId"}""")
             }
         } catch (e: Exception) {
             Log.e(GlassesApp.TAG, "Error parsing phone message (${json.length} chars)", e)

@@ -94,6 +94,12 @@ class GlassesConnectionManager(private val context: Context) {
     private var reconnectAttempts = 0
     private var currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
 
+    private val outboundTransport = CxrOutboundTransport(
+        scope = reconnectScope,
+        sendDirect = { message -> sendRawMessageDirect(message) },
+    )
+    val transportMetrics: StateFlow<CxrTransportMetrics> = outboundTransport.metrics
+
     // Callback for messages from glasses (both BLE and debug modes)
     var onMessageFromGlasses: ((String) -> Unit)? = null
 
@@ -103,7 +109,7 @@ class GlassesConnectionManager(private val context: Context) {
 
     // Wake signal manager for handling standby wake-up and message buffering
     val wakeSignalManager = WakeSignalManager(
-        sendToGlasses = { message -> sendRawMessageDirect(message) },
+        sendToGlasses = { message -> outboundTransport.enqueue(message) },
         wakeHardwareDisplay = {
             if (!_debugModeEnabled.value) {
                 RokidSdkManager.wakeGlassesScreen()
@@ -125,6 +131,7 @@ class GlassesConnectionManager(private val context: Context) {
         if (RokidSdkManager.isReady() && RokidSdkManager.isConnected()) {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
+            outboundTransport.setConnected(true)
             Log.i(TAG, "SDK already connected on init; restored connected state")
         }
     }
@@ -133,6 +140,7 @@ class GlassesConnectionManager(private val context: Context) {
         RokidSdkManager.onGlassesConnected = {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
+            outboundTransport.setConnected(true)
             // Reset reconnect state on successful connection
             reconnectAttempts = 0
             currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
@@ -146,6 +154,7 @@ class GlassesConnectionManager(private val context: Context) {
         RokidSdkManager.onGlassesDisconnected = {
             _connectionState.value = ConnectionState.Disconnected
             _wifiP2PConnected.value = false
+            outboundTransport.setConnected(false)
             // Notify wake signal manager of disconnection
             wakeSignalManager.handleGlassesDisconnected()
             Log.d(TAG, "SDK: Glasses disconnected")
@@ -215,6 +224,10 @@ class GlassesConnectionManager(private val context: Context) {
                     val ready = json.optBoolean("ready", true)
                     wakeSignalManager.handleWakeAck(ready)
                     Log.d(TAG, "Received wake_ack from glasses: ready=$ready")
+                    return@handleGlassesMsg
+                }
+                if (json.optString("type") == "transport_ack") {
+                    outboundTransport.handleAck(json.optString("tx"))
                     return@handleGlassesMsg
                 }
             } catch (_: Exception) { }
@@ -453,6 +466,7 @@ class GlassesConnectionManager(private val context: Context) {
             RokidSdkManager.disconnect()
         }
         _connectionState.value = ConnectionState.Disconnected
+        outboundTransport.setConnected(false)
         _wifiP2PConnected.value = false
         // Explicitly stop the foreground service on user-initiated disconnect.
         // The LaunchedEffect won't stop it because hasSavedConnectionInfo() is still true.
@@ -618,9 +632,11 @@ class GlassesConnectionManager(private val context: Context) {
         debugServer = DebugGlassesServer().apply {
             onGlassesConnected = {
                 _connectionState.value = ConnectionState.Connected("Debug Glasses (WebSocket)")
+                outboundTransport.setConnected(true)
             }
             onGlassesDisconnected = {
                 _connectionState.value = ConnectionState.Disconnected
+                outboundTransport.setConnected(false)
             }
             onMessageFromGlasses = { message ->
                 this@GlassesConnectionManager.onMessageFromGlasses?.invoke(message)
@@ -639,6 +655,7 @@ class GlassesConnectionManager(private val context: Context) {
         stopDebugServer()
         _debugModeEnabled.value = false
         _connectionState.value = ConnectionState.Disconnected
+        outboundTransport.setConnected(false)
         Log.i(TAG, "Debug mode disabled")
     }
 
@@ -674,21 +691,27 @@ class GlassesConnectionManager(private val context: Context) {
      * Send a message directly to glasses without wake signal handling.
      * Used internally by WakeSignalManager and for system messages.
      */
-    internal fun sendRawMessageDirect(jsonMessage: String) {
+    internal fun sendRawMessageDirect(jsonMessage: String): Boolean {
         val msgType = try {
             org.json.JSONObject(jsonMessage).optString("type", "?")
         } catch (_: Exception) { "?" }
         val isDebug = _debugModeEnabled.value
         Log.d(TAG, "sendRawMessageDirect: type=$msgType, size=${jsonMessage.length}, debug=$isDebug")
 
-        if (isDebug) {
+        return if (isDebug) {
             val sent = debugServer?.sendToGlasses(jsonMessage) ?: false
             if (!sent) {
                 Log.w(TAG, "sendRawMessageDirect: debugServer.sendToGlasses returned false (no client?)")
             }
+            sent
         } else {
             RokidSdkManager.sendToGlasses(jsonMessage)
         }
+    }
+
+    /** Enable reliable ACK delivery only after a matching glasses build announces support. */
+    fun updatePeerVersion(versionCode: Int?) {
+        outboundTransport.setPeerBuild(versionCode)
     }
 
     /**
@@ -708,6 +731,7 @@ class GlassesConnectionManager(private val context: Context) {
             _activeStreamMessageId = null
         }
         wakeSignalManager.notifyStreamEnd(messageId)
+        outboundTransport.logMetrics("stream_end")
     }
 
     /**

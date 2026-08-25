@@ -262,6 +262,14 @@ object CxrPayloadLimits {
     fun fits(payload: String): Boolean = byteSize(payload) <= MAX_BYTES
 }
 
+/** End-to-end acknowledgment for reliable phone-to-glasses transport messages. */
+data class TransportAck(
+    @SerializedName("type") val type: String = "transport_ack",
+    @SerializedName("tx") val transactionId: String,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
 /** Compact, bounded pages keep session messages valid on the CXR command channel. */
 object SessionPaging {
     const val PAGE_SIZE = 3
