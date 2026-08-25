@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import com.clawsses.glasses.R
+import com.clawsses.shared.ChatScrollCoordinator
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.asImageBitmap
@@ -366,6 +367,9 @@ fun HudScreen(
     onScrolledToEndChanged: (Boolean) -> Unit = {}
 ) {
     val listState = rememberLazyListState()
+    val scrollCoordinator = remember { ChatScrollCoordinator() }
+    var visibleAnchorId by remember { mutableStateOf<String?>(null) }
+    var visibleAnchorOffset by remember { mutableIntStateOf(0) }
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
 
@@ -374,14 +378,43 @@ fun HudScreen(
     // Track whether the list is scrolled to the very end (pixel-level)
     val canScrollForward = listState.canScrollForward
     LaunchedEffect(canScrollForward) {
+        scrollCoordinator.onViewportChanged(atEnd = !canScrollForward, userDriven = false)
         onScrolledToEndChanged(!canScrollForward)
     }
 
-    // Auto-scroll when position or trigger changes
-    LaunchedEffect(state.scrollPosition, state.scrollTrigger) {
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+            (visible?.key as? String) to listState.firstVisibleItemScrollOffset
+        }.collect { (id, offset) ->
+            if (id != null && id != "history_start" && id != "agent_progress") {
+                visibleAnchorId = id
+                visibleAnchorOffset = offset
+            }
+        }
+    }
+
+    // One effect owns every chat scroll operation on the HUD.
+    val tailVersion = state.messages.lastOrNull()?.let { "${it.id}:${it.content.length}" }
+    LaunchedEffect(
+        state.scrollPosition,
+        state.scrollTrigger,
+        state.newPrependCount,
+        state.agentState,
+        state.agentProgress.size,
+        tailVersion,
+    ) {
         val totalItems = state.messages.size
-        if (totalItems > 0 && state.scrollPosition < totalItems) {
+        if (state.newPrependCount > 0) {
+            val anchorIndex = visibleAnchorId?.let { id -> state.messages.indexOfFirst { it.id == id } } ?: -1
+            if (anchorIndex >= 0) {
+                scrollCoordinator.beginHistoryRestore()
+                listState.scrollToItem(anchorIndex, visibleAnchorOffset)
+                scrollCoordinator.finishHistoryRestore(atEnd = !listState.canScrollForward)
+            }
+        } else if (totalItems > 0 && state.scrollPosition < totalItems) {
             val currentIndex = listState.firstVisibleItemIndex
+            scrollCoordinator.onExplicitScroll(state.scrollPosition, totalItems - 1)
             if (state.scrollPosition < currentIndex) {
                 // Scrolling up: use pixel-based animation for smoothness
                 // (animateScrollToItem can jump when target items aren't composed yet)
@@ -397,19 +430,13 @@ fun HudScreen(
                 val scrollDistance = -(itemsToScroll * avgItemHeight)
                 listState.animateScrollBy(scrollDistance)
             } else if (state.scrollPosition == totalItems - 1) {
-                // Align the last item, then continue to the real pixel-level end.
-                // The event handler only targets the last item while tail-following.
                 val isStreaming = state.messages.lastOrNull()?.isStreaming == true
-                if (isStreaming) {
-                    listState.scrollToItem(state.scrollPosition)
-                    listState.scrollBy(Float.MAX_VALUE)
-                } else {
-                    listState.animateScrollToItem(state.scrollPosition)
-                    listState.animateScrollBy(Float.MAX_VALUE)
-                }
+                scrollHudToTrueEnd(listState, state.scrollPosition, animated = !isStreaming)
             } else {
                 listState.animateScrollToItem(state.scrollPosition)
             }
+        } else if (scrollCoordinator.shouldFollowNewContent() && totalItems > 0) {
+            scrollHudToTrueEnd(listState, totalItems - 1, animated = false)
         }
     }
 
@@ -834,22 +861,6 @@ private fun ChatContentArea(
     newPrependCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
-    // Auto-scroll to reveal the thinking indicator when it appears.
-    // Uses a pixel-based scrollBy after a frame delay so the LazyColumn
-    // has laid out the new item before we scroll.
-    val isThinking = agentState == AgentState.THINKING
-    LaunchedEffect(isThinking, progressItems.size) {
-        if ((isThinking || progressItems.isNotEmpty()) && messages.isNotEmpty()) {
-            // Wait for the thinking indicator item to be composed and laid out
-            delay(50)
-            // Only auto-scroll if the user is near the bottom
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            if (lastVisible >= messages.size - 2) {
-                listState.animateScrollBy(500f)
-            }
-        }
-    }
-
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -928,6 +939,22 @@ private fun ChatContentArea(
                 }
             }
         }
+    }
+}
+
+private suspend fun scrollHudToTrueEnd(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    lastIndex: Int,
+    animated: Boolean,
+) {
+    if (lastIndex < 0) return
+    if (animated) listState.animateScrollToItem(lastIndex) else listState.scrollToItem(lastIndex)
+    delay(16)
+    repeat(32) {
+        if (!listState.canScrollForward) return
+        val viewport = listState.layoutInfo.viewportSize.height.coerceAtLeast(1).toFloat()
+        val consumed = if (animated) listState.animateScrollBy(viewport) else listState.scrollBy(viewport)
+        if (consumed == 0f) return
     }
 }
 

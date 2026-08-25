@@ -94,6 +94,7 @@ import com.clawsses.phone.voice.VoiceRecognitionManager
 import com.clawsses.shared.AgentInfo
 import com.clawsses.shared.AgentProgressUpdate
 import com.clawsses.shared.ChatMessage
+import com.clawsses.shared.ChatScrollCoordinator
 import com.clawsses.shared.ConnectionUpdate
 import com.clawsses.shared.CxrPayloadLimits
 import com.clawsses.shared.HudCard
@@ -1333,13 +1334,27 @@ private fun PhoneChatPane(
     val messages by openClawClient.chatMessages.collectAsStateWithLifecycle()
     val loadingMore by openClawClient.isLoadingMoreHistory.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
+    val scrollCoordinator = remember { ChatScrollCoordinator() }
     var previousFirstMessageId by remember { mutableStateOf<String?>(null) }
-    var followTail by remember { mutableStateOf(true) }
+    var visibleAnchorId by remember { mutableStateOf<String?>(null) }
+    var visibleAnchorOffset by remember { mutableIntStateOf(0) }
     val listDragged by listState.interactionSource.collectIsDraggedAsState()
 
     LaunchedEffect(listDragged, listState.canScrollForward) {
         val isAtBottom = !listState.canScrollForward
-        if (listDragged || isAtBottom) followTail = isAtBottom
+        scrollCoordinator.onViewportChanged(atEnd = isAtBottom, userDriven = listDragged)
+    }
+
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+            (visible?.key as? String) to listState.firstVisibleItemScrollOffset
+        }.collect { (id, offset) ->
+            if (id != null) {
+                visibleAnchorId = id
+                visibleAnchorOffset = offset
+            }
+        }
     }
 
     val tailVersion = messages.lastOrNull()?.let { "${it.id}:${it.content.length}" }
@@ -1347,10 +1362,15 @@ private fun PhoneChatPane(
         if (messages.isEmpty()) return@LaunchedEffect
         val currentFirstId = messages.first().id
         val wasPrepend = previousFirstMessageId != null && currentFirstId != previousFirstMessageId
-        if (!wasPrepend && followTail) {
-            listState.scrollToItem(messages.lastIndex)
-            yield()
-            listState.scrollBy(Float.MAX_VALUE)
+        if (wasPrepend) {
+            val anchorIndex = visibleAnchorId?.let { id -> messages.indexOfFirst { it.id == id } } ?: -1
+            if (anchorIndex >= 0) {
+                scrollCoordinator.beginHistoryRestore()
+                listState.scrollToItem(anchorIndex, visibleAnchorOffset)
+                scrollCoordinator.finishHistoryRestore(atEnd = !listState.canScrollForward)
+            }
+        } else if (scrollCoordinator.shouldFollowNewContent()) {
+            scrollToTrueEnd(listState, messages.lastIndex, animated = false)
         }
         previousFirstMessageId = currentFirstId
     }
@@ -1376,6 +1396,22 @@ private fun PhoneChatPane(
                 }
             }
         }
+    }
+}
+
+private suspend fun scrollToTrueEnd(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    lastIndex: Int,
+    animated: Boolean,
+) {
+    if (lastIndex < 0) return
+    if (animated) listState.animateScrollToItem(lastIndex) else listState.scrollToItem(lastIndex)
+    yield()
+    repeat(32) {
+        if (!listState.canScrollForward) return
+        val viewport = listState.layoutInfo.viewportSize.height.coerceAtLeast(1).toFloat()
+        val consumed = if (animated) listState.animateScrollBy(viewport) else listState.scrollBy(viewport)
+        if (consumed == 0f) return
     }
 }
 
