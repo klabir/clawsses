@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.28 (build 37)
+
+- Increase the Rokid HUD bottom navigation safe inset from 24 dp to 32 dp while keeping the top status inset at 24 dp.
+- Build 36 was used only for paired-device validation and was not published.
+
 ## 1.3.26 (build 35)
 
 - Give the Rokid HUD bottom navigation the same 24 dp optical safe inset as the top status area, with automatic chat repagination for the reduced viewport.

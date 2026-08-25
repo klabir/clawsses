@@ -363,7 +363,7 @@ val SLASH_COMMANDS = listOf(
  * Rokid micro-LED display even though Compose renders the row only once.
  */
 private val HudTopSafeInset = 24.dp
-private val HudBottomSafeInset = 24.dp
+private val HudBottomSafeInset = 32.dp
 
 // ============================================================================
 // MAIN HUD SCREEN
