@@ -25,6 +25,7 @@
 
 ### Added
 
+- Add privacy-safe JankStats frame monitoring, reproducible Pixel startup macrobenchmarks, Perfetto traces, and a generated phone Baseline Profile.
 - Encrypted Android preference storage for OpenClaw, Rokid, voice, and TTS credentials.
 - Automatic recovery of the Rokid connection and HUD after app lifecycle restarts.
 - Photo-only OpenClaw messages with image thumbnails retained in chat history.
@@ -60,7 +61,7 @@
 - Phone and glasses chat views preserve the reader's position and reach the true end of long messages.
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
-- Phone and glasses are versioned together as 1.3.19 (build 28).
+- Phone and glasses are versioned together as 1.3.20 (build 29).
 - Raw private reasoning, tool arguments, tool results, paths, and error payloads remain excluded from the glasses protocol.
 - Model changes use a narrow `operator.write` gateway method that accepts only a session key and an allowlisted model; Clawsses does not receive `operator.admin`.
 - The effective session model is synchronized to the Rokid agent display after selection, session changes, reconnects, and HUD state requests.

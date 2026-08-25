@@ -14,8 +14,10 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.clawsses.phone.ui.theme.ClawssesTheme
 import com.clawsses.phone.ui.screens.MainScreen
+import com.clawsses.shared.TechnicalJankMonitor
 
 class MainActivity : ComponentActivity() {
+    private lateinit var jankMonitor: TechnicalJankMonitor
 
     private val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         arrayOf(
@@ -52,12 +54,28 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        jankMonitor = TechnicalJankMonitor(window, "ClawssesPerf", "phone")
 
         if (hasAllPermissions()) {
             initializeApp()
         } else {
             permissionLauncher.launch(requiredPermissions)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        jankMonitor.onResume()
+    }
+
+    override fun onPause() {
+        jankMonitor.onPause()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        jankMonitor.close()
+        super.onDestroy()
     }
 
     private fun hasAllPermissions(): Boolean {

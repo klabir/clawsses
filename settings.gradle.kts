@@ -21,3 +21,4 @@ rootProject.name = "Clawsses"
 include(":phone-app")
 include(":glasses-app")
 include(":shared")
+include(":benchmark")

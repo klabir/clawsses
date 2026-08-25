@@ -65,8 +65,10 @@ import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
+import com.clawsses.shared.TechnicalJankMonitor
 
 class HudActivity : ComponentActivity() {
+    private lateinit var jankMonitor: TechnicalJankMonitor
 
     companion object {
         val DEBUG_MODE = BuildConfig.DEBUG && isEmulator()
@@ -143,6 +145,7 @@ class HudActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        jankMonitor = TechnicalJankMonitor(window, GlassesApp.TAG, "hud")
 
         // Restore saved HUD preferences (font size, screen position)
         val (savedPosition, savedDisplaySize) = loadHudPreferences()
@@ -310,6 +313,16 @@ class HudActivity : ComponentActivity() {
                 delay(delayMs)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        jankMonitor.onResume()
+    }
+
+    override fun onPause() {
+        jankMonitor.onPause()
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -2175,6 +2188,7 @@ class HudActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        jankMonitor.close()
         super.onDestroy()
         saveHudPreferences()
         cameraCapture.cleanup()
