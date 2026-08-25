@@ -70,6 +70,7 @@ import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.MediaStoreSaver
+import com.clawsses.phone.media.ImagePipeline
 import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -540,10 +541,16 @@ fun MainScreen() {
                         openClawClient.sendMessage(visionPrompt.orEmpty(), listOf(base64))
                     } else {
                         runtime.addPendingPhoto(base64)
+                        val thumbnail = ImagePipeline.createHudThumbnail(photoBytes)
                         val resultMsg = org.json.JSONObject().apply {
                             put("type", "photo_result")
                             put("status", "captured")
-                            put("thumbnail", createThumbnailBase64(photoBytes, 80, 60))
+                            if (thumbnail != null) {
+                                put("thumbnail", thumbnail.encoded)
+                                put("thumbnailFormat", thumbnail.format)
+                                put("thumbnailWidth", thumbnail.width)
+                                put("thumbnailHeight", thumbnail.height)
+                            }
                         }
                         glassesManager.sendRawMessage(resultMsg.toString())
                     }
@@ -944,12 +951,7 @@ fun MainScreen() {
                     ) {
                         pendingPhotos.forEachIndexed { index, base64 ->
                             val thumbnail = remember(base64) {
-                                try {
-                                    val bytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
-                                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                                        ?.asImageBitmap()
-                                } catch (_: Exception) { null }
+                                ImagePipeline.decodeBase64Image(base64, 320, 240)?.asImageBitmap()
                             }
                             if (thumbnail != null) {
                                 Box {
@@ -2153,13 +2155,16 @@ private fun putThumbnailAttachments(target: org.json.JSONObject, message: ChatMe
     val attachments = org.json.JSONArray()
     message.attachments.take(4).forEach { attachment ->
         val bytes = decodeBase64Bytes(attachment.base64) ?: return@forEach
-        val thumbnail = createThumbnailBase64(bytes, 80, 60)
-        if (thumbnail.isNotBlank()) {
+        val thumbnail = ImagePipeline.createHudThumbnail(bytes)
+        if (thumbnail != null) {
             attachments.put(org.json.JSONObject().apply {
                 put("type", "image")
-                put("mimeType", "image/webp")
+                put("mimeType", "application/x-clawsses-mono1")
                 put("fileName", attachment.fileName ?: "photo")
-                put("thumbnail", thumbnail)
+                put("thumbnail", thumbnail.encoded)
+                put("thumbnailFormat", thumbnail.format)
+                put("thumbnailWidth", thumbnail.width)
+                put("thumbnailHeight", thumbnail.height)
             })
         }
     }
@@ -2175,49 +2180,5 @@ private fun decodeBase64Bytes(encoded: String?): ByteArray? {
 }
 
 private fun decodeBase64Image(encoded: String, maxWidth: Int, maxHeight: Int): android.graphics.Bitmap? {
-    val bytes = decodeBase64Bytes(encoded) ?: return null
-    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
-    var sampleSize = 1
-    while (bounds.outWidth / sampleSize > maxWidth * 2 || bounds.outHeight / sampleSize > maxHeight * 2) {
-        sampleSize *= 2
-    }
-    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
-    return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-}
-
-private fun createThumbnailBase64(imageBytes: ByteArray, maxWidth: Int, maxHeight: Int): String {
-    val encoded = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
-    val bitmap = decodeBase64Image(encoded, maxWidth, maxHeight)
-        ?: return ""
-    val scale = minOf(maxWidth.toFloat() / bitmap.width, maxHeight.toFloat() / bitmap.height)
-    val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
-    val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
-    val scaled = android.graphics.Bitmap.createScaledBitmap(bitmap, width, height, true)
-    // Convert to high-contrast grayscale for the monochrome green glasses display.
-    // Store luminance in alpha channel so glasses can tint it green.
-    val grayscale = android.graphics.Bitmap.createBitmap(scaled.width, scaled.height, android.graphics.Bitmap.Config.ARGB_8888)
-    val canvas = android.graphics.Canvas(grayscale)
-    val paint = android.graphics.Paint()
-    // Grayscale color matrix
-    val cm = android.graphics.ColorMatrix()
-    cm.setSaturation(0f)
-    // Boost contrast: scale by 1.8, offset by -100
-    val contrast = android.graphics.ColorMatrix(floatArrayOf(
-        1.8f, 0f, 0f, 0f, -100f,
-        0f, 1.8f, 0f, 0f, -100f,
-        0f, 0f, 1.8f, 0f, -100f,
-        0f, 0f, 0f, 1f, 0f
-    ))
-    cm.postConcat(contrast)
-    paint.colorFilter = android.graphics.ColorMatrixColorFilter(cm)
-    canvas.drawBitmap(scaled, 0f, 0f, paint)
-    if (scaled !== bitmap) bitmap.recycle()
-    scaled.recycle()
-    val stream = java.io.ByteArrayOutputStream()
-    grayscale.compress(android.graphics.Bitmap.CompressFormat.WEBP, 60, stream)
-    grayscale.recycle()
-    return android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+    return ImagePipeline.decodeBase64Image(encoded, maxWidth, maxHeight)
 }

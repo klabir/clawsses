@@ -194,56 +194,56 @@ class CameraCapture(private val context: Context) {
 
     private fun processCapture(jpegBytes: ByteArray) {
         try {
-            // Decode to check dimensions and potentially scale down
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, options)
-
-            val needsResize = options.outWidth > MAX_WIDTH || options.outHeight > MAX_HEIGHT
-            val finalBytes: ByteArray
-
-            if (needsResize) {
-                // Calculate sample size
-                val sampleSize = maxOf(
-                    options.outWidth / MAX_WIDTH,
-                    options.outHeight / MAX_HEIGHT
-                ).coerceAtLeast(1)
-
-                val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions)
-                    ?: throw Exception("Failed to decode image")
-
-                // Scale to fit within bounds
-                val scale = minOf(
-                    MAX_WIDTH.toFloat() / bitmap.width,
-                    MAX_HEIGHT.toFloat() / bitmap.height
-                ).coerceAtMost(1f)
-                val scaledBitmap = if (scale < 1f) {
-                    Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
-                        .also { if (it !== bitmap) bitmap.recycle() }
-                } else {
-                    bitmap
-                }
-
-                val outputStream = ByteArrayOutputStream()
-                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, outputStream)
-                finalBytes = outputStream.toByteArray()
-                scaledBitmap.recycle()
-            } else {
-                // Re-compress at target quality
-                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
-                    ?: throw Exception("Failed to decode image")
-                val outputStream = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, outputStream)
-                finalBytes = outputStream.toByteArray()
-                bitmap.recycle()
+            if (options.outWidth <= 0 || options.outHeight <= 0) {
+                throw IllegalArgumentException("Invalid JPEG dimensions")
             }
 
-            val base64 = Base64.encodeToString(finalBytes, Base64.NO_WRAP)
+            var sampleSize = 1
+            while (
+                options.outWidth / sampleSize > MAX_WIDTH * 2 ||
+                options.outHeight / sampleSize > MAX_HEIGHT * 2
+            ) {
+                sampleSize *= 2
+            }
+            val decoded = BitmapFactory.decodeByteArray(
+                jpegBytes,
+                0,
+                jpegBytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize },
+            ) ?: throw IllegalStateException("Failed to decode image")
 
-            // Create thumbnail
-            val thumbBitmap = BitmapFactory.decodeByteArray(finalBytes, 0, finalBytes.size)
-            val thumbnail = Bitmap.createScaledBitmap(thumbBitmap, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, true)
-            if (thumbnail !== thumbBitmap) thumbBitmap.recycle()
+            val scale = minOf(
+                MAX_WIDTH.toFloat() / decoded.width,
+                MAX_HEIGHT.toFloat() / decoded.height,
+            ).coerceAtMost(1f)
+            val processed = if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    decoded,
+                    (decoded.width * scale).toInt().coerceAtLeast(1),
+                    (decoded.height * scale).toInt().coerceAtLeast(1),
+                    true,
+                ).also { decoded.recycle() }
+            } else {
+                decoded
+            }
+
+            // Derive both outputs from the same decoded bitmap. The previous implementation
+            // decoded the freshly compressed JPEG a second time just to create this thumbnail.
+            val thumbnail = Bitmap.createScaledBitmap(
+                processed,
+                THUMBNAIL_WIDTH,
+                THUMBNAIL_HEIGHT,
+                true,
+            )
+            val finalBytes = ByteArrayOutputStream().use { output ->
+                processed.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)
+                output.toByteArray()
+            }
+            processed.recycle()
+
+            val base64 = Base64.encodeToString(finalBytes, Base64.NO_WRAP)
 
             Log.d(TAG, "Photo captured: ${finalBytes.size} bytes, base64 length=${base64.length}")
             _state.value = PhotoCaptureState.Captured(base64, thumbnail)

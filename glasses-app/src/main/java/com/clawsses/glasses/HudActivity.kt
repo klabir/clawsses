@@ -4,9 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Bundle
-import android.util.Base64
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -23,6 +21,7 @@ import androidx.lifecycle.lifecycleScope
 import com.clawsses.glasses.camera.CameraCapture
 import com.clawsses.glasses.camera.PhotoCaptureState
 import com.clawsses.glasses.input.GestureHandler
+import com.clawsses.glasses.media.ThumbnailBitmapCache
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.ui.AgentState
@@ -1942,14 +1941,22 @@ class HudActivity : ComponentActivity() {
                             if (current.photoThumbnails.size >= MAX_PHOTOS) {
                                 Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring photo_result")
                             } else {
-                                val bytes = Base64.decode(thumbnailBase64, Base64.DEFAULT)
-                                val thumbnail = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                hudState.value = current.copy(
-                                    photoThumbnails = current.photoThumbnails + thumbnail,
-                                    focusedArea = ChatFocusArea.INPUT,
-                                    inputActionIndex = current.photoThumbnails.size + 2,
+                                val thumbnail = ThumbnailBitmapCache.decode(
+                                    encoded = thumbnailBase64,
+                                    format = msg.optString("thumbnailFormat").takeIf { it.isNotBlank() },
+                                    width = msg.optInt("thumbnailWidth"),
+                                    height = msg.optInt("thumbnailHeight"),
                                 )
-                                Log.d(GlassesApp.TAG, "Photo captured, thumbnail added (total: ${current.photoThumbnails.size + 1})")
+                                if (thumbnail != null) {
+                                    hudState.value = current.copy(
+                                        photoThumbnails = current.photoThumbnails + thumbnail,
+                                        focusedArea = ChatFocusArea.INPUT,
+                                        inputActionIndex = current.photoThumbnails.size + 2,
+                                    )
+                                    Log.d(GlassesApp.TAG, "Photo captured, thumbnail added (total: ${current.photoThumbnails.size + 1})")
+                                } else {
+                                    Log.w(GlassesApp.TAG, "Captured photo thumbnail could not be decoded")
+                                }
                             }
                         }
                     } else {
@@ -2107,13 +2114,16 @@ class HudActivity : ComponentActivity() {
         val attachments = message.optJSONArray("attachments") ?: return emptyList()
         val thumbnails = mutableListOf<Bitmap>()
         for (index in 0 until minOf(attachments.length(), MAX_PHOTOS)) {
-            val encoded = attachments.optJSONObject(index)?.optString("thumbnail")
+            val attachment = attachments.optJSONObject(index) ?: continue
+            val encoded = attachment.optString("thumbnail")
                 ?.takeIf { it.isNotBlank() }
                 ?: continue
-            val bitmap = runCatching {
-                val bytes = Base64.decode(encoded.substringAfter(',', encoded), Base64.DEFAULT)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            }.getOrNull()
+            val bitmap = ThumbnailBitmapCache.decode(
+                encoded = encoded,
+                format = attachment.optString("thumbnailFormat").takeIf { it.isNotBlank() },
+                width = attachment.optInt("thumbnailWidth"),
+                height = attachment.optInt("thumbnailHeight"),
+            )
             if (bitmap != null) thumbnails += bitmap
         }
         return thumbnails
