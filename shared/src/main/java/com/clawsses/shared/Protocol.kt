@@ -362,6 +362,55 @@ data class ModelInfo(
     @SerializedName("available") val available: Boolean = true,
 )
 
+/** Fixed, bounded model pages for the Rokid picker. */
+object ModelPaging {
+    const val PAGE_SIZE = 3
+    const val MAX_DISPLAY_NAME_CHARS = 30
+    const val MAX_PROVIDER_CHARS = 16
+
+    fun compactName(name: String): String = compact(name, MAX_DISPLAY_NAME_CHARS)
+    fun compactProvider(provider: String): String = compact(provider, MAX_PROVIDER_CHARS)
+
+    private fun compact(value: String, limit: Int): String = when {
+        value.length <= limit -> value
+        else -> value.take(limit - 3) + "..."
+    }
+}
+
+/** Compact model row; the opaque catalog token and global index resolve phone-side. */
+data class ModelPageItem(
+    @SerializedName("i") val index: Int,
+    @SerializedName("n") val name: String,
+    @SerializedName("p") val provider: String,
+    @SerializedName("a") val available: Boolean,
+)
+
+/** One fixed Rokid model-picker page, kept below the CXR command limit. */
+data class ModelPageUpdate(
+    @SerializedName("type") val type: String = "model_page",
+    @SerializedName("c") val catalogId: String,
+    @SerializedName("m") val models: List<ModelPageItem>,
+    @SerializedName("o") val offset: Int,
+    @SerializedName("x") val nextOffset: Int? = null,
+    @SerializedName("pi") val pageIndex: Int,
+    @SerializedName("pc") val pageCount: Int,
+    @SerializedName("ci") val currentIndex: Int? = null,
+    @SerializedName("e") val error: String? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+/** Progress or result for a glasses-initiated session-model selection. */
+data class ModelOperationUpdate(
+    @SerializedName("type") val type: String = "model_operation",
+    @SerializedName("state") val state: String,
+    @SerializedName("ci") val currentIndex: Int? = null,
+    @SerializedName("n") val currentName: String? = null,
+    @SerializedName("error") val error: String? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
 // ============================================
 // Glasses -> Phone Messages
 // ============================================

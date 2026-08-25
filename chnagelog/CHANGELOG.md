@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.26 (build 35)
+
+- Give the Rokid HUD bottom navigation the same 24 dp optical safe inset as the top status area, with automatic chat repagination for the reduced viewport.
+
+## 1.3.25 (build 34)
+
+- Present the Rokid model picker as a horizontal card row, with forward moving to the next model and back moving to the previous model across fixed page boundaries.
+
+## 1.3.24 (build 33)
+
+- Replace the primary Rokid `Agent` menu item with a paged `Model` picker for the active OpenClaw session.
+- Keep Agent and Model semantics separate by showing Agent under `More` only when multiple agents are available.
+- Validate model catalog, availability, active session, and idle run state on the phone before using the existing narrow `sessions.model.select` gateway route.
+- Keep model pages and selection results within the reliable, acknowledged Rokid CXR transport limit.
+
 ## 1.3.23 (build 32)
 
 - Replace Rokid's continuously scrolling chat list with measured, fixed HUD pages based on the active display height, width, font size, message padding, and thumbnails.

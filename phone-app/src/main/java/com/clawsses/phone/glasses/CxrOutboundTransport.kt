@@ -26,6 +26,8 @@ internal val RELIABLE_CXR_TYPES = setOf(
     "chat_history_end",
     "connection_update",
     "session_operation",
+    "model_page",
+    "model_operation",
     "run_state",
     "tts_state",
 )

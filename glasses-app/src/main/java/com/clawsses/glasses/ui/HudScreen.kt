@@ -112,7 +112,7 @@ enum class AgentState {
 enum class MenuBarItem(val icon: String, val label: String) {
     PHOTO("\uD83D\uDCF7", "Photo"),
     SESSION("\u25CE", "Sess"),
-    AGENT("\u25C6", "Agent"),
+    MODEL("\u25C6", "Model"),
     SIZE("\u2588", "Size"),  // Icon overridden dynamically based on next HudPosition
     MORE("\u2026", "More"),
 }
@@ -125,6 +125,7 @@ enum class MoreMenuItem(val icon: String, val label: String, val displaySize: Hu
     FONT_NORMAL("Aa", "Normal", HudDisplaySize.NORMAL),
     FONT_COMFORTABLE("Aa", "Comfortable", HudDisplaySize.COMFORTABLE),
     FONT_LARGE("Aa", "Large", HudDisplaySize.LARGE),
+    AGENT("\u25C6", "Agent"),
     SLASH("/", "Slash Cmds"),
     TALK("\u25C9", "Talk Mode"),
     CAPTIONS("CC", "Live Captions"),
@@ -181,6 +182,16 @@ data class AgentPickerInfo(
     val name: String,
     val model: String? = null
 )
+
+data class ModelPickerInfo(
+    val index: Int,
+    val name: String,
+    val provider: String,
+    val available: Boolean,
+)
+
+fun visibleMoreMenuItems(showAgentSelector: Boolean): List<MoreMenuItem> =
+    MoreMenuItem.entries.filter { item -> item != MoreMenuItem.AGENT || showAgentSelector }
 
 data class AgentProgressDisplay(
     val id: String,
@@ -268,6 +279,19 @@ data class ChatHudState(
     val currentAgentId: String? = null,
     val currentAgentName: String? = null,
     val selectedAgentIndex: Int = 0,
+    // Model picker
+    val showModelPicker: Boolean = false,
+    val availableModels: List<ModelPickerInfo> = emptyList(),
+    val modelCatalogId: String? = null,
+    val currentModelIndex: Int? = null,
+    val selectedModelIndex: Int = 0,
+    val modelPageOffset: Int = 0,
+    val modelNextOffset: Int? = null,
+    val modelPageIndex: Int = 0,
+    val modelPageCount: Int = 1,
+    val isModelOperationPending: Boolean = false,
+    val modelOperationMessage: String? = null,
+    val modelOperationError: String? = null,
     // More menu
     val showMoreMenu: Boolean = false,
     val selectedMoreIndex: Int = 0,
@@ -339,6 +363,7 @@ val SLASH_COMMANDS = listOf(
  * Rokid micro-LED display even though Compose renders the row only once.
  */
 private val HudTopSafeInset = 24.dp
+private val HudBottomSafeInset = 24.dp
 
 // ============================================================================
 // MAIN HUD SCREEN
@@ -442,7 +467,7 @@ fun HudScreen(
                         start = 12.dp,
                         top = HudTopSafeInset,
                         end = 12.dp,
-                        bottom = 6.dp,
+                        bottom = HudBottomSafeInset,
                     )
             ) {
                 // TOP BAR
@@ -542,6 +567,24 @@ fun HudScreen(
         }
 
         AnimatedVisibility(
+            visible = state.showModelPicker,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            ModelPickerOverlay(
+                models = state.availableModels,
+                currentModelIndex = state.currentModelIndex,
+                selectedIndex = state.selectedModelIndex,
+                pageIndex = state.modelPageIndex,
+                pageCount = state.modelPageCount,
+                isPending = state.isModelOperationPending,
+                statusMessage = state.modelOperationMessage,
+                errorMessage = state.modelOperationError,
+                fontFamily = monoFontFamily,
+            )
+        }
+
+        AnimatedVisibility(
             visible = state.showAgentPicker,
             enter = fadeIn(),
             exit = fadeOut()
@@ -570,6 +613,7 @@ fun HudScreen(
                 runCanAbort = state.runCanAbort,
                 talkModeEnabled = state.talkModeEnabled,
                 liveCaptionEnabled = state.liveCaptionEnabled,
+                showAgentSelector = state.availableAgents.size > 1,
                 fontFamily = monoFontFamily
             )
         }
@@ -1643,8 +1687,195 @@ private fun SessionPickerOverlay(
 }
 
 // ============================================================================
-// AGENT PICKER OVERLAY
+// MODEL / AGENT PICKER OVERLAYS
 // ============================================================================
+
+@Composable
+private fun ModelPickerOverlay(
+    models: List<ModelPickerInfo>,
+    currentModelIndex: Int?,
+    selectedIndex: Int,
+    pageIndex: Int,
+    pageCount: Int,
+    isPending: Boolean,
+    statusMessage: String?,
+    errorMessage: String?,
+    fontFamily: FontFamily,
+    modifier: Modifier = Modifier,
+) {
+    val canMoveBackward = selectedIndex > 0 || pageIndex > 0
+    val canMoveForward = selectedIndex < models.lastIndex || pageIndex < pageCount - 1
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.92f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(24.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "SELECT MODEL",
+                    color = HudColors.cyan,
+                    fontSize = 16.sp,
+                    fontFamily = fontFamily,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "${pageIndex + 1}/${pageCount.coerceAtLeast(1)}",
+                    color = HudColors.dimText,
+                    fontSize = 11.sp,
+                    fontFamily = fontFamily,
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (models.isEmpty()) {
+                Text(
+                    text = statusMessage ?: errorMessage ?: "No models available",
+                    color = if (errorMessage != null) HudColors.error else HudColors.dimText,
+                    fontSize = 13.sp,
+                    fontFamily = fontFamily,
+                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    models.forEachIndexed { localIndex, model ->
+                        val isSelected = localIndex == selectedIndex
+                        val isCurrent = model.index == currentModelIndex
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 112.dp)
+                                .background(
+                                    if (isSelected) HudColors.green.copy(alpha = 0.3f)
+                                    else Color.Transparent,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .border(
+                                    width = if (isSelected) 1.dp else 0.dp,
+                                    color = if (isSelected) HudColors.green else Color.Transparent,
+                                    shape = RoundedCornerShape(8.dp),
+                                )
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                text = if (isSelected) "\u25C6" else " ",
+                                color = HudColors.green,
+                                fontSize = 13.sp,
+                                fontFamily = fontFamily,
+                            )
+                            Spacer(modifier = Modifier.height(5.dp))
+                            Text(
+                                text = model.name,
+                                color = when {
+                                    !model.available -> HudColors.dimText
+                                    isSelected -> HudColors.green
+                                    else -> HudColors.primaryText
+                                },
+                                fontSize = 13.sp,
+                                fontFamily = fontFamily,
+                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                            )
+                            Spacer(modifier = Modifier.height(5.dp))
+                            Text(
+                                text = if (model.available) model.provider else "unavailable",
+                                color = HudColors.dimText,
+                                fontSize = 9.sp,
+                                fontFamily = fontFamily,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                            )
+                            if (isCurrent) {
+                                Spacer(modifier = Modifier.height(5.dp))
+                                Text(
+                                    text = "\u25CF CURRENT",
+                                    color = HudColors.cyan,
+                                    fontSize = 9.sp,
+                                    fontFamily = fontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.height(14.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            statusMessage?.takeIf { models.isNotEmpty() }?.let { message ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(message, color = HudColors.cyan, fontSize = 10.sp, fontFamily = fontFamily)
+            }
+            errorMessage?.takeIf { models.isNotEmpty() }?.let { error ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(error, color = HudColors.error, fontSize = 10.sp, fontFamily = fontFamily)
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            if (isPending) {
+                Text(
+                    text = "Please wait  2\u00D7TAP Cancel",
+                    color = HudColors.dimText,
+                    fontSize = 10.sp,
+                    fontFamily = fontFamily,
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "\u2039 BACK",
+                        color = if (canMoveBackward) HudColors.primaryText else HudColors.dimText,
+                        fontSize = 10.sp,
+                        fontFamily = fontFamily,
+                        fontWeight = if (canMoveBackward) FontWeight.Bold else FontWeight.Normal,
+                    )
+                    Text(
+                        text = "SWIPE",
+                        color = HudColors.dimText,
+                        fontSize = 9.sp,
+                        fontFamily = fontFamily,
+                    )
+                    Text(
+                        text = "FORWARD \u203A",
+                        color = if (canMoveForward) HudColors.primaryText else HudColors.dimText,
+                        fontSize = 10.sp,
+                        fontFamily = fontFamily,
+                        fontWeight = if (canMoveForward) FontWeight.Bold else FontWeight.Normal,
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "TAP Select   2\u00D7TAP Cancel",
+                    color = HudColors.dimText,
+                    fontSize = 9.sp,
+                    fontFamily = fontFamily,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun AgentPickerOverlay(
@@ -1868,10 +2099,11 @@ private fun MoreMenuOverlay(
     runCanAbort: Boolean,
     talkModeEnabled: Boolean,
     liveCaptionEnabled: Boolean,
+    showAgentSelector: Boolean,
     fontFamily: FontFamily,
     modifier: Modifier = Modifier
 ) {
-    val items = MoreMenuItem.entries
+    val items = visibleMoreMenuItems(showAgentSelector)
 
     Box(
         modifier = modifier

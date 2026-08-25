@@ -75,6 +75,8 @@ import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.openclaw.GlassesChatHistoryPage
+import com.clawsses.phone.openclaw.buildGlassesModelPage
+import com.clawsses.phone.openclaw.resolveGlassesModelSelection
 import com.clawsses.phone.runtime.ClawssesRuntime
 import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.talk.TalkModePhase
@@ -101,6 +103,7 @@ import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
 import com.clawsses.shared.LiveCaptionUpdate
 import com.clawsses.shared.ModelInfo
+import com.clawsses.shared.ModelOperationUpdate
 import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.ScrollSettings
 import com.clawsses.shared.ScrollSettingsUpdate
@@ -210,6 +213,29 @@ fun MainScreen() {
             glassesManager.sendRawMessage(
                 ScrollSettingsUpdate(
                     messagesPerStep = ScrollSettings.normalizeMessagesPerStep(messagesPerStep)
+                ).toJson()
+            )
+        }
+    }
+
+    fun sendModelPageToGlasses(requestedOffset: Int, error: String? = null) {
+        val page = buildGlassesModelPage(
+            models = openClawClient.modelList.value,
+            currentModelRef = openClawClient.currentModelRef.value,
+            requestedOffset = requestedOffset,
+            error = error,
+        )
+        val payload = page.toJson()
+        if (CxrPayloadLimits.byteSize(payload) + CxrOutboundTransport.ACK_METADATA_RESERVE_BYTES <=
+            CxrPayloadLimits.MAX_BYTES
+        ) {
+            glassesManager.sendRawMessage(payload)
+        } else {
+            android.util.Log.e("MainScreen", "Model page exceeds reliable CXR payload limit")
+            glassesManager.sendRawMessage(
+                ModelOperationUpdate(
+                    state = "error",
+                    error = "Model page is too large",
                 ).toJson()
             )
         }
@@ -750,6 +776,81 @@ fun MainScreen() {
                         val agentName = json.optString("agentName", "").takeIf { it.isNotBlank() }
                         if (agentId.isNotEmpty()) {
                             openClawClient.switchAgent(agentId, agentName)
+                        }
+                    }
+                    "list_models" -> {
+                        val requestedOffset = json.optInt("offset", -1)
+                        scope.launch {
+                            if (openClawClient.modelList.value.isEmpty()) {
+                                openClawClient.requestModels()
+                                withTimeoutOrNull(5_000L) {
+                                    openClawClient.modelList.first { it.isNotEmpty() }
+                                }
+                            }
+                            val error = if (openClawClient.modelList.value.isEmpty()) {
+                                openClawClient.modelSelectionError.value ?: "No models available"
+                            } else {
+                                null
+                            }
+                            sendModelPageToGlasses(requestedOffset, error)
+                        }
+                    }
+                    "select_model" -> {
+                        val models = openClawClient.modelList.value
+                        val requestedSessionKey = json.optString("sessionKey")
+                        val currentKey = openClawClient.currentSessionKey.value
+                        val selected = resolveGlassesModelSelection(
+                            models = models,
+                            catalogId = json.optString("catalog"),
+                            modelIndex = json.optInt("index", -1),
+                        )
+                        val validationError = when {
+                            requestedSessionKey.isBlank() || requestedSessionKey != currentKey ->
+                                "Session changed; reopen Models"
+                            openClawClient.runState.value !in setOf(
+                                OpenClawClient.RunState.IDLE,
+                                OpenClawClient.RunState.ERROR,
+                            ) -> "Available after response"
+                            openClawClient.isSelectingModel.value -> "Model change already in progress"
+                            selected == null -> "Model list changed; reopen Models"
+                            else -> null
+                        }
+                        if (validationError != null || selected == null) {
+                            glassesManager.sendRawMessage(
+                                ModelOperationUpdate(
+                                    state = "error",
+                                    error = validationError ?: "Could not change model",
+                                ).toJson()
+                            )
+                        } else {
+                            glassesManager.sendRawMessage(ModelOperationUpdate(state = "loading").toJson())
+                            openClawClient.selectModel(selected)
+                            scope.launch {
+                                val completed = withTimeoutOrNull(8_000L) {
+                                    while (openClawClient.isSelectingModel.value) delay(50L)
+                                    true
+                                } == true
+                                val selectedIndex = models.indexOfFirst { it.ref == selected.ref }
+                                val success = completed &&
+                                    openClawClient.currentModelRef.value == selected.ref &&
+                                    openClawClient.currentSessionKey.value == requestedSessionKey
+                                glassesManager.sendRawMessage(
+                                    if (success) {
+                                        ModelOperationUpdate(
+                                            state = "success",
+                                            currentIndex = selectedIndex,
+                                            currentName = selected.name,
+                                        ).toJson()
+                                    } else {
+                                        ModelOperationUpdate(
+                                            state = "error",
+                                            error = openClawClient.modelSelectionError.value
+                                                ?: if (!completed) "Model change timed out"
+                                                else "Session changed; verify the active model",
+                                        ).toJson()
+                                    }
+                                )
+                            }
                         }
                     }
                     "abort_run" -> {

@@ -23,6 +23,9 @@ import com.clawsses.glasses.camera.PhotoCaptureState
 import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.media.ThumbnailBitmapCache
 import com.clawsses.glasses.input.GestureHandler.Gesture
+import com.clawsses.glasses.input.ModelPageSelection
+import com.clawsses.glasses.input.ModelPickerMove
+import com.clawsses.glasses.input.ModelPickerNavigation
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.ui.AgentState
 import com.clawsses.glasses.ui.AgentProgressDisplay
@@ -38,6 +41,7 @@ import com.clawsses.glasses.ui.HudScreen
 import com.clawsses.glasses.ui.HudTelemetry
 import com.clawsses.glasses.ui.InputActionItem
 import com.clawsses.glasses.ui.MenuBarItem
+import com.clawsses.glasses.ui.ModelPickerInfo
 import com.clawsses.glasses.ui.MoreMenuItem
 import com.clawsses.glasses.ui.SessionPickerInfo
 import com.clawsses.glasses.ui.MAX_PHOTOS
@@ -45,6 +49,7 @@ import com.clawsses.glasses.ui.SLASH_COMMANDS
 import com.clawsses.glasses.ui.VoiceInputState
 import com.clawsses.glasses.ui.RecognitionMode
 import com.clawsses.glasses.ui.LiveCaptionDisplay
+import com.clawsses.glasses.ui.visibleMoreMenuItems
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesStateRequest
@@ -108,6 +113,8 @@ class HudActivity : ComponentActivity() {
     private var sessionPickerRequested = false
     private var sessionNextOffset: Int? = null
     private var agentPickerRequested = false
+    private var modelPickerRequested = false
+    private var pendingModelPageSelection = ModelPageSelection.CURRENT
     private var scrollPagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
 
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
@@ -527,6 +534,10 @@ class HudActivity : ComponentActivity() {
             handleAgentPickerGesture(gesture)
             return
         }
+        if (current.showModelPicker) {
+            handleModelPickerGesture(gesture)
+            return
+        }
 
         // If voice is active, TAP cancels
         if (isVoiceActive && gesture == Gesture.TAP) {
@@ -749,8 +760,8 @@ class HudActivity : ComponentActivity() {
             MenuBarItem.SESSION -> {
                 requestSessionList()
             }
-            MenuBarItem.AGENT -> {
-                requestAgentList()
+            MenuBarItem.MODEL -> {
+                requestModelPage(-1)
             }
             MenuBarItem.SIZE -> {
                 val nextPosition = when (current.hudPosition) {
@@ -932,6 +943,75 @@ class HudActivity : ComponentActivity() {
         phoneConnection.sendToPhone("""{"type":"create_session"}""")
     }
 
+    // ============== Model Picker Gestures ==============
+
+    private fun handleModelPickerGesture(gesture: Gesture) {
+        val current = hudState.value
+        if (current.isModelOperationPending) {
+            if (gesture == Gesture.DOUBLE_TAP) {
+                modelPickerRequested = false
+                hudState.value = current.copy(
+                    showModelPicker = false,
+                    isModelOperationPending = false,
+                    modelOperationMessage = null,
+                )
+            }
+            return
+        }
+
+        when (gesture) {
+            Gesture.SWIPE_FORWARD -> {
+                applyModelPickerMove(
+                    ModelPickerNavigation.forward(
+                        selectedIndex = current.selectedModelIndex,
+                        itemCount = current.availableModels.size,
+                        nextOffset = current.modelNextOffset,
+                    )
+                )
+            }
+            Gesture.SWIPE_BACKWARD -> {
+                applyModelPickerMove(
+                    ModelPickerNavigation.backward(
+                        selectedIndex = current.selectedModelIndex,
+                        itemCount = current.availableModels.size,
+                        pageOffset = current.modelPageOffset,
+                    )
+                )
+            }
+            Gesture.TAP -> {
+                val selected = current.availableModels.getOrNull(current.selectedModelIndex)
+                when {
+                    selected == null -> Unit
+                    !selected.available -> hudState.value = current.copy(
+                        modelOperationError = "Model is unavailable",
+                    )
+                    selected.index == current.currentModelIndex -> {
+                        modelPickerRequested = false
+                        hudState.value = current.copy(showModelPicker = false)
+                    }
+                    current.runState !in setOf("idle", "error") -> hudState.value = current.copy(
+                        modelOperationError = "Available after response",
+                    )
+                    else -> selectModel(selected)
+                }
+            }
+            Gesture.DOUBLE_TAP -> {
+                modelPickerRequested = false
+                hudState.value = current.copy(showModelPicker = false)
+            }
+            Gesture.LONG_PRESS -> Unit
+        }
+    }
+
+    private fun applyModelPickerMove(move: ModelPickerMove) {
+        move.selectedIndex?.let { selectedIndex ->
+            hudState.update { current -> current.copy(selectedModelIndex = selectedIndex) }
+        }
+        move.requestedOffset?.let { offset ->
+            requestModelPage(offset, move.pageSelection)
+        }
+    }
+
     // ============== Agent Picker Gestures ==============
 
     private fun handleAgentPickerGesture(gesture: Gesture) {
@@ -976,7 +1056,7 @@ class HudActivity : ComponentActivity() {
 
     private fun handleMoreMenuGesture(gesture: Gesture) {
         val current = hudState.value
-        val items = MoreMenuItem.entries
+        val items = visibleMoreMenuItems(current.availableAgents.size > 1)
         val itemCount = items.size
 
         when (gesture) {
@@ -1019,6 +1099,7 @@ class HudActivity : ComponentActivity() {
         }
 
         when (item) {
+            MoreMenuItem.AGENT -> requestAgentList()
             MoreMenuItem.SLASH -> {
                 hudState.value = current.copy(
                     showMoreMenu = false,
@@ -1423,6 +1504,47 @@ class HudActivity : ComponentActivity() {
             put("sessionKey", sessionKey)
         }
         phoneConnection.sendToPhone(json.toString())
+    }
+
+    private fun requestModelPage(
+        offset: Int,
+        pageSelection: ModelPageSelection = ModelPageSelection.CURRENT,
+    ) {
+        modelPickerRequested = true
+        pendingModelPageSelection = pageSelection
+        hudState.update { current ->
+            current.copy(
+                showModelPicker = true,
+                isModelOperationPending = true,
+                modelOperationMessage = "Loading models...",
+                modelOperationError = null,
+            )
+        }
+        phoneConnection.sendToPhone(
+            JSONObject().apply {
+                put("type", "list_models")
+                put("offset", offset)
+            }.toString()
+        )
+    }
+
+    private fun selectModel(model: ModelPickerInfo) {
+        val current = hudState.value
+        val catalogId = current.modelCatalogId ?: return
+        val sessionKey = current.currentSessionKey ?: return
+        hudState.value = current.copy(
+            isModelOperationPending = true,
+            modelOperationMessage = "Changing model...",
+            modelOperationError = null,
+        )
+        phoneConnection.sendToPhone(
+            JSONObject().apply {
+                put("type", "select_model")
+                put("catalog", catalogId)
+                put("index", model.index)
+                put("sessionKey", sessionKey)
+            }.toString()
+        )
     }
 
     private fun requestAgentList() {
@@ -1909,6 +2031,85 @@ class HudActivity : ComponentActivity() {
                     }
                     if (state != "loading") sessionPickerRequested = false
                     Log.d(GlassesApp.TAG, "Session operation: $operation/$state")
+                }
+
+                "model_page" -> {
+                    val modelsArray = msg.optJSONArray("m")
+                    val models = buildList {
+                        if (modelsArray != null) {
+                            for (index in 0 until modelsArray.length()) {
+                                val model = modelsArray.optJSONObject(index) ?: continue
+                                add(
+                                    ModelPickerInfo(
+                                        index = model.optInt("i", -1),
+                                        name = model.optString("n", "Model"),
+                                        provider = model.optString("p", ""),
+                                        available = model.optBoolean("a", true),
+                                    )
+                                )
+                            }
+                        }
+                    }.filter { it.index >= 0 }
+                    val currentIndex = msg.optInt("ci", -1).takeIf { it >= 0 }
+                    val currentIndexOnPage = models.indexOfFirst { it.index == currentIndex }
+                        .takeIf { it >= 0 }
+                    val selectedIndex = ModelPickerNavigation.initialIndex(
+                        itemCount = models.size,
+                        currentIndexOnPage = currentIndexOnPage,
+                        pageSelection = pendingModelPageSelection,
+                    )
+                    hudState.update { current ->
+                        current.copy(
+                            showModelPicker = current.showModelPicker || modelPickerRequested,
+                            availableModels = models,
+                            modelCatalogId = msg.optString("c").takeIf { it.isNotBlank() },
+                            currentModelIndex = currentIndex,
+                            selectedModelIndex = selectedIndex,
+                            modelPageOffset = msg.optInt("o", 0),
+                            modelNextOffset = msg.optInt("x", -1).takeIf { it >= 0 },
+                            modelPageIndex = msg.optInt("pi", 0),
+                            modelPageCount = msg.optInt("pc", 1).coerceAtLeast(1),
+                            isModelOperationPending = false,
+                            modelOperationMessage = null,
+                            modelOperationError = msg.optString("e").takeIf { it.isNotBlank() },
+                        )
+                    }
+                    modelPickerRequested = false
+                    pendingModelPageSelection = ModelPageSelection.CURRENT
+                    Log.d(GlassesApp.TAG, "Model page received (${models.size} entries)")
+                }
+
+                "model_operation" -> {
+                    val operationState = msg.optString("state")
+                    hudState.update { current ->
+                        when (operationState) {
+                            "loading" -> current.copy(
+                                showModelPicker = true,
+                                isModelOperationPending = true,
+                                modelOperationMessage = "Changing model...",
+                                modelOperationError = null,
+                            )
+                            "success" -> current.copy(
+                                showModelPicker = false,
+                                currentModelIndex = msg.optInt("ci", current.currentModelIndex ?: -1)
+                                    .takeIf { it >= 0 },
+                                isModelOperationPending = false,
+                                modelOperationMessage = null,
+                                modelOperationError = null,
+                            )
+                            "error" -> current.copy(
+                                showModelPicker = true,
+                                isModelOperationPending = false,
+                                modelOperationMessage = null,
+                                modelOperationError = msg.optString("error")
+                                    .takeIf { it.isNotBlank() }
+                                    ?: "Could not change model",
+                            )
+                            else -> current
+                        }
+                    }
+                    if (operationState != "loading") modelPickerRequested = false
+                    Log.d(GlassesApp.TAG, "Model operation: $operationState")
                 }
 
                 "agent_list" -> {
