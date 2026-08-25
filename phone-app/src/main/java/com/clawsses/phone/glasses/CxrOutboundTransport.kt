@@ -55,9 +55,10 @@ internal data class CxrQueuedMessage(
 /**
  * Pure bounded priority queue used by [CxrOutboundTransport].
  *
- * Critical messages are never evicted. Transient messages are coalesced or dropped first,
- * followed by normal state messages. The queue intentionally does not merge arbitrary JSON:
- * chat stream chunks are concatenated only when the resulting CXR payload still fits.
+ * The hard capacity is never exceeded. Transient messages are coalesced or dropped first,
+ * followed by normal messages and supersedable critical state. Ordered critical packets are
+ * rejected only when no safe eviction candidate remains. The queue intentionally does not merge
+ * arbitrary JSON: chat stream chunks are concatenated only when the resulting CXR payload fits.
  */
 internal class CxrOutboundQueue(private val maxSize: Int = 128) {
     private val messages = ArrayDeque<CxrQueuedMessage>()
@@ -65,6 +66,7 @@ internal class CxrOutboundQueue(private val maxSize: Int = 128) {
     val size: Int get() = messages.size
 
     data class EnqueueResult(
+        val accepted: Boolean = true,
         val coalesced: Boolean = false,
         val dropped: Int = 0,
     )
@@ -90,9 +92,13 @@ internal class CxrOutboundQueue(private val maxSize: Int = 128) {
                 ?: messages.firstOrNull {
                     message.priority == CxrPriority.CRITICAL && it.priority == CxrPriority.NORMAL
                 }
+                ?: messages.firstOrNull {
+                    message.priority == CxrPriority.CRITICAL &&
+                        it.priority == CxrPriority.CRITICAL &&
+                        it.coalesceKey != null
+                }
             if (evictionCandidate == null) {
-                if (message.priority == CxrPriority.CRITICAL) break
-                return EnqueueResult(dropped = dropped + 1)
+                return EnqueueResult(accepted = false, dropped = dropped + 1)
             }
             messages.remove(evictionCandidate)
             dropped++
@@ -194,6 +200,7 @@ class CxrOutboundTransport(
             queued = 1,
             coalesced = if (result.coalesced) 1 else 0,
             dropped = result.dropped.toLong(),
+            failed = if (!result.accepted && message.priority == CxrPriority.CRITICAL) 1 else 0,
         )
         wakeWorker.trySend(Unit)
     }
@@ -294,8 +301,12 @@ class CxrOutboundTransport(
             updateMetrics(dropped = 1)
             return
         }
-        synchronized(lock) { queue.enqueue(message) }
-        refreshDepth()
+        val result = synchronized(lock) { queue.enqueue(message) }
+        updateMetrics(
+            coalesced = if (result.coalesced) 1 else 0,
+            dropped = result.dropped.toLong(),
+            failed = if (!result.accepted && message.priority == CxrPriority.CRITICAL) 1 else 0,
+        )
     }
 
     private fun classify(payload: String): CxrQueuedMessage? = runCatching {
@@ -303,20 +314,31 @@ class CxrOutboundTransport(
         val type = json.get("type")?.asString.orEmpty()
         val id = json.get("id")?.asString
         val reliable = type in RELIABLE_CXR_TYPES
-        val transientKey = when (type) {
+        val coalesceKey = when (type) {
             "chat_stream" -> "chat_stream:${id.orEmpty()}"
             "agent_progress" -> "agent_progress:${id.orEmpty()}"
             "live_caption" -> "live_caption"
             "battery_update" -> "battery_update"
             "time_update" -> "time_update"
+            "connection_update" -> "connection_update"
+            "run_state" -> "run_state"
+            "tts_state" -> "tts_state"
+            "session_operation" -> "session_operation:${json.primitiveString("operation").orEmpty()}"
+            "model_operation" -> "model_operation"
+            "model_page" -> buildString {
+                append("model_page:")
+                append(json.primitiveString("c").orEmpty())
+                append(':')
+                append(json.primitiveString("pi").orEmpty())
+            }
             else -> null
         }
         val priority = when {
             reliable -> CxrPriority.CRITICAL
-            transientKey != null -> CxrPriority.TRANSIENT
+            coalesceKey != null -> CxrPriority.TRANSIENT
             else -> CxrPriority.NORMAL
         }
-        CxrQueuedMessage(payload, type, priority, transientKey, reliable)
+        CxrQueuedMessage(payload, type, priority, coalesceKey, reliable)
     }.getOrNull()
 
     private fun addTransaction(payload: String, transactionId: String): String {
@@ -353,3 +375,6 @@ class CxrOutboundTransport(
 
     private fun refreshDepth() = updateMetrics()
 }
+
+private fun JsonObject.primitiveString(name: String): String? =
+    get(name)?.takeIf { it.isJsonPrimitive }?.asString

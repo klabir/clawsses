@@ -54,14 +54,53 @@ class CxrOutboundQueueTest {
     }
 
     @Test
-    fun `critical messages are retained when bounded queue is saturated`() {
+    fun `bounded queue rejects excess ordered critical messages`() {
         val queue = CxrOutboundQueue(maxSize = 2)
         queue.enqueue(message("first", CxrPriority.CRITICAL, reliable = true))
         queue.enqueue(message("second", CxrPriority.CRITICAL, reliable = true))
-        queue.enqueue(message("third", CxrPriority.CRITICAL, reliable = true))
+        val result = queue.enqueue(message("third", CxrPriority.CRITICAL, reliable = true))
 
-        assertEquals(3, queue.size)
-        assertEquals(listOf("first", "second", "third"), generateSequence { queue.poll()?.type }.toList())
+        assertTrue(!result.accepted)
+        assertEquals(1, result.dropped)
+        assertEquals(2, queue.size)
+        assertEquals(listOf("first", "second"), generateSequence { queue.poll()?.type }.toList())
+    }
+
+    @Test
+    fun `critical saturation never exceeds hard capacity`() {
+        val queue = CxrOutboundQueue(maxSize = 128)
+
+        repeat(10_000) { index ->
+            queue.enqueue(message("critical-$index", CxrPriority.CRITICAL, reliable = true))
+            assertTrue(queue.size <= 128)
+        }
+
+        assertEquals(128, queue.size)
+    }
+
+    @Test
+    fun `new ordered critical message evicts supersedable critical state`() {
+        val queue = CxrOutboundQueue(maxSize = 2)
+        queue.enqueue(message("history", CxrPriority.CRITICAL, reliable = true))
+        queue.enqueue(message("run_state", CxrPriority.CRITICAL, reliable = true, coalesceKey = "run_state"))
+
+        val result = queue.enqueue(message("history_end", CxrPriority.CRITICAL, reliable = true))
+
+        assertTrue(result.accepted)
+        assertEquals(1, result.dropped)
+        assertEquals(listOf("history", "history_end"), generateSequence { queue.poll()?.type }.toList())
+    }
+
+    @Test
+    fun `latest critical state replaces older state without growing queue`() {
+        val queue = CxrOutboundQueue(maxSize = 2)
+        queue.enqueue(message("run_state", CxrPriority.CRITICAL, reliable = true, coalesceKey = "run_state"))
+
+        val result = queue.enqueue(message("run_state", CxrPriority.CRITICAL, reliable = true, coalesceKey = "run_state"))
+
+        assertTrue(result.accepted)
+        assertTrue(result.coalesced)
+        assertEquals(1, queue.size)
     }
 
     @Test
@@ -87,11 +126,16 @@ class CxrOutboundQueueTest {
         reliable = false,
     )
 
-    private fun message(type: String, priority: CxrPriority, reliable: Boolean) = CxrQueuedMessage(
+    private fun message(
+        type: String,
+        priority: CxrPriority,
+        reliable: Boolean,
+        coalesceKey: String? = null,
+    ) = CxrQueuedMessage(
         payload = """{"type":"$type"}""",
         type = type,
         priority = priority,
-        coalesceKey = null,
+        coalesceKey = coalesceKey,
         reliable = reliable,
     )
 }

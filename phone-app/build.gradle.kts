@@ -1,4 +1,25 @@
 import java.util.Properties
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
+
+abstract class BundleGlassesApkTask : DefaultTask() {
+    @get:InputFile
+    abstract val sourceApk: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun bundle() {
+        val outputFile = outputDirectory.file("glasses-app-release.apk").get().asFile
+        outputFile.parentFile.mkdirs()
+        sourceApk.get().asFile.copyTo(outputFile, overwrite = true)
+    }
+}
 
 plugins {
     id("com.android.application")
@@ -74,17 +95,34 @@ android {
     }
 }
 
-// Bundle glasses-app APK into phone-app assets so it can be installed via SDK/ADB
-// Builds glasses-app debug APK and copies it as "glasses-app-release.apk" in assets
-val bundleGlassesApk by tasks.registering(Copy::class) {
-    dependsOn(":glasses-app:assembleDebug")
-    from("${project(":glasses-app").buildDir}/outputs/apk/debug/glasses-app-debug.apk")
-    into("src/main/assets")
-    rename { "glasses-app-release.apk" }
-}
-
-tasks.named("preBuild") {
-    dependsOn(bundleGlassesApk)
+// Bundle the matching glasses APK through a generated variant asset directory. Builds no longer
+// mutate src/main/assets, and release-derived phone variants cannot silently ship the debug HUD.
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        val glassesBuildType = if (variant.name.contains("release", ignoreCase = true)) {
+            "release"
+        } else {
+            "debug"
+        }
+        val taskName = "bundle${variant.name.replaceFirstChar(Char::uppercaseChar)}GlassesApk"
+        val bundleTask = tasks.register<BundleGlassesApkTask>(taskName) {
+            dependsOn(":glasses-app:assemble${glassesBuildType.replaceFirstChar(Char::uppercaseChar)}")
+            val glassesApkName = if (glassesBuildType == "release") {
+                "glasses-app-release-unsigned.apk"
+            } else {
+                "glasses-app-debug.apk"
+            }
+            sourceApk.set(
+                project(":glasses-app").layout.buildDirectory.file(
+                    "outputs/apk/$glassesBuildType/$glassesApkName"
+                )
+            )
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            bundleTask,
+            BundleGlassesApkTask::outputDirectory,
+        )
+    }
 }
 
 dependencies {

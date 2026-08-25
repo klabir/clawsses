@@ -18,6 +18,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.random.Random
 
 /**
  * WebSocket client for connecting to an OpenClaw Gateway.
@@ -30,7 +31,8 @@ class OpenClawClient(
 
     companion object {
         private const val TAG = "OpenClawClient"
-        private const val RECONNECT_DELAY_MS = 3000L
+        private const val RECONNECT_BASE_DELAY_MS = 3_000L
+        private const val RECONNECT_MAX_DELAY_MS = 30_000L
         private const val PROTOCOL_VERSION = 4
         private const val STREAM_PUBLICATION_INTERVAL_MS = 64L
     }
@@ -91,12 +93,19 @@ class OpenClawClient(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val requestSeq = AtomicLong(1)
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<OpenClawResponse>>()
+    private val connectionLock = Any()
+    private val connectionEpoch = ConnectionEpoch()
+    private val reconnectBackoff = ReconnectBackoff(
+        baseDelayMs = RECONNECT_BASE_DELAY_MS,
+        maxDelayMs = RECONNECT_MAX_DELAY_MS,
+    )
 
     // Connection params (saved for reconnect)
     private var host: String = ""
     private var port: Int = 18789
     private var token: String = ""
     private var shouldReconnect = false
+    private var reconnectJob: Job? = null
 
     // Active agent run tracking
     @Volatile private var activeRunId: String? = null
@@ -148,15 +157,48 @@ class OpenClawClient(
     fun connect(host: String, port: Int, token: String) {
         val normalizedHost = host.trim().trimEnd('/')
         if (normalizedHost.startsWith("ws://") || normalizedHost.startsWith("http://")) {
-            shouldReconnect = false
+            val socket = synchronized(connectionLock) {
+                shouldReconnect = false
+                connectionEpoch.invalidate()
+                reconnectJob?.cancel()
+                reconnectJob = null
+                webSocket.also { webSocket = null }
+            }
+            socket?.close(1000, "Insecure endpoint rejected")
+            failAllPending("Insecure endpoint rejected")
             _connectionState.value = ConnectionState.Error("Secure WSS connection required")
+            notifyConnectionUpdate(false)
             return
         }
 
-        this.host = normalizedHost
-        this.port = port
-        this.token = token
-        this.shouldReconnect = true
+        startConnection(normalizedHost, port, token, resetBackoff = true)
+    }
+
+    private fun startConnection(
+        normalizedHost: String,
+        port: Int,
+        token: String,
+        resetBackoff: Boolean,
+    ) {
+        val previousSocket: WebSocket?
+        val generation: Long
+        synchronized(connectionLock) {
+            if (resetBackoff) reconnectBackoff.reset()
+            reconnectJob?.cancel()
+            reconnectJob = null
+            previousSocket = webSocket
+            webSocket = null
+            this.host = normalizedHost
+            this.port = port
+            this.token = token
+            shouldReconnect = true
+            generation = connectionEpoch.begin()
+            challengeNonce = null
+        }
+        if (previousSocket != null) {
+            previousSocket.close(1000, "Connection replaced")
+            failAllPending("Connection replaced")
+        }
 
         // Build a TLS-only WebSocket URL.
         val url = when {
@@ -179,47 +221,69 @@ class OpenClawClient(
             .header("Origin", originUrl)
             .build()
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        val newSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!isCurrentConnection(generation)) return
                 Log.i(TAG, "WebSocket connected (HTTP ${response.code})")
                 _connectionState.value = ConnectionState.Authenticating
                 // Wait for connect.challenge event from server
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                handleFrame(text)
+                if (isCurrentConnection(generation)) handleFrame(text, generation)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                handleFrame(bytes.utf8())
+                if (isCurrentConnection(generation)) handleFrame(bytes.utf8(), generation)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                if (!isCurrentConnection(generation)) return
                 Log.d(TAG, "WebSocket closing (code=$code)")
                 webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closed (code=$code)")
-                _connectionState.value = ConnectionState.Disconnected
-                notifyConnectionUpdate(false)
-                if (shouldReconnect) scheduleReconnect()
+                handleConnectionEnded(
+                    generation = generation,
+                    socket = webSocket,
+                    state = ConnectionState.Disconnected,
+                    reason = "WebSocket closed (code=$code)",
+                )
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failed: ${t.javaClass.simpleName}")
-                _connectionState.value = ConnectionState.Error("${t.javaClass.simpleName}: ${t.message}")
-                notifyConnectionUpdate(false)
-                failAllPending("Connection lost")
-                if (shouldReconnect) scheduleReconnect()
+                handleConnectionEnded(
+                    generation = generation,
+                    socket = webSocket,
+                    state = ConnectionState.Error("${t.javaClass.simpleName}: ${t.message}"),
+                    reason = "WebSocket failed: ${t.javaClass.simpleName}",
+                )
             }
         })
+        synchronized(connectionLock) {
+            if (connectionEpoch.isCurrent(generation) &&
+                !connectionEpoch.isEnded(generation) &&
+                shouldReconnect
+            ) {
+                webSocket = newSocket
+            } else {
+                newSocket.cancel()
+            }
+        }
     }
 
     fun disconnect() {
-        shouldReconnect = false
-        webSocket?.close(1000, "User disconnected")
-        webSocket = null
+        val socket = synchronized(connectionLock) {
+            shouldReconnect = false
+            connectionEpoch.invalidate()
+            reconnectJob?.cancel()
+            reconnectJob = null
+            reconnectBackoff.reset()
+            challengeNonce = null
+            webSocket.also { webSocket = null }
+        }
+        socket?.close(1000, "User disconnected")
         _connectionState.value = ConnectionState.Disconnected
         notifyConnectionUpdate(false)
         failAllPending("Disconnected")
@@ -909,16 +973,16 @@ class OpenClawClient(
     }
 
     fun cleanup() {
-        shouldReconnect = false
-        scope.cancel()
         disconnect()
+        scope.cancel()
     }
 
     // ============== Internal methods ==============
 
     private suspend fun sendRequest(
         method: String,
-        params: JsonObject? = null
+        params: JsonObject? = null,
+        requiredGeneration: Long? = null,
     ): OpenClawResponse {
         val id = "${method}-${requestSeq.getAndIncrement()}"
         val request = OpenClawRequest(id = id, method = method, params = params)
@@ -927,7 +991,14 @@ class OpenClawClient(
 
         val json = request.toJson()
         Log.d(TAG, "Sending request: method=$method id=$id bytes=${json.length}")
-        if (webSocket?.send(json) != true) {
+        val sent = synchronized(connectionLock) {
+            if (requiredGeneration == null || connectionEpoch.isCurrent(requiredGeneration)) {
+                webSocket?.send(json) == true
+            } else {
+                false
+            }
+        }
+        if (!sent) {
             pendingRequests.remove(id, deferred)
             throw IllegalStateException("Not connected")
         }
@@ -941,12 +1012,13 @@ class OpenClawClient(
         }
     }
 
-    private fun handleFrame(json: String) {
+    private fun handleFrame(json: String, generation: Long) {
+        if (!isCurrentConnection(generation)) return
         try {
             val obj = JsonParser.parseString(json).asJsonObject
             when (obj.get("type")?.asString) {
                 "res" -> handleResponse(obj)
-                "event" -> handleEvent(obj)
+                "event" -> handleEvent(obj, generation)
                 else -> Log.w(TAG, "Unknown frame type (${json.length} bytes)")
             }
         } catch (e: Exception) {
@@ -971,7 +1043,8 @@ class OpenClawClient(
         }
     }
 
-    private fun handleEvent(obj: JsonObject) {
+    private fun handleEvent(obj: JsonObject, generation: Long) {
+        if (!isCurrentConnection(generation)) return
         val eventName = obj.get("event")?.asString ?: return
         val payload = obj.getAsJsonObject("payload")
         val event = OpenClawEvent(event = eventName, payload = payload)
@@ -982,7 +1055,7 @@ class OpenClawClient(
             OpenClawEvents.CONNECT_CHALLENGE -> {
                 challengeNonce = payload?.get("nonce")?.asString
                 Log.d(TAG, "Received connect challenge")
-                performAuth()
+                performAuth(generation)
             }
             OpenClawEvents.CHAT -> {
                 handleChatEvent(payload)
@@ -1037,7 +1110,8 @@ class OpenClawClient(
         onAgentProgress?.invoke(AgentProgressUpdate.clear())
     }
 
-    private fun performAuth() {
+    private fun performAuth(generation: Long) {
+        if (!isCurrentConnection(generation)) return
         val nonce = challengeNonce
         if (nonce == null) {
             Log.e(TAG, "No challenge nonce available for auth")
@@ -1047,6 +1121,9 @@ class OpenClawClient(
 
         scope.launch {
             try {
+                val authToken = synchronized(connectionLock) {
+                    token.takeIf { connectionEpoch.isCurrent(generation) }
+                } ?: return@launch
                 val params = JsonObject().apply {
                     addProperty("minProtocol", PROTOCOL_VERSION)
                     addProperty("maxProtocol", PROTOCOL_VERSION)
@@ -1065,7 +1142,7 @@ class OpenClawClient(
                     })
 
                     add("auth", JsonObject().apply {
-                        addProperty("token", token)
+                        addProperty("token", authToken)
                     })
 
                     // Device identity for pairing
@@ -1080,7 +1157,7 @@ class OpenClawClient(
                             role = "operator",
                             scopes = scopesList,
                             signedAtMs = signedAtMs,
-                            token = token,
+                            token = authToken,
                             nonce = nonce
                         ))
                         addProperty("signedAt", signedAtMs)
@@ -1096,9 +1173,15 @@ class OpenClawClient(
                 }
 
                 Log.d(TAG, "Sending connect...")
-                val response = sendRequest(OpenClawMethods.CONNECT, params)
+                val response = sendRequest(
+                    OpenClawMethods.CONNECT,
+                    params,
+                    requiredGeneration = generation,
+                )
+                if (!isCurrentConnection(generation)) return@launch
                 if (response.ok) {
                     Log.i(TAG, "Authentication successful!")
+                    synchronized(connectionLock) { reconnectBackoff.reset() }
 
                     // Persist deviceToken if returned (from pairing approval)
                     val dt = response.payload?.get("deviceToken")?.asString
@@ -1134,13 +1217,17 @@ class OpenClawClient(
                         // Keep reconnecting — user needs to approve on gateway
                     } else {
                         _connectionState.value = ConnectionState.Error(errorMsg)
-                        shouldReconnect = false
+                        synchronized(connectionLock) {
+                            if (connectionEpoch.isCurrent(generation)) shouldReconnect = false
+                        }
                     }
-                    webSocket?.close(1000, "Auth failed")
+                    currentSocket(generation)?.close(1000, "Auth failed")
                 }
             } catch (e: Exception) {
+                if (!isCurrentConnection(generation)) return@launch
                 Log.e(TAG, "Auth error", e)
                 _connectionState.value = ConnectionState.Error("Auth error: ${e.message}")
+                currentSocket(generation)?.close(1011, "Auth error")
             }
         }
     }
@@ -1374,12 +1461,61 @@ class OpenClawClient(
         ))
     }
 
-    private fun scheduleReconnect() {
-        scope.launch {
-            delay(RECONNECT_DELAY_MS)
-            val state = _connectionState.value
-            if (state is ConnectionState.Disconnected || state is ConnectionState.Error || state is ConnectionState.PairingRequired) {
-                connect(host, port, token)
+    private fun isCurrentConnection(generation: Long): Boolean = synchronized(connectionLock) {
+        connectionEpoch.isCurrent(generation)
+    }
+
+    private fun currentSocket(generation: Long): WebSocket? = synchronized(connectionLock) {
+        webSocket.takeIf { connectionEpoch.isCurrent(generation) }
+    }
+
+    private fun handleConnectionEnded(
+        generation: Long,
+        socket: WebSocket,
+        state: ConnectionState,
+        reason: String,
+    ) {
+        val reconnect = synchronized(connectionLock) {
+            if (!connectionEpoch.markEnded(generation)) return
+            if (webSocket === socket) webSocket = null
+            shouldReconnect
+        }
+        when (state) {
+            is ConnectionState.Error -> Log.e(TAG, reason)
+            else -> Log.d(TAG, reason)
+        }
+        _connectionState.value = state
+        notifyConnectionUpdate(false)
+        failAllPending("Connection lost")
+        if (reconnect) scheduleReconnect(generation)
+    }
+
+    private fun scheduleReconnect(endedConnectionGeneration: Long) {
+        synchronized(connectionLock) {
+            if (!shouldReconnect ||
+                !connectionEpoch.isCurrent(endedConnectionGeneration) ||
+                reconnectJob?.isActive == true
+            ) {
+                return
+            }
+            val delayMs = reconnectBackoff.nextDelayMs()
+            reconnectJob = scope.launch {
+                delay(delayMs)
+                val params = synchronized(connectionLock) {
+                    if (!shouldReconnect || !connectionEpoch.isCurrent(endedConnectionGeneration)) {
+                        reconnectJob = null
+                        null
+                    } else {
+                        reconnectJob = null
+                        Triple(host, port, token)
+                    }
+                } ?: return@launch
+                startConnection(
+                    normalizedHost = params.first,
+                    port = params.second,
+                    token = params.third,
+                    resetBackoff = false,
+                )
             }
         }
     }
@@ -1457,6 +1593,56 @@ class OpenClawClient(
         } catch (e: Exception) {
             "image/webp"
         }
+    }
+}
+
+internal class ReconnectBackoff(
+    private val baseDelayMs: Long,
+    private val maxDelayMs: Long,
+    private val randomUnit: () -> Double = { Random.nextDouble() },
+) {
+    private var attempt = 0
+
+    fun nextDelayMs(): Long {
+        val exponent = attempt.coerceAtMost(30)
+        attempt++
+        val exponential = if (exponent >= 30) {
+            maxDelayMs
+        } else {
+            (baseDelayMs * (1L shl exponent)).coerceAtMost(maxDelayMs)
+        }
+        val jitterMultiplier = 0.8 + randomUnit().coerceIn(0.0, 1.0) * 0.4
+        return (exponential * jitterMultiplier).toLong().coerceIn(1L, maxDelayMs)
+    }
+
+    fun reset() {
+        attempt = 0
+    }
+}
+
+internal class ConnectionEpoch {
+    private var current = 0L
+    private var ended: Long? = null
+
+    fun begin(): Long {
+        current++
+        ended = null
+        return current
+    }
+
+    fun invalidate() {
+        current++
+        ended = null
+    }
+
+    fun isCurrent(generation: Long): Boolean = generation == current
+
+    fun isEnded(generation: Long): Boolean = generation == ended
+
+    fun markEnded(generation: Long): Boolean {
+        if (!isCurrent(generation) || isEnded(generation)) return false
+        ended = generation
+        return true
     }
 }
 

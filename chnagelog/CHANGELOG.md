@@ -161,6 +161,7 @@
 - Glasses releases now use explicit build versions and report the running version to the phone for post-install verification.
 - Phone and glasses releases now share one version source, and the phone settings show both packaged app versions.
 - Raw private reasoning, tool arguments, tool results, paths, and error payloads remain excluded from the glasses protocol.
+- Phone build variants now consume generated matching HUD assets instead of mutating `src/main/assets`; release-derived variants bundle the minified release HUD rather than the debug APK.
 
 ### Fixed
 
@@ -173,6 +174,8 @@
 - `+ New Session` remains actionable while the first session page is loading, so a delayed list request cannot lock the picker.
 - Oversized CXR commands are rejected by UTF-8 byte size instead of being truncated into invalid JSON.
 - Added a top safe inset to prevent the Rokid optical compositor from reflecting the status row below the intended HUD area.
+- Enforced the phone-to-glasses CXR queue's hard capacity under critical-message saturation, while coalescing supersedable state and reporting rejected ordered packets.
+- Serialized OpenClaw reconnect attempts with connection generations, one cancellable reconnect job, and bounded exponential backoff so stale WebSocket callbacks cannot replace newer connection state.
 
 ### Removed
 
