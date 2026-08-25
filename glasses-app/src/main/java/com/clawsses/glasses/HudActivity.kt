@@ -108,7 +108,7 @@ class HudActivity : ComponentActivity() {
     private var sessionPickerRequested = false
     private var sessionNextOffset: Int? = null
     private var agentPickerRequested = false
-    private var scrollMessagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
+    private var scrollPagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
 
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
     // from visible HUD state and swap it in only after the matching end marker arrives.
@@ -253,11 +253,31 @@ class HudActivity : ComponentActivity() {
                     onDoubleTap = { handleGesture(Gesture.DOUBLE_TAP) },
                     onLongPress = { handleGesture(Gesture.LONG_PRESS) },
                     onScrolledToEndChanged = { atEnd ->
-                        val current = hudState.value
-                        if (current.isScrolledToEnd != atEnd) {
-                            hudState.value = current.copy(isScrolledToEnd = atEnd)
+                        hudState.update { current ->
+                            if (current.isScrolledToEnd == atEnd) current
+                            else current.copy(isScrolledToEnd = atEnd)
                         }
-                    }
+                    },
+                    onPageStateChanged = { pageIndex, pageCount, _, atEnd ->
+                        hudState.update { current ->
+                            if (current.pageIndex == pageIndex &&
+                                current.pageCount == pageCount &&
+                                current.isScrolledToEnd == atEnd
+                            ) {
+                                current
+                            } else {
+                                Log.d(
+                                    GlassesApp.TAG,
+                                    "HUD page ${pageIndex + 1}/$pageCount atEnd=$atEnd",
+                                )
+                                current.copy(
+                                    pageIndex = pageIndex,
+                                    pageCount = pageCount,
+                                    isScrolledToEnd = atEnd,
+                                )
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -528,8 +548,7 @@ class HudActivity : ComponentActivity() {
             Gesture.SWIPE_FORWARD -> scrollUp()
             Gesture.SWIPE_BACKWARD -> {
                 val current = hudState.value
-                val maxScroll = maxOf(0, current.messages.size - 1)
-                if (current.scrollPosition >= maxScroll && current.isScrolledToEnd) {
+                if (current.pageIndex >= current.pageCount - 1 && current.isScrolledToEnd) {
                     // Push through: CONTENT → INPUT (if staging or photos) → MENU
                     if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
                         // Default focus on last visible item in combined row
@@ -544,8 +563,6 @@ class HudActivity : ComponentActivity() {
                             menuBarIndex = 0
                         )
                     }
-                } else if (current.scrollPosition >= maxScroll) {
-                    scrollToBottom()
                 } else {
                     scrollDown()
                 }
@@ -818,6 +835,10 @@ class HudActivity : ComponentActivity() {
             focusedArea = ChatFocusArea.CONTENT,
             scrollPosition = messages.size - 1,
             scrollTrigger = current.scrollTrigger + 1,
+            pageNavigationDelta = 0,
+            pageNavigationToLatest = true,
+            pageNavigationHold = false,
+            pageNavigationTrigger = current.pageNavigationTrigger + 1,
             showInputStaging = false,
             stagingText = "",
             inputActionIndex = 0
@@ -1110,26 +1131,33 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollToBottom() {
         val current = hudState.value
-        val lastIndex = maxOf(0, current.messages.size - 1)
         hudState.value = current.copy(
-            scrollPosition = lastIndex,
-            scrollTrigger = current.scrollTrigger + 1
+            pageNavigationDelta = 0,
+            pageNavigationToLatest = true,
+            pageNavigationHold = false,
+            pageNavigationTrigger = current.pageNavigationTrigger + 1,
         )
     }
 
     private fun scrollUp() {
         val current = hudState.value
-        if (current.scrollPosition <= 0) {
+        if (current.pageIndex <= 0) {
             if (current.hasMoreHistory && !current.isLoadingMoreHistory && current.messages.isNotEmpty()) {
+                hudState.value = current.copy(
+                    pageNavigationDelta = 0,
+                    pageNavigationToLatest = false,
+                    pageNavigationHold = true,
+                    pageNavigationTrigger = current.pageNavigationTrigger + 1,
+                )
                 requestMoreHistory()
             }
-            hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
             return
         }
-        val newPosition = maxOf(0, current.scrollPosition - scrollMessagesPerStep)
         hudState.value = current.copy(
-            scrollPosition = newPosition,
-            scrollTrigger = current.scrollTrigger + 1,
+            pageNavigationDelta = -scrollPagesPerStep,
+            pageNavigationToLatest = false,
+            pageNavigationHold = false,
+            pageNavigationTrigger = current.pageNavigationTrigger + 1,
         )
     }
 
@@ -1149,15 +1177,12 @@ class HudActivity : ComponentActivity() {
 
     private fun scrollDown() {
         val current = hudState.value
-        val maxScroll = maxOf(0, current.messages.size - 1)
-        if (current.scrollPosition >= maxScroll) {
-            hudState.value = current.copy(scrollTrigger = current.scrollTrigger + 1)
-            return
-        }
-        val newPosition = minOf(maxScroll, current.scrollPosition + scrollMessagesPerStep)
+        if (current.pageIndex >= current.pageCount - 1) return
         hudState.value = current.copy(
-            scrollPosition = newPosition,
-            scrollTrigger = current.scrollTrigger + 1,
+            pageNavigationDelta = scrollPagesPerStep,
+            pageNavigationToLatest = false,
+            pageNavigationHold = false,
+            pageNavigationTrigger = current.pageNavigationTrigger + 1,
         )
     }
 
@@ -1760,10 +1785,10 @@ class HudActivity : ComponentActivity() {
                 }
 
                 "scroll_settings" -> {
-                    scrollMessagesPerStep = ScrollSettings.normalizeMessagesPerStep(
+                    scrollPagesPerStep = ScrollSettings.normalizeMessagesPerStep(
                         msg.optInt("messagesPerStep", ScrollSettings.DEFAULT_MESSAGES_PER_STEP)
                     )
-                    Log.d(GlassesApp.TAG, "Scroll step updated: $scrollMessagesPerStep")
+                    Log.d(GlassesApp.TAG, "Page step updated: $scrollPagesPerStep")
                 }
 
                 "session_list" -> {

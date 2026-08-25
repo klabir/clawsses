@@ -243,7 +243,7 @@ data class ConnectionUpdate(
     }
 }
 
-/** Valid range and fallback for one glasses chat-scroll gesture. */
+/** Valid range and fallback for one glasses page-navigation gesture. */
 object ScrollSettings {
     const val MIN_MESSAGES_PER_STEP = 1
     const val MAX_MESSAGES_PER_STEP = 5
@@ -281,7 +281,10 @@ object SessionPaging {
     }
 }
 
-/** Phone-controlled chat scroll step sent to the glasses HUD. */
+/**
+ * Phone-controlled page step sent to the glasses HUD. The serialized field
+ * keeps its legacy name so a Build 32 phone can update older HUD builds safely.
+ */
 data class ScrollSettingsUpdate(
     @SerializedName("type") val type: String = "scroll_settings",
     @SerializedName("messagesPerStep") val messagesPerStep: Int = ScrollSettings.DEFAULT_MESSAGES_PER_STEP,

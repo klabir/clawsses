@@ -156,9 +156,9 @@ private fun ScrollStepControl(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("Messages per scroll", style = MaterialTheme.typography.bodyLarge)
+            Text("Pages per gesture", style = MaterialTheme.typography.bodyLarge)
             Text(
-                "One glasses swipe moves this many chat messages",
+                "One glasses swipe moves this many fixed HUD pages",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

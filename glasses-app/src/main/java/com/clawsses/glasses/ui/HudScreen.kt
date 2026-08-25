@@ -1,7 +1,6 @@
 package com.clawsses.glasses.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -11,8 +10,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -36,7 +33,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import com.clawsses.glasses.R
-import com.clawsses.shared.ChatScrollCoordinator
+import com.clawsses.shared.HudPageNavigator
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.asImageBitmap
@@ -239,6 +236,12 @@ data class ChatHudState(
     val scrollPosition: Int = 0,
     val scrollTrigger: Int = 0,
     val isScrolledToEnd: Boolean = false,
+    val pageIndex: Int = 0,
+    val pageCount: Int = 1,
+    val pageNavigationDelta: Int = 0,
+    val pageNavigationToLatest: Boolean = false,
+    val pageNavigationHold: Boolean = false,
+    val pageNavigationTrigger: Int = 0,
     val inputText: String = "",
     val photoThumbnails: List<Bitmap> = emptyList(),
     val isConnected: Boolean = false,
@@ -364,81 +367,14 @@ fun HudScreen(
     onTap: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
     onLongPress: () -> Unit = {},
-    onScrolledToEndChanged: (Boolean) -> Unit = {}
+    onScrolledToEndChanged: (Boolean) -> Unit = {},
+    onPageStateChanged: (pageIndex: Int, pageCount: Int, atStart: Boolean, atEnd: Boolean) -> Unit =
+        { _, _, _, _ -> },
 ) {
-    val listState = rememberLazyListState()
-    val scrollCoordinator = remember { ChatScrollCoordinator() }
-    var visibleAnchorId by remember { mutableStateOf<String?>(null) }
-    var visibleAnchorOffset by remember { mutableIntStateOf(0) }
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
 
     val monoFontFamily = remember { FontFamily(Font(R.font.jetbrains_mono)) }
-
-    // Track whether the list is scrolled to the very end (pixel-level)
-    val canScrollForward = listState.canScrollForward
-    LaunchedEffect(canScrollForward) {
-        scrollCoordinator.onViewportChanged(atEnd = !canScrollForward, userDriven = false)
-        onScrolledToEndChanged(!canScrollForward)
-    }
-
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-            (visible?.key as? String) to listState.firstVisibleItemScrollOffset
-        }.collect { (id, offset) ->
-            if (id != null && id != "history_start" && id != "agent_progress") {
-                visibleAnchorId = id
-                visibleAnchorOffset = offset
-            }
-        }
-    }
-
-    // One effect owns every chat scroll operation on the HUD.
-    val tailVersion = state.messages.lastOrNull()?.let { "${it.id}:${it.content.length}" }
-    LaunchedEffect(
-        state.scrollPosition,
-        state.scrollTrigger,
-        state.newPrependCount,
-        state.agentState,
-        state.agentProgress.size,
-        tailVersion,
-    ) {
-        val totalItems = state.messages.size
-        if (state.newPrependCount > 0) {
-            val anchorIndex = visibleAnchorId?.let { id -> state.messages.indexOfFirst { it.id == id } } ?: -1
-            if (anchorIndex >= 0) {
-                scrollCoordinator.beginHistoryRestore()
-                listState.scrollToItem(anchorIndex, visibleAnchorOffset)
-                scrollCoordinator.finishHistoryRestore(atEnd = !listState.canScrollForward)
-            }
-        } else if (totalItems > 0 && state.scrollPosition < totalItems) {
-            val currentIndex = listState.firstVisibleItemIndex
-            scrollCoordinator.onExplicitScroll(state.scrollPosition, totalItems - 1)
-            if (state.scrollPosition < currentIndex) {
-                // Scrolling up: use pixel-based animation for smoothness
-                // (animateScrollToItem can jump when target items aren't composed yet)
-                val viewportHeight = listState.layoutInfo.viewportSize.height
-                val itemsToScroll = currentIndex - state.scrollPosition
-                // Estimate scroll distance from average visible item height
-                val visibleItems = listState.layoutInfo.visibleItemsInfo
-                val avgItemHeight = if (visibleItems.isNotEmpty()) {
-                    visibleItems.sumOf { it.size } / visibleItems.size.toFloat()
-                } else {
-                    viewportHeight / 5f
-                }
-                val scrollDistance = -(itemsToScroll * avgItemHeight)
-                listState.animateScrollBy(scrollDistance)
-            } else if (state.scrollPosition == totalItems - 1) {
-                val isStreaming = state.messages.lastOrNull()?.isStreaming == true
-                scrollHudToTrueEnd(listState, state.scrollPosition, animated = !isStreaming)
-            } else {
-                listState.animateScrollToItem(state.scrollPosition)
-            }
-        } else if (scrollCoordinator.shouldFollowNewContent() && totalItems > 0) {
-            scrollHudToTrueEnd(listState, totalItems - 1, animated = false)
-        }
-    }
 
     // Focus brightness
     val contentFocused = state.focusedArea == ChatFocusArea.CONTENT
@@ -512,7 +448,13 @@ fun HudScreen(
                 // TOP BAR
                 TopBar(
                     isConnected = state.isConnected,
-                    scrollInfo = "${state.scrollPosition + 1}/${state.messages.size}",
+                    scrollInfo = buildString {
+                        append("P ")
+                        append(state.pageIndex + 1)
+                        append('/')
+                        append(state.pageCount.coerceAtLeast(1))
+                        if (!state.isScrolledToEnd) append(" ↓")
+                    },
                     agentState = state.agentState,
                     focusedArea = state.focusedArea,
                     voiceState = state.voiceState,
@@ -529,16 +471,23 @@ fun HudScreen(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 // CONTENT AREA — chat messages
-                ChatContentArea(
+                PagedChatContentArea(
                     messages = state.messages,
                     agentState = state.agentState,
                     progressItems = state.agentProgress,
-                    listState = listState,
                     fontSize = fontSize,
                     fontFamily = monoFontFamily,
                     alpha = contentAlpha,
                     hasMoreHistory = state.hasMoreHistory,
-                    newPrependCount = state.newPrependCount,
+                    sessionKey = state.currentSessionKey,
+                    pageNavigationDelta = state.pageNavigationDelta,
+                    pageNavigationToLatest = state.pageNavigationToLatest,
+                    pageNavigationHold = state.pageNavigationHold,
+                    pageNavigationTrigger = state.pageNavigationTrigger,
+                    onPageStateChanged = { pageIndex, pageCount, atStart, atEnd ->
+                        onPageStateChanged(pageIndex, pageCount, atStart, atEnd)
+                        onScrolledToEndChanged(atEnd)
+                    },
                     modifier = Modifier.weight(1f)
                 )
 
@@ -849,24 +798,90 @@ private fun TopBar(
 // ============================================================================
 
 @Composable
-private fun ChatContentArea(
+private fun PagedChatContentArea(
     messages: List<DisplayMessage>,
     agentState: AgentState,
     progressItems: List<AgentProgressDisplay>,
-    listState: androidx.compose.foundation.lazy.LazyListState,
     fontSize: androidx.compose.ui.unit.TextUnit,
     fontFamily: FontFamily,
     alpha: Float,
-    hasMoreHistory: Boolean = true,
-    newPrependCount: Int = 0,
-    modifier: Modifier = Modifier
+    hasMoreHistory: Boolean,
+    sessionKey: String?,
+    pageNavigationDelta: Int,
+    pageNavigationToLatest: Boolean,
+    pageNavigationHold: Boolean,
+    pageNavigationTrigger: Int,
+    onPageStateChanged: (pageIndex: Int, pageCount: Int, atStart: Boolean, atEnd: Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Box(
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val navigator = remember(sessionKey) { HudPageNavigator() }
+    var currentPageIndex by remember(sessionKey) { mutableIntStateOf(0) }
+    var previousPages by remember(sessionKey) { mutableStateOf(emptyList<HudPage>()) }
+    var lastHandledNavigationTrigger by remember(sessionKey) { mutableIntStateOf(pageNavigationTrigger) }
+
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
             .clipToBounds()
             .alpha(alpha)
     ) {
+        val pageWidthPx = with(density) { maxWidth.roundToPx() }.coerceAtLeast(1)
+        val pageHeightPx = with(density) { maxHeight.roundToPx() }.coerceAtLeast(1)
+        val textStyle = remember(fontSize, fontFamily) {
+            TextStyle(
+                fontFamily = fontFamily,
+                fontSize = fontSize,
+                lineHeight = fontSize,
+                letterSpacing = 0.sp,
+            )
+        }
+        val pages = remember(messages, pageWidthPx, pageHeightPx, textStyle, hasMoreHistory) {
+            paginateHudMessages(
+                messages = messages,
+                textMeasurer = textMeasurer,
+                textStyle = textStyle,
+                pageWidthPx = pageWidthPx,
+                pageHeightPx = pageHeightPx,
+                assistantOuterPaddingPx = with(density) { 16.dp.roundToPx() },
+                userOuterPaddingPx = with(density) { 40.dp.roundToPx() },
+                horizontalInnerPaddingPx = with(density) { 12.dp.roundToPx() },
+                verticalInnerPaddingPx = with(density) { 4.dp.roundToPx() },
+                messageSpacingPx = with(density) { 4.dp.roundToPx() },
+                thumbnailHeightPx = with(density) { 20.dp.roundToPx() },
+                historyMarkerHeightPx = with(density) { 32.dp.roundToPx() },
+                showHistoryStart = !hasMoreHistory && messages.isNotEmpty(),
+            )
+        }
+
+        LaunchedEffect(pages, pageNavigationTrigger) {
+            if (pages !== previousPages) {
+                val anchor = previousPages.getOrNull(navigator.pageIndex)?.anchor
+                val restoredPage = findHudPageForAnchor(pages, anchor)
+                navigator.onDocumentChanged(pages.size.coerceAtLeast(1), restoredPage)
+                previousPages = pages
+            }
+            if (pageNavigationTrigger != lastHandledNavigationTrigger) {
+                if (pageNavigationHold) {
+                    navigator.holdCurrentPage()
+                } else if (pageNavigationToLatest) {
+                    navigator.jumpToLatest(pages.size.coerceAtLeast(1))
+                } else {
+                    navigator.moveBy(pageNavigationDelta, pages.size.coerceAtLeast(1))
+                }
+                lastHandledNavigationTrigger = pageNavigationTrigger
+            }
+            currentPageIndex = navigator.pageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+            val pageCount = pages.size.coerceAtLeast(1)
+            onPageStateChanged(
+                currentPageIndex,
+                pageCount,
+                currentPageIndex == 0,
+                currentPageIndex == pageCount - 1,
+            )
+        }
+
         if (messages.isEmpty() && agentState == AgentState.IDLE && progressItems.isEmpty()) {
             Text(
                 text = "No messages yet",
@@ -876,85 +891,55 @@ private fun ChatContentArea(
                 modifier = Modifier.align(Alignment.Center)
             )
         } else {
-            LazyColumn(
-                state = listState,
+            val page = pages.getOrNull(currentPageIndex)
+            Column(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // "Beginning of conversation" marker (static, no displacement issues)
-                if (!hasMoreHistory && messages.isNotEmpty()) {
-                    item(key = "history_start") {
-                        HistoryStartIndicator(
-                            fontSize = fontSize,
-                            fontFamily = fontFamily
-                        )
-                    }
+                if (page?.showHistoryStart == true) {
+                    HistoryStartIndicator(fontSize = fontSize, fontFamily = fontFamily)
                 }
-
-                itemsIndexed(messages, key = { _, msg -> msg.id }) { index, message ->
-                    // Fade in newly prepended messages as they scroll into view
-                    if (index < newPrependCount) {
-                        val fadeAlpha = remember { Animatable(0.15f) }
-                        LaunchedEffect(Unit) {
-                            fadeAlpha.animateTo(1f, tween(400))
-                        }
-                        Box(modifier = Modifier.alpha(fadeAlpha.value)) {
-                            ChatMessageItem(
-                                message = message,
-                                fontSize = fontSize,
-                                fontFamily = fontFamily
-                            )
-                        }
-                    } else {
-                        ChatMessageItem(
-                            message = message,
-                            fontSize = fontSize,
-                            fontFamily = fontFamily
-                        )
-                    }
-                }
-
-                if (progressItems.isNotEmpty()) {
-                    item(key = "agent_progress") {
-                        AgentProgressPanel(
-                            items = progressItems,
-                            fontSize = fontSize,
-                            fontFamily = fontFamily,
-                        )
-                    }
-                }
-
-                // Thinking indicator (shown after last message when agent is thinking)
-                if (progressItems.isEmpty() &&
-                    (agentState == AgentState.THINKING || agentState == AgentState.REASONING)
-                ) {
-                    item {
-                        ThinkingIndicator(
-                            label = if (agentState == AgentState.REASONING) "reasoning" else "thinking",
-                            fontSize = fontSize,
-                            fontFamily = fontFamily
-                        )
-                    }
+                page?.fragments?.forEach { fragment ->
+                    ChatMessageItem(
+                        message = fragment.message.copy(
+                            content = fragment.content,
+                            isStreaming = false,
+                            thumbnails = if (fragment.showThumbnails) fragment.message.thumbnails else emptyList(),
+                        ),
+                        fontSize = fontSize,
+                        fontFamily = fontFamily,
+                    )
                 }
             }
-        }
-    }
-}
 
-private suspend fun scrollHudToTrueEnd(
-    listState: androidx.compose.foundation.lazy.LazyListState,
-    lastIndex: Int,
-    animated: Boolean,
-) {
-    if (lastIndex < 0) return
-    if (animated) listState.animateScrollToItem(lastIndex) else listState.scrollToItem(lastIndex)
-    delay(16)
-    repeat(32) {
-        if (!listState.canScrollForward) return
-        val viewport = listState.layoutInfo.viewportSize.height.coerceAtLeast(1).toFloat()
-        val consumed = if (animated) listState.animateScrollBy(viewport) else listState.scrollBy(viewport)
-        if (consumed == 0f) return
+            if (navigator.hasNewerPages(pages.size.coerceAtLeast(1))) {
+                Text(
+                    text = "↓ NEW TEXT",
+                    color = HudColors.cyan,
+                    fontSize = (fontSize.value - 2).coerceAtLeast(8f).sp,
+                    fontFamily = fontFamily,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .background(Color.Black.copy(alpha = 0.9f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                )
+            }
+
+            if (progressItems.isNotEmpty()) {
+                AgentProgressPanel(
+                    items = progressItems,
+                    fontSize = fontSize,
+                    fontFamily = fontFamily,
+                )
+            } else if (agentState == AgentState.THINKING || agentState == AgentState.REASONING) {
+                ThinkingIndicator(
+                    label = if (agentState == AgentState.REASONING) "reasoning" else "thinking",
+                    fontSize = fontSize,
+                    fontFamily = fontFamily,
+                )
+            }
+        }
     }
 }
 
