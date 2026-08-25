@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.29 (build 38)
+
+- Recover the Clawsses HUD only after a Clawsses-initiated AI-scene exit, using a bounded one-shot recovery window.
+- Respect manual launcher and third-party app foreground changes by cancelling any pending HUD recovery before it can reclaim the display.
+
 ## 1.3.28 (build 37)
 
 - Increase the Rokid HUD bottom navigation safe inset from 24 dp to 32 dp while keeping the top status inset at 24 dp.

@@ -52,13 +52,20 @@ object RokidSdkManager {
     private var cxrApi: CxrApi? = null
     private var appContext: Context? = null
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
-    private val hudForegroundRecovery = HudForegroundRecovery(ROKID_LAUNCHER_PACKAGE)
+    private val hudForegroundRecovery = HudForegroundRecovery(
+        launcherPackage = ROKID_LAUNCHER_PACKAGE,
+        hudPackage = GLASSES_APP_PACKAGE,
+    )
     private val reopenHudRunnable = Runnable {
-        if (isConnected()) {
-            Log.i(TAG, "Recovering Clawsses HUD after Rokid launcher takeover")
+        if (hudForegroundRecovery.consumeScheduledRecovery(
+                connected = isConnected(),
+                nowMs = SystemClock.elapsedRealtime(),
+            )
+        ) {
+            Log.i(TAG, "Recovering Clawsses HUD after its AI scene exited")
             openGlassesApp()
         } else {
-            Log.d(TAG, "Skipping HUD recovery because glasses disconnected")
+            Log.d(TAG, "Skipping HUD recovery because authorization expired or was cancelled")
         }
     }
 
@@ -270,20 +277,22 @@ object RokidSdkManager {
 
         override fun onGlassAppResume(packageName: String?) {
             Log.i(TAG, "Glasses foreground app: ${packageName ?: "unknown"}")
-            if (packageName == GLASSES_APP_PACKAGE) {
-                mainHandler.removeCallbacks(reopenHudRunnable)
-                return
-            }
+            when (hudForegroundRecovery.onForegroundChanged(
+                packageName = packageName,
+                connected = isConnected(),
+                nowMs = SystemClock.elapsedRealtime(),
+            )) {
+                HudForegroundRecovery.ForegroundAction.SCHEDULE_RECOVERY -> {
+                    Log.i(TAG, "Clawsses AI scene reached launcher; scheduling one HUD recovery")
+                    mainHandler.removeCallbacks(reopenHudRunnable)
+                    mainHandler.postDelayed(reopenHudRunnable, HUD_RECOVERY_DELAY_MS)
+                }
 
-            if (hudForegroundRecovery.shouldRecover(
-                    packageName = packageName,
-                    connected = isConnected(),
-                    nowMs = SystemClock.elapsedRealtime(),
-                )
-            ) {
-                Log.i(TAG, "Rokid launcher replaced Clawsses; scheduling one HUD recovery")
-                mainHandler.removeCallbacks(reopenHudRunnable)
-                mainHandler.postDelayed(reopenHudRunnable, HUD_RECOVERY_DELAY_MS)
+                HudForegroundRecovery.ForegroundAction.CANCEL_RECOVERY -> {
+                    mainHandler.removeCallbacks(reopenHudRunnable)
+                }
+
+                HudForegroundRecovery.ForegroundAction.NONE -> Unit
             }
         }
 
@@ -930,7 +939,12 @@ object RokidSdkManager {
      */
     fun sendExitEvent(): ValueUtil.CxrStatus? {
         Log.d(TAG, "Sending exit event to glasses AI scene")
-        return cxrApi?.sendExitEvent()
+        hudForegroundRecovery.armForAiExit(SystemClock.elapsedRealtime())
+        val status = cxrApi?.sendExitEvent()
+        if (status != ValueUtil.CxrStatus.REQUEST_SUCCEED) {
+            hudForegroundRecovery.reset()
+        }
+        return status
     }
 
     /**
