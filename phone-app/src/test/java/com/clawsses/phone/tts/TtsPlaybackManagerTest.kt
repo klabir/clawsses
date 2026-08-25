@@ -18,7 +18,7 @@ class TtsPlaybackManagerTest {
         val chunks = TtsPlaybackManager.splitForSynthesis(input)
 
         assertTrue(chunks.size > 1)
-        assertTrue(chunks.all { it.length <= 3_500 })
+        assertTrue(chunks.all { it.length <= 1_500 })
         assertEquals(words, chunks.joinToString(" ").split(" "))
     }
 

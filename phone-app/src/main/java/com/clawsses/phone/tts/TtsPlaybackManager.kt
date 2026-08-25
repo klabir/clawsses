@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
+import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -41,6 +42,8 @@ class TtsPlaybackManager(
     private var synthesisJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
     private var currentTempFile: File? = null
+    private val queuedTempFiles = ArrayDeque<File>()
+    private var completedSynthesisGeneration = NO_GENERATION
     private var lastText: String? = null
 
     private val _state = MutableStateFlow(TtsPlaybackState.IDLE)
@@ -72,39 +75,55 @@ class TtsPlaybackManager(
         _state.value = TtsPlaybackState.SYNTHESIZING
         val requestGeneration = generation.incrementAndGet()
         val speed = settings.speed.value.toDouble()
+        completedSynthesisGeneration = NO_GENERATION
 
         synthesisJob = scope.launch {
+            val pendingFiles = mutableListOf<File>()
             try {
-                val audioParts = splitForSynthesis(normalized).map { chunk ->
+                val chunks = splitForSynthesis(normalized)
+                Log.i(TAG, "TTS synthesis started: chunks=${chunks.size}")
+                chunks.forEachIndexed { index, chunk ->
                     val result = when (provider) {
                         TtsProvider.ELEVENLABS ->
                             elevenLabsClient.synthesize(key, voice, chunk, speed)
                         TtsProvider.OPENAI ->
                             openAiClient.synthesize(key, voice, chunk, speed)
                     }
-                    result.getOrThrow()
-                }
-                if (!isActive || generation.get() != requestGeneration) return@launch
+                    val audioBytes = result.getOrThrow()
+                    val tempFile = File.createTempFile("tts_", ".mp3", context.cacheDir)
+                    pendingFiles += tempFile
+                    FileOutputStream(tempFile).use { output ->
+                        output.write(audioBytes)
+                    }
+                    Log.i(TAG, "TTS chunk synthesized: ${index + 1}/${chunks.size}")
 
-                val tempFile = File.createTempFile("tts_", ".mp3", context.cacheDir)
-                FileOutputStream(tempFile).use { output ->
-                    audioParts.forEach(output::write)
+                    withContext(Dispatchers.Main) {
+                        if (generation.get() == requestGeneration) {
+                            queuedTempFiles.addLast(tempFile)
+                            pendingFiles.remove(tempFile)
+                            if (mediaPlayer == null) playNextAudioFile(requestGeneration)
+                        }
+                    }
+                    if (!isActive || generation.get() != requestGeneration) return@launch
                 }
-                if (!isActive || generation.get() != requestGeneration) {
-                    tempFile.delete()
-                    return@launch
-                }
-                currentTempFile = tempFile
+
                 withContext(Dispatchers.Main) {
-                    if (generation.get() == requestGeneration) playAudioFile(tempFile)
+                    if (generation.get() == requestGeneration) {
+                        completedSynthesisGeneration = requestGeneration
+                        if (mediaPlayer == null && queuedTempFiles.isEmpty()) {
+                            finishPlayback()
+                        }
+                    }
                 }
             } catch (error: Exception) {
                 if (generation.get() == requestGeneration) {
                     Log.e(TAG, "TTS synthesis failed: ${error.javaClass.simpleName}")
-                    playbackActive.set(false)
-                    _state.value = TtsPlaybackState.ERROR
-                    deleteTempFile()
+                    withContext(Dispatchers.Main) {
+                        failPlayback(requestGeneration)
+                    }
                 }
+            } finally {
+                pendingFiles.forEach(::deleteTempFile)
             }
         }
     }
@@ -117,9 +136,23 @@ class TtsPlaybackManager(
         stopInternal(updateState = true)
     }
 
-    private fun playAudioFile(file: File) {
+    private fun playNextAudioFile(requestGeneration: Long) {
+        if (generation.get() != requestGeneration) return
+
+        releasePlayer()
+        deleteCurrentTempFile()
+        val file = queuedTempFiles.pollFirst()
+        if (file == null) {
+            if (completedSynthesisGeneration == requestGeneration) {
+                finishPlayback()
+            } else {
+                _state.value = TtsPlaybackState.SYNTHESIZING
+            }
+            return
+        }
+
+        currentTempFile = file
         try {
-            releasePlayer()
             val scoOutput = preferredScoOutput()
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(
@@ -137,17 +170,13 @@ class TtsPlaybackManager(
                 setDataSource(file.absolutePath)
                 setVolume(1f, 1f)
                 setOnCompletionListener {
-                    playbackActive.set(false)
                     releasePlayer()
-                    deleteTempFile()
-                    _state.value = TtsPlaybackState.IDLE
+                    deleteCurrentTempFile()
+                    playNextAudioFile(requestGeneration)
                 }
                 setOnErrorListener { _, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what=$what, extra=$extra")
-                    playbackActive.set(false)
-                    releasePlayer()
-                    deleteTempFile()
-                    _state.value = TtsPlaybackState.ERROR
+                    failPlayback(requestGeneration)
                     true
                 }
                 prepare()
@@ -160,14 +189,30 @@ class TtsPlaybackManager(
                 }
                 start()
             }
+            Log.i(TAG, "TTS playback chunk started: remaining=${queuedTempFiles.size}")
             _state.value = TtsPlaybackState.PLAYING
         } catch (error: Exception) {
             Log.e(TAG, "TTS playback failed: ${error.javaClass.simpleName}")
-            playbackActive.set(false)
-            releasePlayer()
-            deleteTempFile()
-            _state.value = TtsPlaybackState.ERROR
+            failPlayback(requestGeneration)
         }
+    }
+
+    private fun finishPlayback() {
+        playbackActive.set(false)
+        synthesisJob = null
+        completedSynthesisGeneration = NO_GENERATION
+        _state.value = TtsPlaybackState.IDLE
+        Log.i(TAG, "TTS playback completed")
+    }
+
+    private fun failPlayback(requestGeneration: Long) {
+        if (generation.get() != requestGeneration) return
+        generation.incrementAndGet()
+        playbackActive.set(false)
+        completedSynthesisGeneration = NO_GENERATION
+        releasePlayer()
+        deleteAllTempFiles()
+        _state.value = TtsPlaybackState.ERROR
     }
 
     private fun preferredScoOutput(): AudioDeviceInfo? {
@@ -184,8 +229,9 @@ class TtsPlaybackManager(
         generation.incrementAndGet()
         synthesisJob?.cancel()
         synthesisJob = null
+        completedSynthesisGeneration = NO_GENERATION
         releasePlayer()
-        deleteTempFile()
+        deleteAllTempFiles()
         if (updateState) _state.value = TtsPlaybackState.IDLE
     }
 
@@ -201,13 +247,20 @@ class TtsPlaybackManager(
         mediaPlayer = null
     }
 
-    private fun deleteTempFile() {
-        currentTempFile?.let { file ->
-            if (file.exists() && !file.delete()) {
-                Log.w(TAG, "Unable to delete private TTS cache file")
-            }
-        }
+    private fun deleteCurrentTempFile() {
+        currentTempFile?.let(::deleteTempFile)
         currentTempFile = null
+    }
+
+    private fun deleteAllTempFiles() {
+        deleteCurrentTempFile()
+        while (queuedTempFiles.isNotEmpty()) deleteTempFile(queuedTempFiles.removeFirst())
+    }
+
+    private fun deleteTempFile(file: File) {
+        if (file.exists() && !file.delete()) {
+            Log.w(TAG, "Unable to delete private TTS cache file")
+        }
     }
 
     fun onMessageComplete(text: String) {
@@ -221,7 +274,8 @@ class TtsPlaybackManager(
 
     companion object {
         private const val TAG = "TtsPlaybackManager"
-        private const val MAX_CHUNK_CHARS = 3_500
+        private const val MAX_CHUNK_CHARS = 1_500
+        private const val NO_GENERATION = -1L
         private val playbackActive = AtomicBoolean(false)
 
         fun isPlaybackActive(): Boolean = playbackActive.get()
