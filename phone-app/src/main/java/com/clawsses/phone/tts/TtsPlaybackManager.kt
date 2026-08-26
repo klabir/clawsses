@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +45,8 @@ class TtsPlaybackManager(
     private var currentTempFile: File? = null
     private val queuedTempFiles = ArrayDeque<File>()
     private var completedSynthesisGeneration = NO_GENERATION
+    private var playbackStartedGeneration = NO_GENERATION
+    private var requestStartedAtMs = 0L
     private var lastText: String? = null
 
     private val _state = MutableStateFlow(TtsPlaybackState.IDLE)
@@ -76,13 +79,19 @@ class TtsPlaybackManager(
         val requestGeneration = generation.incrementAndGet()
         val speed = settings.speed.value.toDouble()
         completedSynthesisGeneration = NO_GENERATION
+        playbackStartedGeneration = NO_GENERATION
+        requestStartedAtMs = SystemClock.elapsedRealtime()
 
         synthesisJob = scope.launch {
             val pendingFiles = mutableListOf<File>()
             try {
                 val chunks = splitForSynthesis(normalized)
-                Log.i(TAG, "TTS synthesis started: chunks=${chunks.size}")
+                Log.i(
+                    TAG,
+                    "TTS synthesis started: chunks=${chunks.size}, firstChunkChars=${chunks.first().length}",
+                )
                 chunks.forEachIndexed { index, chunk ->
+                    val chunkStartedAtMs = SystemClock.elapsedRealtime()
                     val result = when (provider) {
                         TtsProvider.ELEVENLABS ->
                             elevenLabsClient.synthesize(key, voice, chunk, speed)
@@ -95,7 +104,12 @@ class TtsPlaybackManager(
                     FileOutputStream(tempFile).use { output ->
                         output.write(audioBytes)
                     }
-                    Log.i(TAG, "TTS chunk synthesized: ${index + 1}/${chunks.size}")
+                    Log.i(
+                        TAG,
+                        "TTS chunk synthesized: ${index + 1}/${chunks.size}, " +
+                            "chars=${chunk.length}, durationMs=" +
+                            (SystemClock.elapsedRealtime() - chunkStartedAtMs),
+                    )
 
                     withContext(Dispatchers.Main) {
                         if (generation.get() == requestGeneration) {
@@ -189,6 +203,14 @@ class TtsPlaybackManager(
                 }
                 start()
             }
+            if (playbackStartedGeneration != requestGeneration) {
+                playbackStartedGeneration = requestGeneration
+                Log.i(
+                    TAG,
+                    "TTS first audio started: latencyMs=" +
+                        (SystemClock.elapsedRealtime() - requestStartedAtMs),
+                )
+            }
             Log.i(TAG, "TTS playback chunk started: remaining=${queuedTempFiles.size}")
             _state.value = TtsPlaybackState.PLAYING
         } catch (error: Exception) {
@@ -201,6 +223,7 @@ class TtsPlaybackManager(
         playbackActive.set(false)
         synthesisJob = null
         completedSynthesisGeneration = NO_GENERATION
+        playbackStartedGeneration = NO_GENERATION
         _state.value = TtsPlaybackState.IDLE
         Log.i(TAG, "TTS playback completed")
     }
@@ -210,6 +233,7 @@ class TtsPlaybackManager(
         generation.incrementAndGet()
         playbackActive.set(false)
         completedSynthesisGeneration = NO_GENERATION
+        playbackStartedGeneration = NO_GENERATION
         releasePlayer()
         deleteAllTempFiles()
         _state.value = TtsPlaybackState.ERROR
@@ -230,6 +254,7 @@ class TtsPlaybackManager(
         synthesisJob?.cancel()
         synthesisJob = null
         completedSynthesisGeneration = NO_GENERATION
+        playbackStartedGeneration = NO_GENERATION
         releasePlayer()
         deleteAllTempFiles()
         if (updateState) _state.value = TtsPlaybackState.IDLE
@@ -274,6 +299,8 @@ class TtsPlaybackManager(
 
     companion object {
         private const val TAG = "TtsPlaybackManager"
+        private const val FIRST_CHUNK_MIN_CHARS = 280
+        private const val FIRST_CHUNK_MAX_CHARS = 400
         private const val MAX_CHUNK_CHARS = 1_500
         private const val NO_GENERATION = -1L
         private val playbackActive = AtomicBoolean(false)
@@ -281,9 +308,12 @@ class TtsPlaybackManager(
         fun isPlaybackActive(): Boolean = playbackActive.get()
 
         internal fun splitForSynthesis(text: String): List<String> {
-            if (text.length <= MAX_CHUNK_CHARS) return listOf(text)
+            val normalized = text.trim()
+            if (normalized.length <= FIRST_CHUNK_MAX_CHARS) return listOf(normalized)
             val chunks = mutableListOf<String>()
-            var remaining = text.trim()
+            val firstSplitAt = firstChunkSplitIndex(normalized)
+            chunks += normalized.take(firstSplitAt + 1).trim()
+            var remaining = normalized.drop(firstSplitAt + 1).trimStart()
             while (remaining.isNotEmpty()) {
                 if (remaining.length <= MAX_CHUNK_CHARS) {
                     chunks += remaining
@@ -301,6 +331,21 @@ class TtsPlaybackManager(
                 remaining = remaining.drop(splitAt + 1).trimStart()
             }
             return chunks.filter { it.isNotEmpty() }
+        }
+
+        private fun firstChunkSplitIndex(text: String): Int {
+            val window = text.take(FIRST_CHUNK_MAX_CHARS)
+            val sentenceBoundary = (FIRST_CHUNK_MIN_CHARS until window.length).firstOrNull { index ->
+                val current = window[index]
+                current == '\n' ||
+                    (current in ".!?" &&
+                        (index == window.lastIndex || window[index + 1].isWhitespace()))
+            }
+            if (sentenceBoundary != null) return sentenceBoundary
+
+            return window.indexOfLast { it.isWhitespace() }
+                .takeIf { it >= FIRST_CHUNK_MIN_CHARS / 2 }
+                ?: window.lastIndex
         }
     }
 }

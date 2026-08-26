@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+## 1.3.30 (build 39)
+
+- Start TTS with a sentence-aware 400-character maximum first chunk, retain 1,500-character follow-up chunks, and log privacy-safe synthesis/playback latency metrics.
+- Bound the OpenAI Realtime connection pre-buffer to the latest two seconds of PCM so a stalled session cannot grow phone memory indefinitely.
+- Decode queued-photo previews and chat attachments outside the Compose main thread to prevent large images from stalling the phone UI.
+- Await model-selection completion through its StateFlow instead of polling every 50 ms.
+
 ## 1.3.29 (build 38)
 
 - Recover the Clawsses HUD only after a Clawsses-initiated AI-scene exit, using a bounded one-shot recovery window.

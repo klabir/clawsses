@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -29,9 +28,10 @@ import java.util.concurrent.atomic.AtomicLong
  * - Safe for repeated use (idempotent cleanup, AtomicBoolean guard)
  *
  * Audio pre-buffering: AudioRecord starts immediately when startListening() is called,
- * before the WebSocket connection is established. Audio is buffered in a ConcurrentLinkedQueue
- * and flushed to the server once the session is ready. This eliminates the ~500-800ms gap
- * where the user's first words would otherwise be lost.
+ * before the WebSocket connection is established. The latest audio is kept in a bounded rolling
+ * buffer and flushed to the server once the session is ready. This eliminates the normal
+ * ~500-800ms gap where the user's first words would otherwise be lost without allowing a stalled
+ * connection to retain PCM indefinitely.
  *
  * The mic stays active until local detection finds a sustained pause, then the client
  * explicitly commits that utterance and waits for the final transcript.
@@ -54,6 +54,7 @@ class OpenAIRealtimeClient {
 
         // Send audio in small frames for responsive VAD (~20ms = 960 bytes at 24kHz 16-bit mono)
         private const val SEND_FRAME_BYTES = 960
+        private const val MAX_PREBUFFER_FRAMES = 100 // Latest ~2 seconds at 20 ms/frame.
         private const val SPEECH_PEAK_THRESHOLD = 1_500
         private const val SPEECH_START_FRAME_COUNT = 3
         private const val SILENCE_FRAME_COUNT = 38
@@ -90,8 +91,10 @@ class OpenAIRealtimeClient {
     @Volatile private var commitPending = false
     private val audioCommitted = AtomicBoolean(false)
 
-    // Audio pre-buffering: record starts before WebSocket is ready
-    private val preBuffer = ConcurrentLinkedQueue<ByteArray>()
+    // Audio pre-buffering: record starts before WebSocket is ready. Keep it bounded so a
+    // stalled connection cannot retain PCM indefinitely.
+    private val preBuffer = BoundedAudioFrameBuffer(MAX_PREBUFFER_FRAMES)
+    private val preBufferDroppedFrames = AtomicLong(0L)
     @Volatile private var sessionReady = false
 
     private var webSocket: WebSocket? = null
@@ -156,6 +159,7 @@ class OpenAIRealtimeClient {
         audioCommitted.set(false)
         sessionReady = false
         preBuffer.clear()
+        preBufferDroppedFrames.set(0L)
         synchronized(transcriptLock) { accumulatedTranscript.clear() }
 
         this.onPartialResult = onPartial
@@ -375,7 +379,14 @@ class OpenAIRealtimeClient {
                         updateLocalSpeechState(chunk)
                         if (!sessionReady) {
                             // Buffer audio until WebSocket session is configured
-                            preBuffer.add(chunk)
+                            if (preBuffer.offer(chunk) &&
+                                preBufferDroppedFrames.incrementAndGet() == 1L
+                            ) {
+                                Log.w(
+                                    TAG,
+                                    "Realtime session is slow; retaining only the latest audio window",
+                                )
+                            }
                         } else {
                             // Drain any pre-buffered audio first
                             var buffered = preBuffer.poll()

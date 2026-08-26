@@ -116,6 +116,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 
@@ -827,7 +828,7 @@ fun MainScreen() {
                             openClawClient.selectModel(selected)
                             scope.launch {
                                 val completed = withTimeoutOrNull(8_000L) {
-                                    while (openClawClient.isSelectingModel.value) delay(50L)
+                                    openClawClient.isSelectingModel.first { !it }
                                     true
                                 } == true
                                 val selectedIndex = models.indexOfFirst { it.ref == selected.ref }
@@ -1052,9 +1053,7 @@ fun MainScreen() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         pendingPhotos.forEachIndexed { index, base64 ->
-                            val thumbnail = remember(base64) {
-                                ImagePipeline.decodeBase64Image(base64, 320, 240)?.asImageBitmap()
-                            }
+                            val thumbnail = rememberDecodedImage(base64, 320, 240)
                             if (thumbnail != null) {
                                 Box {
                                     Image(
@@ -1535,9 +1534,7 @@ fun ChatMessageRow(msg: ChatMessage) {
                 .fillMaxWidth(0.85f)
         ) {
             msg.attachments.forEachIndexed { index, attachment ->
-                val image = remember(attachment.base64) {
-                    attachment.base64?.let { decodeBase64Image(it, 960, 720)?.asImageBitmap() }
-                }
+                val image = rememberDecodedImage(attachment.base64, 960, 720)
                 if (image != null) {
                     Image(
                         bitmap = image,
@@ -2316,6 +2313,21 @@ private fun decodeBase64Bytes(encoded: String?): ByteArray? {
     }.getOrNull()
 }
 
-private fun decodeBase64Image(encoded: String, maxWidth: Int, maxHeight: Int): android.graphics.Bitmap? {
-    return ImagePipeline.decodeBase64Image(encoded, maxWidth, maxHeight)
+@Composable
+private fun rememberDecodedImage(
+    encoded: String?,
+    maxWidth: Int,
+    maxHeight: Int,
+): ImageBitmap? {
+    val decoded by produceState<ImageBitmap?>(
+        initialValue = null,
+        key1 = encoded,
+        key2 = maxWidth,
+        key3 = maxHeight,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            ImagePipeline.decodeBase64Image(encoded, maxWidth, maxHeight)?.asImageBitmap()
+        }
+    }
+    return decoded
 }
