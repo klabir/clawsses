@@ -7,8 +7,10 @@ import org.junit.Test
 
 class TalkModeManagerTest {
     @Test
-    fun permanentTalkModeDefaultsToEnabled() {
+    fun talkModeDefaultsToEnabledFollowUp() {
         assertTrue(TalkModeManager.DEFAULT_ENABLED)
+        assertEquals(TalkInteractionMode.FOLLOW_UP, TalkModeManager.DEFAULT_INTERACTION_MODE)
+        assertEquals(12_000L, TalkModeManager.FOLLOW_UP_WINDOW_MS)
     }
 
     @Test
@@ -80,7 +82,11 @@ class TalkModeManagerTest {
     @Test
     fun standbyPausesGlassesCaptureAndInvalidatesItsCycle() {
         val listening = TalkModeTransitions.beginListening(
-            TalkModeTransitions.setEnabled(TalkModeState(), true, TalkModeSource.GLASSES),
+            TalkModeTransitions.setEnabled(
+                TalkModeState(interactionMode = TalkInteractionMode.ALWAYS_LISTENING),
+                true,
+                TalkModeSource.GLASSES,
+            ),
             TalkModeSource.GLASSES,
         )
 
@@ -112,5 +118,75 @@ class TalkModeManagerTest {
         )
 
         assertFalse(TalkModeTransitions.shouldPauseForStandby(listening, glassesAwake = false))
+    }
+
+    @Test
+    fun followUpModeRequiresExplicitActivation() {
+        val armed = TalkModeTransitions.setInteractionMode(
+            TalkModeTransitions.setEnabled(TalkModeState(), true, TalkModeSource.GLASSES),
+            TalkInteractionMode.FOLLOW_UP,
+        )
+
+        val automatic = TalkModeTransitions.beginListening(
+            armed,
+            TalkModeSource.GLASSES,
+            TalkActivation.AUTOMATIC,
+        )
+        val explicit = TalkModeTransitions.beginListening(
+            armed,
+            TalkModeSource.GLASSES,
+            TalkActivation.EXPLICIT,
+        )
+
+        assertEquals(TalkModePhase.IDLE, automatic.phase)
+        assertFalse(automatic.conversationActive)
+        assertEquals(TalkModePhase.LISTENING, explicit.phase)
+        assertTrue(explicit.conversationActive)
+    }
+
+    @Test
+    fun followUpModeContinuesOnlyAfterACompletedResponse() {
+        val active = TalkModeTransitions.beginListening(
+            TalkModeTransitions.setInteractionMode(
+                TalkModeTransitions.setEnabled(TalkModeState(), true, TalkModeSource.GLASSES),
+                TalkInteractionMode.FOLLOW_UP,
+            ),
+            TalkModeSource.GLASSES,
+            TalkActivation.EXPLICIT,
+        )
+
+        assertTrue(TalkModeTransitions.shouldRestart(active, TalkRestartReason.RESPONSE_COMPLETE))
+        assertFalse(TalkModeTransitions.shouldRestart(active, TalkRestartReason.EMPTY_RESULT))
+        assertFalse(TalkModeTransitions.shouldRestart(active, TalkRestartReason.RECOGNITION_ERROR))
+    }
+
+    @Test
+    fun alwaysListeningRestartsForEveryRecoverableReason() {
+        val enabled = TalkModeTransitions.setEnabled(
+            TalkModeState(interactionMode = TalkInteractionMode.ALWAYS_LISTENING),
+            true,
+            TalkModeSource.GLASSES,
+        )
+
+        TalkRestartReason.entries.forEach { reason ->
+            assertTrue("Expected restart for $reason", TalkModeTransitions.shouldRestart(enabled, reason))
+        }
+    }
+
+    @Test
+    fun followUpConversationClosesOnStandby() {
+        val listening = TalkModeTransitions.beginListening(
+            TalkModeTransitions.setInteractionMode(
+                TalkModeTransitions.setEnabled(TalkModeState(), true, TalkModeSource.GLASSES),
+                TalkInteractionMode.FOLLOW_UP,
+            ),
+            TalkModeSource.GLASSES,
+            TalkActivation.EXPLICIT,
+        )
+
+        val standby = TalkModeTransitions.pauseForStandby(listening)
+
+        assertFalse(standby.conversationActive)
+        assertFalse(TalkModeTransitions.shouldResumeFromStandby(standby, glassesAwake = true))
     }
 }

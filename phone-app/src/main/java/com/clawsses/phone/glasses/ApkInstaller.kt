@@ -277,26 +277,49 @@ class ApkInstaller(private val context: Context) {
         // Step 4: Prefer the official glasses-hotspot transport. Android's public
         // Wi-Fi Direct discovery does not expose the peer reported by current
         // firmware, while the CXR hotspot path is explicit and IP-addressed.
-        var uploadIp: String? = null
-        _installState.value = InstallState.InitializingWifiHotspot
-        withContext(Dispatchers.Main) { RokidSdkManager.deinitWifiHotspot() }
-        delay(1_500)
-        val hotspotStarted = withContext(Dispatchers.Main) {
-            RokidSdkManager.initWifiHotspot()
+        withContext(Dispatchers.Main) {
+            RokidSdkManager.refreshGlassesCapabilities()
         }
-        if (hotspotStarted) {
-            var hotspotWaitTime = 0
-            while (!RokidSdkManager.isWifiHotspotConnected() && hotspotWaitTime < 40_000) {
-                delay(500)
-                hotspotWaitTime += 500
+        var capabilityWaitMs = 0
+        while (capabilityWaitMs < 3_000) {
+            val pending = RokidSdkManager.capabilities.value
+            if (pending.glassInfoAvailable || pending.sdkVersionCheckPassed != null) break
+            delay(100)
+            capabilityWaitMs += 100
+        }
+        val capabilitySnapshot = RokidSdkManager.capabilities.value
+        val transportOrder = GlassesCapabilityPolicy.installTransportOrder(capabilitySnapshot)
+        Log.i(
+            TAG,
+            "Installer policy: firmware=" +
+                "${GlassesCapabilityPolicy.firmwareSupport(capabilitySnapshot)}, " +
+                "transports=${transportOrder.joinToString()}",
+        )
+        var uploadIp: String? = null
+        if (InstallerTransport.GLASSES_HOTSPOT in transportOrder) {
+            _installState.value = InstallState.InitializingWifiHotspot
+            withContext(Dispatchers.Main) { RokidSdkManager.deinitWifiHotspot() }
+            delay(1_500)
+            val hotspotStarted = withContext(Dispatchers.Main) {
+                RokidSdkManager.initWifiHotspot()
             }
-            uploadIp = RokidSdkManager.getWifiHotspotIp()
+            if (hotspotStarted) {
+                var hotspotWaitTime = 0
+                while (!RokidSdkManager.isWifiHotspotConnected() && hotspotWaitTime < 40_000) {
+                    delay(500)
+                    hotspotWaitTime += 500
+                }
+                uploadIp = RokidSdkManager.getWifiHotspotIp()
+            }
         }
 
         // Fall back to Wi-Fi Direct for older firmware or devices where the
         // hotspot transport is unavailable. Rokid's controller is Handler/Looper
         // based, so lifecycle calls must run on the main thread.
-        if (uploadIp == null && !RokidSdkManager.isWifiP2PConnected()) {
+        if (uploadIp == null &&
+            InstallerTransport.VENDOR_P2P in transportOrder &&
+            !RokidSdkManager.isWifiP2PConnected()
+        ) {
             _installState.value = InstallState.InitializingWifiP2P
             var connected = false
             for (attempt in 1..2) {

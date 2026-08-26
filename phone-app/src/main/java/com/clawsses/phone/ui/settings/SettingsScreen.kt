@@ -24,6 +24,7 @@ import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.talk.TalkModeState
+import com.clawsses.phone.talk.TalkInteractionMode
 import com.clawsses.phone.tts.ElevenLabsClient
 import com.clawsses.phone.tts.TtsSettingsManager
 import com.clawsses.phone.tts.TtsPlaybackState
@@ -60,8 +61,6 @@ fun SettingsScreen(
     onWakeOnStreamChange: (Boolean) -> Unit = {},
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
-    scrollMessagesPerStep: Int = 1,
-    onScrollMessagesPerStepChange: (Int) -> Unit = {},
     onSwitchToHiRokid: () -> Unit = {},
     // Software Update
     installState: ApkInstaller.InstallState,
@@ -73,6 +72,7 @@ fun SettingsScreen(
     voiceRecognitionManager: VoiceRecognitionManager? = null,
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
+    onTalkInteractionModeChange: (TalkInteractionMode) -> Unit = {},
     liveCaptionsEnabled: Boolean = false,
     translateCaptions: Boolean = false,
     captionTargetLanguage: String = "English",
@@ -145,8 +145,6 @@ fun SettingsScreen(
                     onWakeOnStreamChange = onWakeOnStreamChange,
                     savePhotosToGallery = savePhotosToGallery,
                     onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
-                    scrollMessagesPerStep = scrollMessagesPerStep,
-                    onScrollMessagesPerStepChange = onScrollMessagesPerStepChange,
                     onSwitchToHiRokid = onSwitchToHiRokid,
                 )
             }
@@ -170,6 +168,7 @@ fun SettingsScreen(
                     voiceRecognitionManager = voiceRecognitionManager,
                     talkModeState = talkModeState,
                     onTalkModeChange = onTalkModeChange,
+                    onTalkInteractionModeChange = onTalkInteractionModeChange,
                     liveCaptionsEnabled = liveCaptionsEnabled,
                     translateCaptions = translateCaptions,
                     captionTargetLanguage = captionTargetLanguage,

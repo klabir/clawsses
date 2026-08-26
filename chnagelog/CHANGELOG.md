@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## 1.3.48 (build 57)
+
+### Added
+
+- Add a firmware/capability snapshot from `getGlassInfo` and `checkGlassVersion`, with a hardware-verified firmware policy and runtime-probed installer transports.
+- Add separate Hi Rokid-style Follow-up and Always Listening interaction modes. Follow-up requires explicit activation and closes after a 12-second silent follow-up window; it is enabled by default when no explicit preference exists.
+
+### Changed
+
+- Keep the current glasses-hotspot installer as the preferred path and use only CXR-M's vendor-managed Wi-Fi Direct implementation as the legacy fallback.
+- Validate Rokid credential pairs during configuration and add a public-release verification task that rejects credential-bearing APK builds.
+
+### Removed
+
+- Remove the experimental parallel Android Wi-Fi Direct discovery and group-owner override that could not observe the firmware's vendor-only peer.
+- Remove the obsolete phone-side page-step selector and `scroll_settings` wire message; every glasses swipe now moves exactly one fixed HUD page so content cannot be skipped.
+
 ## 1.3.45 (build 54)
 
 ### Fixed

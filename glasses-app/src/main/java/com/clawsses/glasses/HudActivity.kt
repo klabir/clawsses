@@ -53,7 +53,6 @@ import com.clawsses.glasses.ui.visibleMoreMenuItems
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesStateRequest
-import com.clawsses.shared.ScrollSettings
 import com.clawsses.shared.VisionCommands
 import com.clawsses.shared.TtsVoiceCommands
 import kotlinx.coroutines.Job
@@ -115,7 +114,6 @@ class HudActivity : ComponentActivity() {
     private var agentPickerRequested = false
     private var modelPickerRequested = false
     private var pendingModelPageSelection = ModelPageSelection.CURRENT
-    private var scrollPagesPerStep = ScrollSettings.DEFAULT_MESSAGES_PER_STEP
 
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
     // from visible HUD state and swap it in only after the matching end marker arrives.
@@ -1235,7 +1233,7 @@ class HudActivity : ComponentActivity() {
             return
         }
         hudState.value = current.copy(
-            pageNavigationDelta = -scrollPagesPerStep,
+            pageNavigationDelta = -1,
             pageNavigationToLatest = false,
             pageNavigationHold = false,
             pageNavigationTrigger = current.pageNavigationTrigger + 1,
@@ -1260,7 +1258,7 @@ class HudActivity : ComponentActivity() {
         val current = hudState.value
         if (current.pageIndex >= current.pageCount - 1) return
         hudState.value = current.copy(
-            pageNavigationDelta = scrollPagesPerStep,
+            pageNavigationDelta = 1,
             pageNavigationToLatest = false,
             pageNavigationHold = false,
             pageNavigationTrigger = current.pageNavigationTrigger + 1,
@@ -1904,13 +1902,6 @@ class HudActivity : ComponentActivity() {
                     )
 
                     Log.d(GlassesApp.TAG, "Connection update: connected=$connected, sessionChanged=$sessionChanged")
-                }
-
-                "scroll_settings" -> {
-                    scrollPagesPerStep = ScrollSettings.normalizeMessagesPerStep(
-                        msg.optInt("messagesPerStep", ScrollSettings.DEFAULT_MESSAGES_PER_STEP)
-                    )
-                    Log.d(GlassesApp.TAG, "Page step updated: $scrollPagesPerStep")
                 }
 
                 "session_list" -> {

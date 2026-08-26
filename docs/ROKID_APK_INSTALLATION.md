@@ -4,13 +4,15 @@ This document summarizes the research findings on Rokid CXR-M SDK capabilities f
 
 ## SDK Version
 
-- **CXR-M SDK**: `com.rokid.cxr:client-m:1.0.9`
+- **CXR-M SDK**: `com.rokid.cxr:client-m:1.2.2`
 - **Maven Repository**: `https://maven.rokid.com/repository/maven-public/`
 
-Version 1.0.9 is the newest release verified to complete WiFi P2P negotiation,
-APK upload, installation, and app launch with the current glasses firmware.
-CXR-M 1.2.2 was rejected after repeated hardware tests because it removed the
-P2P group immediately after discovering the same glasses.
+The hardware-verified firmware is system `1.24.012-20260825-150201`, Assistant
+`0.3.6`. Its reliable deployment route is the temporary hotspot exposed through
+`initWifiHot`, followed by the IP-addressed `startUploadApk` overload. The SDK's
+own Wi-Fi Direct implementation remains a bounded fallback for legacy devices;
+Clawsses no longer overrides Android group ownership or performs a parallel
+manual peer discovery.
 
 ## APK Installation API
 

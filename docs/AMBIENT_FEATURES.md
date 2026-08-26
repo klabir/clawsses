@@ -32,7 +32,7 @@ The following exact commands capture a 1280×720 glasses photo and send it to th
 
 Enable **Settings → Voice → Live captions** or use **More → Live Captions** on the glasses. Captions process consecutive short utterances. Optional translation uses the OpenAI API key already configured for voice recognition and therefore incurs API usage. Source text remains visible if translation fails.
 
-Live captions and permanent Talk Mode are mutually exclusive because both need the microphone.
+Live captions and both Talk interaction modes are mutually exclusive because they need the same microphone.
 
 ## Switch to Hi Rokid
 

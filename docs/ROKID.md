@@ -52,11 +52,12 @@ Rokid uses a split SDK architecture for glasses-phone communication:
 
 ### Phone SDK: CXR-M (Client Mobile)
 
-**Maven Artifact:** `com.rokid.cxr:client-m:1.0.9`
+**Maven Artifact:** `com.rokid.cxr:client-m:1.2.2`
 
-Clawsses intentionally pins 1.0.9. Live tests with the current Rokid glasses
-firmware showed that CXR-M 1.2.2 discovers the glasses but immediately tears
-down WiFi P2P group negotiation, preventing APK transfer.
+Clawsses pins the current published SDK. Firmware `1.24.012-20260825-150201`
+with Assistant `0.3.6` is hardware-verified. APK deployment uses the official
+glasses-hotspot transport first; vendor-managed Wi-Fi Direct is retained only
+as a runtime-probed legacy fallback.
 
 **Key Classes:**
 - `CxrApi` - Main SDK singleton
@@ -121,7 +122,11 @@ rokid.clientSecret=your_client_secret
 rokid.accessKey=your_access_key
 ```
 
-Keep `local.properties` untracked and do not distribute APKs built with production credentials.
+Keep `local.properties` untracked. Rokid's connection API requires the client secret at runtime,
+so an APK containing production credentials must be treated as a private-device artifact rather
+than a secret-preserving public binary. Do not distribute it. Public build environments must run
+`./gradlew :phone-app:verifyPublicReleaseHasNoRokidCredentials`, and exposed credentials must be
+rotated in the Rokid Developer Portal.
 
 Get credentials from [Rokid Developer Portal](https://ar.rokid.com).
 

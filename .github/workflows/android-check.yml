@@ -40,4 +40,4 @@ jobs:
         run: cp local.properties.example local.properties
 
       - name: Run tests and lint
-        run: ./gradlew check --no-daemon
+        run: ./gradlew :phone-app:verifyPublicReleaseHasNoRokidCredentials check --no-daemon

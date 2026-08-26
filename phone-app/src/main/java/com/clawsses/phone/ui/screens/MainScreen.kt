@@ -79,7 +79,9 @@ import com.clawsses.phone.openclaw.buildGlassesModelPage
 import com.clawsses.phone.openclaw.resolveGlassesModelSelection
 import com.clawsses.phone.runtime.ClawssesRuntime
 import com.clawsses.phone.talk.TalkModeManager
+import com.clawsses.phone.talk.TalkInteractionMode
 import com.clawsses.phone.talk.TalkModePhase
+import com.clawsses.phone.talk.TalkRestartReason
 import com.clawsses.phone.talk.TalkModeSource
 import com.clawsses.phone.talk.TalkModeTransitions
 import com.clawsses.phone.ui.settings.SettingsScreen
@@ -105,8 +107,6 @@ import com.clawsses.shared.LiveCaptionUpdate
 import com.clawsses.shared.ModelInfo
 import com.clawsses.shared.ModelOperationUpdate
 import com.clawsses.shared.RunStateUpdate
-import com.clawsses.shared.ScrollSettings
-import com.clawsses.shared.ScrollSettingsUpdate
 import com.clawsses.shared.TalkModeStateUpdate
 import com.clawsses.shared.TtsVoiceCommands
 import com.clawsses.shared.SessionInfo
@@ -183,13 +183,6 @@ fun MainScreen() {
     var savePhotosToGallery by remember {
         mutableStateOf(prefs.getBoolean("save_photos_to_gallery", false))
     }
-    var scrollMessagesPerStep by remember {
-        mutableIntStateOf(
-            ScrollSettings.normalizeMessagesPerStep(
-                prefs.getInt("scroll_messages_per_step", ScrollSettings.DEFAULT_MESSAGES_PER_STEP)
-            )
-        )
-    }
     var translateCaptions by remember {
         mutableStateOf(prefs.getBoolean("translate_captions", false))
     }
@@ -208,16 +201,6 @@ fun MainScreen() {
     val latestOpenClawState = rememberUpdatedState(openClawState)
     val latestGlassesState = rememberUpdatedState(glassesState)
     val latestGlassesWakeState = rememberUpdatedState(glassesWakeState)
-
-    fun syncScrollSettingsToGlasses(messagesPerStep: Int = scrollMessagesPerStep) {
-        if (latestGlassesState.value is GlassesConnectionManager.ConnectionState.Connected) {
-            glassesManager.sendRawMessage(
-                ScrollSettingsUpdate(
-                    messagesPerStep = ScrollSettings.normalizeMessagesPerStep(messagesPerStep)
-                ).toJson()
-            )
-        }
-    }
 
     fun sendModelPageToGlasses(requestedOffset: Int, error: String? = null) {
         val page = buildGlassesModelPage(
@@ -320,8 +303,12 @@ fun MainScreen() {
 
     val prepareTtsPlayback = runtime.talkCoordinator::prepareTtsPlayback
     val stopCurrentTtsOutput = runtime.talkCoordinator::stopCurrentTtsOutput
-    val startTalkListening = runtime.talkCoordinator::startListening
-    val scheduleTalkRestart = runtime.talkCoordinator::scheduleRestart
+    fun startTalkListening(source: TalkModeSource, interruptCurrent: Boolean) =
+        runtime.talkCoordinator.startListening(source, interruptCurrent)
+    fun scheduleTalkRestart(
+        delayMs: Long,
+        reason: TalkRestartReason = TalkRestartReason.RESPONSE_COMPLETE,
+    ) = runtime.talkCoordinator.scheduleRestart(delayMs, reason)
 
     // Start the process-scoped runtime exactly once after permissions are available.
     LaunchedEffect(Unit) {
@@ -420,7 +407,6 @@ fun MainScreen() {
                 error = openClawClient.runError.value,
             ).toJson(),
         )
-        syncScrollSettingsToGlasses()
     }
 
     // Wire OpenClaw client callbacks to forward to glasses
@@ -511,7 +497,7 @@ fun MainScreen() {
                     )
                 ) {
                     talkModeManager.resetToIdle()
-                    scheduleTalkRestart(800L)
+                    scheduleTalkRestart(800L, TalkRestartReason.RECOGNITION_ERROR)
                 }
             }
         }
@@ -929,7 +915,6 @@ fun MainScreen() {
                                 error = liveCaptionManager.state.value.error,
                             ).toJson()
                         )
-                        syncScrollSettingsToGlasses()
                     }
                     "tts_toggle" -> {
                         val enabled = json.optBoolean("enabled", false)
@@ -1354,13 +1339,6 @@ fun MainScreen() {
                 savePhotosToGallery = enabled
                 prefs.edit().putBoolean("save_photos_to_gallery", enabled).apply()
             },
-            scrollMessagesPerStep = scrollMessagesPerStep,
-            onScrollMessagesPerStepChange = { requestedStep ->
-                val normalizedStep = ScrollSettings.normalizeMessagesPerStep(requestedStep)
-                scrollMessagesPerStep = normalizedStep
-                prefs.edit().putInt("scroll_messages_per_step", normalizedStep).apply()
-                syncScrollSettingsToGlasses(normalizedStep)
-            },
             onSwitchToHiRokid = { switchToHiRokid() },
             // Software Update
             installState = installState,
@@ -1380,11 +1358,18 @@ fun MainScreen() {
                         TalkModeSource.PHONE
                     }
                     talkModeManager.setEnabled(true, source)
-                    startTalkListening(source, false)
+                    if (talkModeManager.state.value.interactionMode ==
+                        TalkInteractionMode.ALWAYS_LISTENING
+                    ) {
+                        startTalkListening(source, false)
+                    } else {
+                        runtime.talkCoordinator.syncTalkModeStateToGlasses()
+                    }
                 } else {
                     stopTalkMode(disable = true)
                 }
             },
+            onTalkInteractionModeChange = runtime.talkCoordinator::setInteractionMode,
             liveCaptionsEnabled = liveCaptionState.enabled,
             translateCaptions = translateCaptions,
             captionTargetLanguage = captionTargetLanguage,

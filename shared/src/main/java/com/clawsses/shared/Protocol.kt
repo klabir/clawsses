@@ -221,6 +221,7 @@ data class TalkModeStateUpdate(
     @SerializedName("type") val type: String = "talk_mode_state",
     @SerializedName("enabled") val enabled: Boolean,
     @SerializedName("phase") val phase: String,
+    @SerializedName("mode") val mode: String = "always_listening",
     @SerializedName("interruptible") val interruptible: Boolean,
     @SerializedName("error") val error: String? = null
 ) {
@@ -241,16 +242,6 @@ data class ConnectionUpdate(
     companion object {
         fun fromJson(json: String): ConnectionUpdate = gson.fromJson(json, ConnectionUpdate::class.java)
     }
-}
-
-/** Valid range and fallback for one glasses page-navigation gesture. */
-object ScrollSettings {
-    const val MIN_MESSAGES_PER_STEP = 1
-    const val MAX_MESSAGES_PER_STEP = 5
-    const val DEFAULT_MESSAGES_PER_STEP = 1
-
-    fun normalizeMessagesPerStep(value: Int): Int =
-        value.coerceIn(MIN_MESSAGES_PER_STEP, MAX_MESSAGES_PER_STEP)
 }
 
 /** Hard limit imposed by the Rokid CXR custom-command transport. */
@@ -279,17 +270,6 @@ object SessionPaging {
         name.length <= MAX_DISPLAY_NAME_CHARS -> name
         else -> name.take(MAX_DISPLAY_NAME_CHARS - 3) + "..."
     }
-}
-
-/**
- * Phone-controlled page step sent to the glasses HUD. The serialized field
- * keeps its legacy name so a Build 32 phone can update older HUD builds safely.
- */
-data class ScrollSettingsUpdate(
-    @SerializedName("type") val type: String = "scroll_settings",
-    @SerializedName("messagesPerStep") val messagesPerStep: Int = ScrollSettings.DEFAULT_MESSAGES_PER_STEP,
-) {
-    fun toJson(): String = gson.toJson(this)
 }
 
 /**

@@ -38,6 +38,27 @@ val localProperties = Properties().apply {
         load(localPropertiesFile.inputStream())
     }
 }
+val rokidClientSecret = providers.gradleProperty("rokid.clientSecret").orNull?.trim()
+    ?: localProperties.getProperty("rokid.clientSecret", "").trim()
+val rokidAccessKey = providers.gradleProperty("rokid.accessKey").orNull?.trim()
+    ?: localProperties.getProperty("rokid.accessKey", "").trim()
+val hasRokidCredentials = rokidClientSecret.isNotEmpty() || rokidAccessKey.isNotEmpty()
+require(!hasRokidCredentials || (rokidClientSecret.isNotEmpty() && rokidAccessKey.isNotEmpty())) {
+    "Rokid credentials must provide both rokid.clientSecret and rokid.accessKey"
+}
+require(rokidClientSecret.isEmpty() || rokidClientSecret.replace("-", "").length == 32) {
+    "rokid.clientSecret must contain 32 key characters after removing separators"
+}
+
+tasks.register("verifyPublicReleaseHasNoRokidCredentials") {
+    group = "verification"
+    description = "Fails when a public build environment embeds private Rokid credentials."
+    doLast {
+        check(!hasRokidCredentials) {
+            "Public release verification failed: the phone APK would embed private Rokid credentials"
+        }
+    }
+}
 
 android {
     namespace = "com.clawsses.phone"
@@ -55,8 +76,8 @@ android {
         // Rokid credentials for SN verification during Bluetooth connection
         // clientSecret = AES key used to decrypt snEncryptContent (from .lc file)
         // accessKey = rokidAccount identifier
-        buildConfigField("String", "ROKID_CLIENT_SECRET", "\"${localProperties.getProperty("rokid.clientSecret", "")}\"")
-        buildConfigField("String", "ROKID_ACCESS_KEY", "\"${localProperties.getProperty("rokid.accessKey", "")}\"")
+        buildConfigField("String", "ROKID_CLIENT_SECRET", "\"$rokidClientSecret\"")
+        buildConfigField("String", "ROKID_ACCESS_KEY", "\"$rokidAccessKey\"")
     }
 
     buildTypes {

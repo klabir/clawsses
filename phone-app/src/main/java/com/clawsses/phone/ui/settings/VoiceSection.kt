@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
+import com.clawsses.phone.talk.TalkInteractionMode
 import com.clawsses.phone.talk.TalkModeState
 
 @Composable
@@ -60,6 +61,7 @@ fun VoiceSection(
     voiceRecognitionManager: VoiceRecognitionManager? = null,
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
+    onTalkInteractionModeChange: (TalkInteractionMode) -> Unit = {},
     liveCaptionsEnabled: Boolean = false,
     translateCaptions: Boolean = false,
     captionTargetLanguage: String = "English",
@@ -78,7 +80,11 @@ fun VoiceSection(
 
     Column(modifier = modifier.padding(horizontal = 16.dp)) {
         if (talkModeState != null) {
-            TalkModeSettings(talkModeState, onTalkModeChange)
+            TalkModeSettings(
+                state = talkModeState,
+                onEnabledChange = onTalkModeChange,
+                onInteractionModeChange = onTalkInteractionModeChange,
+            )
             Spacer(Modifier.height(12.dp))
         }
 
@@ -199,6 +205,7 @@ private fun LiveCaptionSettings(
 private fun TalkModeSettings(
     state: TalkModeState,
     onEnabledChange: (Boolean) -> Unit,
+    onInteractionModeChange: (TalkInteractionMode) -> Unit,
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -219,9 +226,12 @@ private fun TalkModeSettings(
                 )
                 Spacer(Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Permanent Talk Mode", style = MaterialTheme.typography.bodyLarge)
+                    Text("Talk Mode", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        if (state.enabled) state.phase.name.lowercase().replaceFirstChar(Char::uppercase)
+                        if (state.enabled) {
+                            "${state.interactionMode.displayName()} · " +
+                                state.phase.name.lowercase().replaceFirstChar(Char::uppercase)
+                        }
                         else "Off",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.enabled) Color(0xFF4CAF50)
@@ -230,10 +240,44 @@ private fun TalkModeSettings(
                 }
                 Switch(checked = state.enabled, onCheckedChange = onEnabledChange)
             }
+            Spacer(Modifier.height(12.dp))
+            TalkInteractionMode.entries.forEach { mode ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onInteractionModeChange(mode) }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        if (state.interactionMode == mode) {
+                            Icons.Default.RadioButtonChecked
+                        } else {
+                            Icons.Default.RadioButtonUnchecked
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = if (state.interactionMode == mode) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(mode.displayName(), style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            mode.description(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Recognized speech is sent immediately. After the spoken answer, listening " +
-                    "starts again. Press the glasses AI key to interrupt an answer.",
+                "Recognized speech is sent immediately. Press the glasses AI key to activate " +
+                    "or interrupt a spoken answer.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -243,6 +287,18 @@ private fun TalkModeSettings(
             }
         }
     }
+}
+
+private fun TalkInteractionMode.displayName(): String = when (this) {
+    TalkInteractionMode.FOLLOW_UP -> "Hi Rokid-style follow-up"
+    TalkInteractionMode.ALWAYS_LISTENING -> "Always listening"
+}
+
+private fun TalkInteractionMode.description(): String = when (this) {
+    TalkInteractionMode.FOLLOW_UP ->
+        "Activate with the AI key; listen once more after each spoken answer, then stop on silence."
+    TalkInteractionMode.ALWAYS_LISTENING ->
+        "Continuously restart recognition while the selected device is available."
 }
 
 @Composable

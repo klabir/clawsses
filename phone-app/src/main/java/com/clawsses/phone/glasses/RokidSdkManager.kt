@@ -8,9 +8,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
-import android.net.wifi.WpsInfo
-import android.net.wifi.p2p.WifiP2pConfig
-import android.net.wifi.p2p.WifiP2pManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -23,6 +20,7 @@ import com.rokid.cxr.client.extend.CxrApi
 import com.rokid.cxr.client.extend.callbacks.ApkStatusCallback
 import com.rokid.cxr.client.extend.callbacks.BluetoothStatusCallback
 import com.rokid.cxr.client.extend.callbacks.GlassInfoResultCallback
+import com.rokid.cxr.client.extend.callbacks.GlassVersionCallback
 import com.rokid.cxr.client.extend.callbacks.WifiP2PStatusCallback
 import com.rokid.cxr.client.extend.callbacks.WifiHotStatusCallback
 import com.rokid.cxr.client.extend.callbacks.PhotoResultCallback
@@ -35,6 +33,9 @@ import android.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Manages Rokid CXR-M SDK initialization and lifecycle.
@@ -85,12 +86,11 @@ object RokidSdkManager {
     // Connection state
     private var isBluetoothConnectedState = false
     private var isWifiP2PConnectedState = false
-    private var manualP2pConnectInFlight = false
-    private var wifiP2pManager: WifiP2pManager? = null
-    private var wifiP2pChannel: WifiP2pManager.Channel? = null
     private var hotspotNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private var hotspotConnectedState = false
     private var hotspotIpAddress: String? = null
+    private val _capabilities = MutableStateFlow(GlassesCapabilitySnapshot())
+    val capabilities: StateFlow<GlassesCapabilitySnapshot> = _capabilities.asStateFlow()
 
     // Saved connection info for reconnection
     private var savedSocketUuid: String? = null
@@ -221,7 +221,12 @@ object RokidSdkManager {
                 Log.i(TAG, "SN_CHECK_FAILED - attempting auto-recovery...")
                 val glassesSn = readGlassesSnFromSdk()
                 if (glassesSn != null && glassesSn.isNotEmpty()) {
-                    val clientSecret = BuildConfig.ROKID_CLIENT_SECRET.replace("-", "")
+                    val clientSecret = configuredClientSecret()
+                    if (clientSecret == null) {
+                        snAutoRetryInProgress = false
+                        onBluetoothFailed?.invoke("Rokid credentials are missing or invalid")
+                        return
+                    }
                     val encrypted = generateSnEncryptContent(glassesSn, clientSecret)
                     if (encrypted != null) {
                         Log.i(TAG, "Generated SN verification content (${encrypted.size} bytes)")
@@ -249,21 +254,18 @@ object RokidSdkManager {
     private val wifiP2PCallback = object : WifiP2PStatusCallback {
         override fun onConnected() {
             Log.i(TAG, "=== WiFi P2P onConnected === WiFi P2P link established!")
-            manualP2pConnectInFlight = false
             isWifiP2PConnectedState = true
             onWifiP2PConnected?.invoke()
         }
 
         override fun onDisconnected() {
             Log.i(TAG, "=== WiFi P2P onDisconnected ===")
-            manualP2pConnectInFlight = false
             isWifiP2PConnectedState = false
             onWifiP2PDisconnected?.invoke()
         }
 
         override fun onFailed(errorCode: ValueUtil.CxrWifiErrorCode?) {
             Log.e(TAG, "=== WiFi P2P onFailed === errorCode=$errorCode")
-            manualP2pConnectInFlight = false
             isWifiP2PConnectedState = false
             onWifiP2PFailed?.invoke()
         }
@@ -274,7 +276,7 @@ object RokidSdkManager {
             primaryDeviceType: String?,
         ) {
             Log.i(TAG, "=== WiFi P2P peer available === named=${!deviceName.isNullOrBlank()}")
-            connectToGlassesP2pPeer(deviceAddress)
+            _capabilities.value = _capabilities.value.copy(p2pPeerAdvertised = true)
         }
     }
 
@@ -285,6 +287,7 @@ object RokidSdkManager {
                 Log.e(TAG, "Glasses hotspot response was incomplete")
                 return
             }
+            _capabilities.value = _capabilities.value.copy(hotspotAdvertised = true)
             connectToGlassesHotspot(ssid, password, ip)
         }
     }
@@ -338,99 +341,6 @@ object RokidSdkManager {
         }
         hotspotNetworkCallback = callback
         connectivityManager.requestNetwork(request, callback, HOTSPOT_CONNECT_TIMEOUT_MS)
-    }
-
-    /**
-     * Connect to the discovered glasses while preferring the glasses as group owner.
-     *
-     * CXR-M 1.2.2 hard-codes groupOwnerIntent=15 for its automatic Android P2P
-     * connection. Updated glasses firmware hosts the APK server and must own the
-     * group, so the automatic connection is rejected immediately. Discovery and
-     * connection-state handling remain in the SDK; only the Android connect request
-     * is issued here with groupOwnerIntent=0.
-     */
-    @SuppressLint("MissingPermission")
-    private fun connectToGlassesP2pPeer(deviceAddress: String?, peerLookupAttempt: Int = 0) {
-        if (deviceAddress.isNullOrBlank() || manualP2pConnectInFlight) return
-
-        val context = appContext ?: return
-        mainHandler.postDelayed({
-            if (manualP2pConnectInFlight || isWifiP2PConnected()) return@postDelayed
-
-            val (manager, channel) = ensureManualP2pChannel(context) ?: return@postDelayed
-            manager.requestPeers(channel) { peers ->
-                val peer = peers.deviceList.firstOrNull { it.deviceAddress == deviceAddress }
-                if (peer == null) {
-                    if (peerLookupAttempt < MANUAL_P2P_PEER_LOOKUP_ATTEMPTS - 1) {
-                        connectToGlassesP2pPeer(deviceAddress, peerLookupAttempt + 1)
-                    } else {
-                        Log.e(TAG, "Glasses P2P peer did not enter Android's discovered-peer set")
-                        onWifiP2PFailed?.invoke()
-                    }
-                    return@requestPeers
-                }
-
-                val config = WifiP2pConfig().apply {
-                    this.deviceAddress = peer.deviceAddress
-                    wps = WpsInfo().apply { setup = WpsInfo.PBC }
-                    groupOwnerIntent = 0
-                }
-
-                manualP2pConnectInFlight = true
-                Log.i(TAG, "Connecting to glasses P2P peer with glasses-preferred group ownership")
-                manager.connect(channel, config, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() {
-                        Log.i(TAG, "WiFi P2P connection request accepted")
-                    }
-
-                    override fun onFailure(reason: Int) {
-                        manualP2pConnectInFlight = false
-                        Log.e(TAG, "WiFi P2P connection request failed: reason=$reason")
-                        manager.cancelConnect(channel, null)
-                        onWifiP2PFailed?.invoke()
-                    }
-                })
-            }
-        }, MANUAL_P2P_PEER_LOOKUP_DELAY_MS)
-    }
-
-    private fun ensureManualP2pChannel(
-        context: Context,
-    ): Pair<WifiP2pManager, WifiP2pManager.Channel>? {
-        val manager = wifiP2pManager ?: (
-            context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
-        )?.also { wifiP2pManager = it }
-        if (manager == null) {
-            Log.e(TAG, "WiFi P2P service unavailable")
-            onWifiP2PFailed?.invoke()
-            return null
-        }
-
-        val channel = wifiP2pChannel ?: manager.initialize(
-            context,
-            Looper.getMainLooper(),
-        ) {
-            Log.w(TAG, "WiFi P2P channel disconnected")
-            wifiP2pChannel = null
-            manualP2pConnectInFlight = false
-        }.also { wifiP2pChannel = it }
-        return manager to channel
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun prepareManualP2pDiscovery(): Boolean {
-        val context = appContext ?: return false
-        val (manager, channel) = ensureManualP2pChannel(context) ?: return false
-        manager.discoverPeers(channel, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                Log.i(TAG, "Manual WiFi P2P discovery started")
-            }
-
-            override fun onFailure(reason: Int) {
-                Log.e(TAG, "Manual WiFi P2P discovery failed: reason=$reason")
-            }
-        })
-        return true
     }
 
     private val apkCallback = object : ApkStatusCallback {
@@ -527,7 +437,7 @@ object RokidSdkManager {
             val accessKey = BuildConfig.ROKID_ACCESS_KEY
             if (accessKey.isNotEmpty()) {
                 cxrApi?.updateRokidAccount(accessKey)
-                Log.d(TAG, "Rokid account registered (accessKey length=${accessKey.length})")
+                Log.d(TAG, "Rokid account registered")
             } else {
                 Log.w(TAG, "No ROKID_ACCESS_KEY configured - SN verification may fail")
             }
@@ -631,7 +541,10 @@ object RokidSdkManager {
         }
 
         try {
-            val clientSecret = BuildConfig.ROKID_CLIENT_SECRET.replace("-", "")
+            val clientSecret = configuredClientSecret() ?: run {
+                onBluetoothFailed?.invoke("Rokid credentials are missing or invalid")
+                return
+            }
 
             Log.i(TAG, "=== connectBluetoothInternal ===")
             Log.i(TAG, "  connection identifiers available")
@@ -652,6 +565,7 @@ object RokidSdkManager {
                 context,
                 socketUuid,
                 macAddress,
+                rokidAccount,
                 bluetoothCallback,
                 encryptContent,
                 clientSecret
@@ -701,17 +615,37 @@ object RokidSdkManager {
      * Log firmware compatibility evidence without exposing device identifiers or credentials.
      */
     private fun requestGlassesSoftwareVersions() {
+        _capabilities.value = GlassesCapabilitySnapshot()
         val status = cxrApi?.getGlassInfo(object : GlassInfoResultCallback {
             override fun onGlassInfoResult(status: ValueUtil.CxrStatus?, glassInfo: GlassInfo?) {
-                val systemVersion = glassInfo?.systemVersion?.takeIf(String::isNotBlank) ?: "unknown"
-                val assistVersion = glassInfo?.assistVersionName?.takeIf(String::isNotBlank) ?: "unknown"
+                val systemVersion = glassInfo?.systemVersion?.takeIf(String::isNotBlank)
+                val assistVersion = glassInfo?.assistVersionName?.takeIf(String::isNotBlank)
+                _capabilities.value = _capabilities.value.copy(
+                    systemVersion = systemVersion,
+                    assistantVersion = assistVersion,
+                    glassInfoAvailable = status == ValueUtil.CxrStatus.REQUEST_SUCCEED && glassInfo != null,
+                )
                 Log.i(
                     TAG,
-                    "Glasses software: status=$status, system=$systemVersion, assistant=$assistVersion",
+                    "Glasses software: status=$status, " +
+                        "support=${GlassesCapabilityPolicy.firmwareSupport(_capabilities.value)}",
                 )
             }
         })
         Log.d(TAG, "Glasses software version request: $status")
+        val versionStatus = cxrApi?.checkGlassVersion(object : GlassVersionCallback {
+            override fun onGlassVersion(passed: Boolean, message: String?) {
+                _capabilities.value = _capabilities.value.copy(sdkVersionCheckPassed = passed)
+                Log.i(TAG, "Glasses SDK version check completed: passed=$passed")
+            }
+        })
+        Log.d(TAG, "Glasses SDK version check request: $versionStatus")
+    }
+
+    /** Refresh capability evidence before selecting a firmware-sensitive transport. */
+    fun refreshGlassesCapabilities() {
+        if (!isInitialized || !isBluetoothConnectedState) return
+        requestGlassesSoftwareVersions()
     }
 
     /**
@@ -733,6 +667,15 @@ object RokidSdkManager {
             Log.e(TAG, "Failed to generate snEncryptContent", e)
             null
         }
+    }
+
+    private fun configuredClientSecret(): String? {
+        val normalized = BuildConfig.ROKID_CLIENT_SECRET.replace("-", "")
+        if (normalized.length != 32) {
+            Log.e(TAG, "Rokid client credential is missing or invalid")
+            return null
+        }
+        return normalized
     }
 
 
@@ -906,11 +849,7 @@ object RokidSdkManager {
         }
 
         return try {
-            manualP2pConnectInFlight = false
-            prepareManualP2pDiscovery()
-            // Keep SDK discovery/state callbacks, but issue the Android connect request
-            // ourselves so the glasses can become group owner and host the APK server.
-            val status = cxrApi?.initWifiP2P2(false, wifiP2PCallback)
+            val status = cxrApi?.initWifiP2P2(true, wifiP2PCallback)
             Log.d(TAG, "WiFi P2P initialization status: $status")
             status == ValueUtil.CxrStatus.REQUEST_SUCCEED
         } catch (e: Exception) {
@@ -927,13 +866,6 @@ object RokidSdkManager {
         try {
             val wasConnected = isWifiP2PConnectedState
             cxrApi?.deinitWifiP2P()
-            wifiP2pManager?.let { manager ->
-                wifiP2pChannel?.let { channel ->
-                    manager.cancelConnect(channel, null)
-                    manager.removeGroup(channel, null)
-                }
-            }
-            manualP2pConnectInFlight = false
             isWifiP2PConnectedState = false
             Log.d(TAG, "WiFi P2P deinitialized")
             // SDK doesn't fire wifiP2PCallback.onDisconnected() on programmatic teardown,
@@ -1316,9 +1248,6 @@ object RokidSdkManager {
             cxrApi?.clearCommunicationDevice()
             cxrApi = null
             appContext = null
-            wifiP2pManager = null
-            wifiP2pChannel = null
-            manualP2pConnectInFlight = false
             isInitialized = false
             isBluetoothConnectedState = false
             isWifiP2PConnectedState = false
@@ -1328,7 +1257,5 @@ object RokidSdkManager {
         }
     }
 
-    private const val MANUAL_P2P_PEER_LOOKUP_ATTEMPTS = 10
-    private const val MANUAL_P2P_PEER_LOOKUP_DELAY_MS = 300L
     private const val HOTSPOT_CONNECT_TIMEOUT_MS = 30_000
 }

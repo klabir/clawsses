@@ -2,7 +2,6 @@ package com.clawsses.phone.ui.settings
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -67,8 +66,6 @@ fun GlassesSection(
     onWakeOnStreamChange: (Boolean) -> Unit = {},
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
-    scrollMessagesPerStep: Int = 1,
-    onScrollMessagesPerStepChange: (Int) -> Unit = {},
     onSwitchToHiRokid: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -127,11 +124,6 @@ fun GlassesSection(
 
         if (!debugModeEnabled) {
             Spacer(Modifier.height(12.dp))
-            ScrollStepControl(
-                selectedStep = scrollMessagesPerStep,
-                onStepSelected = onScrollMessagesPerStepChange,
-            )
-            Spacer(Modifier.height(12.dp))
             OutlinedButton(onClick = onSwitchToHiRokid, modifier = Modifier.fillMaxWidth()) {
                 Text("Switch to Hi Rokid")
             }
@@ -141,52 +133,6 @@ fun GlassesSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
             )
-        }
-    }
-}
-
-@Composable
-private fun ScrollStepControl(
-    selectedStep: Int,
-    onStepSelected: (Int) -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Pages per gesture", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "One glasses swipe moves this many fixed HUD pages",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                (1..5).forEach { option ->
-                    if (option == selectedStep) {
-                        Button(
-                            onClick = { onStepSelected(option) },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(vertical = 8.dp),
-                        ) {
-                            Text(option.toString())
-                        }
-                    } else {
-                        OutlinedButton(
-                            onClick = { onStepSelected(option) },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(vertical = 8.dp),
-                        ) {
-                            Text(option.toString())
-                        }
-                    }
-                }
-            }
         }
     }
 }

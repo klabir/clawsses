@@ -91,7 +91,11 @@ rokid.accessKey=your-access-key
 
 These are injected as `BuildConfig` fields at compile time and are required for Bluetooth pairing with the glasses.
 
-> `local.properties` is git-ignored. Because the values are compiled into the phone APK, do not publish or attach APKs built with production Rokid credentials.
+> `local.properties` is git-ignored, but Rokid requires these values inside the Android client.
+> They therefore cannot be treated as confidential after compilation. APKs built with production
+> Rokid credentials are private-device artifacts and must never be published or attached to public
+> releases. Run `./gradlew :phone-app:verifyPublicReleaseHasNoRokidCredentials` in every public
+> release environment. Rotate a credential immediately after suspected APK or Logcat exposure.
 
 ### 3. OpenClaw Gateway Setup
 
@@ -174,16 +178,20 @@ Two speech recognition backends are supported:
 
 Configure your OpenAI API key in Settings > Voice to enable the primary backend.
 
-### Permanent Talk Mode
+### Talk Mode
 
-Enable **Settings → Voice → Permanent Talk Mode** or choose **Talk Mode** in the glasses More menu.
+Enable **Settings → Voice → Talk Mode** or choose **Talk Mode** in the glasses More menu.
 
-1. Clawsses listens for one utterance.
-2. The recognized text is sent immediately without a separate Send action.
-3. The OpenClaw answer streams to the HUD and is spoken if TTS is configured.
-4. Listening restarts automatically after the answer.
+- **Hi Rokid-style follow-up** is the default and is activation-gated. Press the glasses AI key to start; after each
+  spoken answer, Clawsses opens a 12-second follow-up window and ends the conversation
+  on silence, error, standby, or disconnect.
+- **Always listening** preserves the original Permanent Talk behavior. Recognition restarts while the selected
+  source remains available.
 
-Press the glasses **AI key** while an answer is running to stop TTS, cancel the exact active OpenClaw run, and begin the next utterance. Disable the mode with the settings toggle, the More menu, or the voice command **“stop talk mode”** / **“Talk Modus aus”**.
+In both modes recognized text is sent immediately, and the OpenClaw answer streams to
+the HUD and is spoken when TTS is configured.
+
+Press the glasses **AI key** while an answer is running to stop TTS, cancel the exact active OpenClaw run, and begin the next utterance. Disable Talk Mode with the settings toggle, the More menu, or the voice command **“stop talk mode”** / **“Talk Modus aus”**.
 
 ### Temple Touchpad Gestures
 

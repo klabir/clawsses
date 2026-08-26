@@ -11,6 +11,9 @@ import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.talk.TalkModePhase
 import com.clawsses.phone.talk.TalkModeSource
 import com.clawsses.phone.talk.TalkModeTransitions
+import com.clawsses.phone.talk.TalkActivation
+import com.clawsses.phone.talk.TalkInteractionMode
+import com.clawsses.phone.talk.TalkRestartReason
 import com.clawsses.phone.tts.TtsPlaybackManager
 import com.clawsses.phone.tts.TtsPlaybackState
 import com.clawsses.phone.tts.blocksVoiceCapture
@@ -49,6 +52,7 @@ class TalkRuntimeCoordinator(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = AtomicBoolean(false)
     private var restartJob: Job? = null
+    private var followUpTimeoutJob: Job? = null
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -66,12 +70,17 @@ class TalkRuntimeCoordinator(
         observeTalkStateSync()
     }
 
-    fun startListening(source: TalkModeSource, interruptCurrent: Boolean) {
+    fun startListening(
+        source: TalkModeSource,
+        interruptCurrent: Boolean,
+        activation: TalkActivation = TalkActivation.EXPLICIT,
+    ) {
         if (TtsPlaybackManager.isPlaybackActive()) {
             Log.i(TAG, "Ignoring voice start while process-wide TTS is active")
             return
         }
         cancelRestart()
+        cancelFollowUpTimeout()
         val current = talkModeManager.state.value
         if (!current.enabled) return
 
@@ -100,7 +109,8 @@ class TalkRuntimeCoordinator(
         }
 
         voiceRecognitionManager.stopListening()
-        val cycleId = talkModeManager.beginListening(source)
+        val cycleId = talkModeManager.beginListening(source, activation)
+        if (talkModeManager.state.value.phase != TalkModePhase.LISTENING) return
         val mode = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
         if (source == TalkModeSource.GLASSES) {
             RokidSdkManager.setCommunicationDevice()
@@ -109,6 +119,7 @@ class TalkRuntimeCoordinator(
         }
 
         voiceRecognitionManager.onSpeechStopped = {
+            cancelFollowUpTimeout()
             val latest = talkModeManager.state.value
             if (latest.enabled && latest.cycleId == cycleId) {
                 talkModeManager.setPhase(TalkModePhase.TRANSCRIBING, cycleId)
@@ -119,10 +130,39 @@ class TalkRuntimeCoordinator(
         voiceRecognitionManager.startListening(
             languageTag = voiceLanguageManager.getActiveLanguageTag(),
         ) { result -> handleRecognitionResult(source, cycleId, result) }
+        val latest = talkModeManager.state.value
+        if (latest.interactionMode == TalkInteractionMode.FOLLOW_UP &&
+            activation == TalkActivation.AUTOMATIC
+        ) {
+            followUpTimeoutJob = scope.launch {
+                delay(TalkModeManager.FOLLOW_UP_WINDOW_MS)
+                val state = talkModeManager.state.value
+                if (state.enabled && state.cycleId == cycleId &&
+                    state.phase == TalkModePhase.LISTENING
+                ) {
+                    voiceRecognitionManager.cancelListening()
+                    voiceRecognitionManager.onSpeechStopped = null
+                    RokidSdkManager.clearCommunicationDevice()
+                    talkModeManager.endConversation()
+                    sendVoiceState("idle")
+                    syncTalkModeStateToGlasses()
+                }
+            }
+        }
     }
 
-    fun scheduleRestart(delayMs: Long) {
+    fun scheduleRestart(
+        delayMs: Long,
+        reason: TalkRestartReason = TalkRestartReason.RESPONSE_COMPLETE,
+    ) {
         cancelRestart()
+        cancelFollowUpTimeout()
+        val current = talkModeManager.state.value
+        if (!TalkModeTransitions.shouldRestart(current, reason)) {
+            talkModeManager.endConversation()
+            syncTalkModeStateToGlasses()
+            return
+        }
         restartJob = scope.launch {
             delay(delayMs)
             val state = talkModeManager.state.value
@@ -137,12 +177,13 @@ class TalkRuntimeCoordinator(
                 talkModeManager.pauseForStandby()
                 return@launch
             }
-            startListening(state.source, false)
+            startListening(state.source, false, TalkActivation.AUTOMATIC)
         }
     }
 
     fun stopTalkMode(disable: Boolean) {
         cancelRestart()
+        cancelFollowUpTimeout()
         voiceRecognitionManager.stopListening()
         voiceRecognitionManager.onSpeechStopped = null
         ttsPlaybackManager.stop()
@@ -151,6 +192,21 @@ class TalkRuntimeCoordinator(
         if (disable) talkModeManager.setEnabled(false) else talkModeManager.resetToIdle()
         sendVoiceState("idle")
         syncTalkModeStateToGlasses()
+    }
+
+    fun setInteractionMode(mode: TalkInteractionMode) {
+        cancelRestart()
+        cancelFollowUpTimeout()
+        voiceRecognitionManager.cancelListening()
+        voiceRecognitionManager.onSpeechStopped = null
+        RokidSdkManager.clearCommunicationDevice()
+        talkModeManager.setInteractionMode(mode)
+        if (talkModeManager.state.value.enabled && mode == TalkInteractionMode.ALWAYS_LISTENING) {
+            scheduleRestart(0L, TalkRestartReason.CONNECTION_READY)
+        } else {
+            sendVoiceState("idle")
+            syncTalkModeStateToGlasses()
+        }
     }
 
     fun prepareTtsPlayback() {
@@ -184,6 +240,7 @@ class TalkRuntimeCoordinator(
                 TalkModeStateUpdate(
                     enabled = state.enabled,
                     phase = state.phase.name.lowercase(),
+                    mode = state.interactionMode.name.lowercase(),
                     interruptible = state.interruptible,
                     error = state.error,
                 ).toJson(),
@@ -193,6 +250,7 @@ class TalkRuntimeCoordinator(
 
     fun cleanup() {
         cancelRestart()
+        cancelFollowUpTimeout()
         scope.cancel()
     }
 
@@ -201,6 +259,7 @@ class TalkRuntimeCoordinator(
         cycleId: Long,
         result: VoiceCommandHandler.VoiceResult,
     ) {
+        cancelFollowUpTimeout()
         val latest = talkModeManager.state.value
         if (!latest.enabled || latest.cycleId != cycleId) return
         if (source == TalkModeSource.GLASSES) RokidSdkManager.clearCommunicationDevice()
@@ -213,7 +272,7 @@ class TalkRuntimeCoordinator(
                     sendVoiceState("error")
                 }
                 talkModeManager.setPhase(TalkModePhase.ERROR, cycleId, result.message)
-                scheduleRestart(1_500L)
+                scheduleRestart(1_500L, TalkRestartReason.RECOGNITION_ERROR)
             }
         }
         syncTalkModeStateToGlasses()
@@ -227,7 +286,7 @@ class TalkRuntimeCoordinator(
                 sendVoiceState("idle")
             }
             talkModeManager.resetToIdle()
-            scheduleRestart(800L)
+            scheduleRestart(800L, TalkRestartReason.EMPTY_RESULT)
             return
         }
         if (source == TalkModeSource.GLASSES) {
@@ -262,7 +321,7 @@ class TalkRuntimeCoordinator(
             if (!stateBeforeSend.enabled || stateBeforeSend.cycleId != cycleId) return@launch
             if (!ready) {
                 talkModeManager.setPhase(TalkModePhase.ERROR, cycleId, "Previous run did not stop")
-                scheduleRestart(1_500L)
+                scheduleRestart(1_500L, TalkRestartReason.RECOGNITION_ERROR)
                 return@launch
             }
             val images = pendingPhotos.value.ifEmpty { null }
@@ -282,7 +341,7 @@ class TalkRuntimeCoordinator(
                 stopCurrentTtsOutput()
                 sendAutoCommand(TtsVoiceCommands.STOP_CURRENT_OUTPUT)
                 talkModeManager.resetToIdle()
-                scheduleRestart(600L)
+                scheduleRestart(600L, TalkRestartReason.COMMAND_COMPLETE)
             }
             command in setOf("stop talk mode", "talk mode off", "talk modus stoppen", "talk modus aus") -> {
                 stopTalkMode(disable = true)
@@ -290,7 +349,7 @@ class TalkRuntimeCoordinator(
             else -> {
                 sendAutoCommand(rawCommand)
                 talkModeManager.resetToIdle()
-                scheduleRestart(600L)
+                scheduleRestart(600L, TalkRestartReason.COMMAND_COMPLETE)
             }
         }
     }
@@ -309,6 +368,7 @@ class TalkRuntimeCoordinator(
 
     private fun configurePartialResults() {
         val forward: (String) -> Unit = { partialText ->
+            if (partialText.isNotBlank()) cancelFollowUpTimeout()
             RokidSdkManager.sendAsrContent(partialText)
             sendVoiceState("recognizing", text = partialText)
         }
@@ -350,7 +410,15 @@ class TalkRuntimeCoordinator(
                         val latest = talkModeManager.state.value
                         if (latest.phase == TalkModePhase.STANDBY &&
                             glassesManager.wakeSignalManager.wakeState.value is WakeSignalManager.WakeState.Awake
-                        ) startListening(TalkModeSource.GLASSES, false)
+                        ) startListening(
+                            TalkModeSource.GLASSES,
+                            false,
+                            TalkActivation.AUTOMATIC,
+                        )
+                    }
+                    awake && state.phase == TalkModePhase.STANDBY &&
+                        state.interactionMode == TalkInteractionMode.FOLLOW_UP -> {
+                        talkModeManager.markReady()
                     }
                 }
             }
@@ -369,7 +437,13 @@ class TalkRuntimeCoordinator(
                         glasses is GlassesConnectionManager.ConnectionState.Connected
                     if (talk.enabled && talk.phase == TalkModePhase.DISCONNECTED &&
                         gateway is OpenClawClient.ConnectionState.Connected && sourceReady
-                    ) startListening(talk.source, false)
+                    ) {
+                        if (talk.interactionMode == TalkInteractionMode.ALWAYS_LISTENING) {
+                            startListening(talk.source, false, TalkActivation.AUTOMATIC)
+                        } else {
+                            talkModeManager.markReady()
+                        }
+                    }
                 }
         }
     }
@@ -386,11 +460,11 @@ class TalkRuntimeCoordinator(
                     }
                     TtsPlaybackState.IDLE -> if (talk.phase == TalkModePhase.SPEAKING) {
                         talkModeManager.resetToIdle()
-                        scheduleRestart(450L)
+                        scheduleRestart(450L, TalkRestartReason.RESPONSE_COMPLETE)
                     }
                     TtsPlaybackState.ERROR -> if (talk.phase == TalkModePhase.SPEAKING) {
                         talkModeManager.setPhase(TalkModePhase.ERROR, error = "Voice playback failed")
-                        scheduleRestart(1_500L)
+                        scheduleRestart(1_500L, TalkRestartReason.RECOGNITION_ERROR)
                     }
                 }
             }
@@ -416,7 +490,7 @@ class TalkRuntimeCoordinator(
                         }
                         OpenClawClient.RunState.ERROR -> if (talk.phase == TalkModePhase.WAITING) {
                             talkModeManager.setPhase(TalkModePhase.ERROR, error = error)
-                            scheduleRestart(1_500L)
+                            scheduleRestart(1_500L, TalkRestartReason.RECOGNITION_ERROR)
                         }
                         else -> Unit
                     }
@@ -484,6 +558,11 @@ class TalkRuntimeCoordinator(
     private fun cancelRestart() {
         restartJob?.cancel()
         restartJob = null
+    }
+
+    private fun cancelFollowUpTimeout() {
+        followUpTimeoutJob?.cancel()
+        followUpTimeoutJob = null
     }
 
     companion object {
