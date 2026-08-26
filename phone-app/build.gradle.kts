@@ -129,7 +129,7 @@ dependencies {
     implementation(project(":shared"))
 
     // Rokid CXR-M SDK (Phone side)
-    implementation("com.rokid.cxr:client-m:1.0.9")
+    implementation("com.rokid.cxr:client-m:1.2.2")
 
     // Android Core
     implementation("androidx.core:core-ktx:1.12.0")

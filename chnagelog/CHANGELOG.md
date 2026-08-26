@@ -2,6 +2,65 @@
 
 ## [Unreleased]
 
+## 1.3.45 (build 54)
+
+### Fixed
+
+- Route streamed glasses TTS over Rokid's stable SCO speech channel instead of relying on an accepted but inaudible A2DP route, while retaining fast PCM startup and Permanent Talk capture recovery.
+- Reopen the Clawsses HUD after a Clawsses-initiated Rokid AI-scene exit even when the firmware omits the launcher foreground callback.
+
+## 1.3.43 (build 52)
+
+### Fixed
+
+- Invalidate the active recognition cycle when TTS begins so a late or echoed voice callback cannot immediately stop the newly routed glasses playback.
+
+## 1.3.42 (build 51)
+
+### Fixed
+
+- Proactively request the glasses SCO route and wait up to 500 ms for Android to expose it before creating a Permanent-Talk-Mode TTS track, covering reconnects that resume directly in a waiting state.
+
+## 1.3.41 (build 50)
+
+### Fixed
+
+- Preserve and explicitly target the glasses SCO route for TTS while Permanent Talk Mode is using the glasses microphone, avoiding the phone-speaker fallback while A2DP reconnects.
+
+## 1.3.40 (build 49)
+
+### Fixed
+
+- Pin streamed PCM speech to the detected Rokid A2DP output instead of following Android's global media target, while retaining SCO only as a fallback when A2DP is unavailable.
+
+## 1.3.39 (build 48)
+
+### Changed
+
+- Enable Permanent Talk Mode by default on fresh installs while preserving an existing explicit user choice.
+
+### Fixed
+
+- Prebuffer the first half-second before starting `AudioTrack` and preserve 16-bit PCM frame alignment across arbitrary HTTP response chunks, preventing zero-byte writes and immediate playback aborts on the Pixel/Rokid route.
+
+## 1.3.38 (build 47)
+
+### Fixed
+
+- Restart and prefer the official glasses-hotspot transport before attempting Wi-Fi Direct so current firmware does not incur two guaranteed P2P timeouts and stale hotspot state is cleared before each installation.
+- Fall back to the official Rokid glasses-hotspot transport when Android Wi-Fi Direct cannot discover the firmware's vendor-reported peer; connect ephemerally without logging or persisting hotspot credentials and upload through the SDK's IP-address overload.
+- Prefer the updated Rokid glasses as Wi-Fi Direct group owner during APK transfer so their local upload server remains reachable with the August 2026 firmware; retain CXR-M discovery and connection-state callbacks.
+
+## 1.3.33 (build 42)
+
+- Restore the hardware-verified Rokid CXR-M 1.0.9 release after confirming that no glasses firmware update had occurred and rejecting the local 1.2.2 compatibility trial, which regressed Wi-Fi Direct group formation.
+- Log only the non-sensitive glasses system and assistant versions after a successful CXR connection so future firmware compatibility decisions use direct evidence.
+- Build 41 was an internal compatibility test and was not published.
+
+## 1.3.31 (build 40)
+
+- Stream OpenAI TTS as 24 kHz PCM directly into Android `AudioTrack` so playback can begin with the first audio bytes instead of waiting for a complete MP3 download; prefetch later chunks through a bounded queue while the first chunk plays.
+
 ## 1.3.30 (build 39)
 
 - Start TTS with a sentence-aware 400-character maximum first chunk, retain 1,500-character follow-up chunks, and log privacy-safe synthesis/playback latency metrics.
@@ -134,11 +193,7 @@
 - Use compact history fields and UTF-8 byte limits so Rokid CXR commands remain valid.
 - Keep complete history on the phone and disable glasses-side automatic history expansion for this stable branch.
 
-## [Unreleased]
-
-### Breaking Changes
-
-- None.
+## Historical feature set
 
 ### Added
 

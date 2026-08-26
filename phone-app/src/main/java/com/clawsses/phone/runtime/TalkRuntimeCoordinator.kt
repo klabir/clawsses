@@ -156,7 +156,17 @@ class TalkRuntimeCoordinator(
     fun prepareTtsPlayback() {
         cancelRestart()
         voiceRecognitionManager.stopListening()
-        RokidSdkManager.clearCommunicationDevice()
+        talkModeManager.beginSpeaking()
+        val requireGlassesOutput = shouldRequireGlassesMediaOutput(
+            glassesManager.connectionState.value is GlassesConnectionManager.ConnectionState.Connected,
+        )
+        ttsPlaybackManager.prepareOutput(requireBluetoothOutput = requireGlassesOutput)
+        if (requireGlassesOutput) {
+            RokidSdkManager.setCommunicationDevice()
+            Log.i(TAG, "Keeping Rokid SCO communication route for TTS output")
+        } else {
+            RokidSdkManager.clearCommunicationDevice()
+        }
     }
 
     fun stopCurrentTtsOutput() {
@@ -481,3 +491,5 @@ class TalkRuntimeCoordinator(
         private const val PREFS_NAME = "clawsses"
     }
 }
+
+internal fun shouldRequireGlassesMediaOutput(glassesConnected: Boolean): Boolean = glassesConnected

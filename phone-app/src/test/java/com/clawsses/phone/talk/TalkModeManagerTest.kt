@@ -7,6 +7,11 @@ import org.junit.Test
 
 class TalkModeManagerTest {
     @Test
+    fun permanentTalkModeDefaultsToEnabled() {
+        assertTrue(TalkModeManager.DEFAULT_ENABLED)
+    }
+
+    @Test
     fun enablingAndListeningCreatesNewCycle() {
         val enabled = TalkModeTransitions.setEnabled(
             TalkModeState(),
@@ -35,6 +40,21 @@ class TalkModeManagerTest {
         )
 
         assertEquals(second, stale)
+    }
+
+    @Test
+    fun speakingInvalidatesTheListeningCycleOnce() {
+        val listening = TalkModeTransitions.beginListening(
+            TalkModeTransitions.setEnabled(TalkModeState(), true, TalkModeSource.GLASSES),
+            TalkModeSource.GLASSES,
+        )
+
+        val speaking = TalkModeTransitions.beginSpeaking(listening)
+        val repeated = TalkModeTransitions.beginSpeaking(speaking)
+
+        assertEquals(TalkModePhase.SPEAKING, speaking.phase)
+        assertEquals(listening.cycleId + 1L, speaking.cycleId)
+        assertEquals(speaking, repeated)
     }
 
     @Test

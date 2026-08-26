@@ -16,6 +16,11 @@ internal class HudForegroundRecovery(
         armedUntilMs = nowMs + recoveryWindowMs
     }
 
+    fun scheduleForAiExit(nowMs: Long) {
+        armForAiExit(nowMs)
+        recoveryScheduled = true
+    }
+
     fun onForegroundChanged(
         packageName: String?,
         connected: Boolean,

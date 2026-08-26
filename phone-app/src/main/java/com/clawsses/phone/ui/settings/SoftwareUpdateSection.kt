@@ -54,6 +54,9 @@ fun SoftwareUpdateSection(
             is ApkInstaller.InstallState.InitializingWifiP2P ->
                 ProgressContent("Establishing WiFi P2P...", -1, null, onCancel = null)
 
+            is ApkInstaller.InstallState.InitializingWifiHotspot ->
+                ProgressContent("Connecting to glasses hotspot...", -1, null, onCancel = null)
+
             is ApkInstaller.InstallState.PreparingApk ->
                 ProgressContent("Preparing APK...", -1, null, onCancel = null)
 

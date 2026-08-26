@@ -57,6 +57,13 @@ internal object TalkModeTransitions {
             error = null,
         )
 
+    fun beginSpeaking(state: TalkModeState): TalkModeState =
+        if (!state.enabled || state.phase == TalkModePhase.SPEAKING) state else state.copy(
+            phase = TalkModePhase.SPEAKING,
+            cycleId = state.cycleId + 1,
+            error = null,
+        )
+
     fun setPhase(
         state: TalkModeState,
         phase: TalkModePhase,
@@ -99,7 +106,7 @@ class TalkModeManager(context: Context) {
     private val savedSource = runCatching {
         TalkModeSource.valueOf(prefs.getString(KEY_SOURCE, TalkModeSource.GLASSES.name)!!)
     }.getOrDefault(TalkModeSource.GLASSES)
-    private val savedEnabled = prefs.getBoolean(KEY_ENABLED, false)
+    private val savedEnabled = prefs.getBoolean(KEY_ENABLED, DEFAULT_ENABLED)
 
     private val _state = MutableStateFlow(
         TalkModeState(
@@ -127,6 +134,10 @@ class TalkModeManager(context: Context) {
         return _state.value.cycleId
     }
 
+    fun beginSpeaking() {
+        _state.value = TalkModeTransitions.beginSpeaking(_state.value)
+    }
+
     fun setPhase(phase: TalkModePhase, cycleId: Long? = null, error: String? = null) {
         _state.value = TalkModeTransitions.setPhase(_state.value, phase, cycleId, error)
     }
@@ -138,6 +149,7 @@ class TalkModeManager(context: Context) {
     }
 
     companion object {
+        internal const val DEFAULT_ENABLED = true
         private const val PREFS_NAME = "clawsses"
         private const val KEY_ENABLED = "talk_mode_enabled"
         private const val KEY_SOURCE = "talk_mode_source"

@@ -49,6 +49,7 @@ class ApkInstaller(private val context: Context) {
         object Idle : InstallState()
         object CheckingConnection : InstallState()
         object InitializingWifiP2P : InstallState()
+        object InitializingWifiHotspot : InstallState()
         object PreparingApk : InstallState()
         data class Uploading(val message: String = "Uploading APK...", val progress: Int = -1) : InstallState()
         data class Installing(val message: String = "Installing...") : InstallState()
@@ -220,6 +221,7 @@ class ApkInstaller(private val context: Context) {
                 Log.e(TAG, "SDK installation failed", e)
                 _installState.value = InstallState.Error(formatError(e))
             } finally {
+                RokidSdkManager.deinitWifiHotspot()
                 cleanupTempApk()
             }
         }
@@ -272,9 +274,29 @@ class ApkInstaller(private val context: Context) {
             }
         }
 
-        // Step 4: Initialize WiFi P2P if not connected. Rokid's WiFi controller is
-        // Handler/Looper based, so lifecycle calls must run on the main thread.
-        if (!RokidSdkManager.isWifiP2PConnected()) {
+        // Step 4: Prefer the official glasses-hotspot transport. Android's public
+        // Wi-Fi Direct discovery does not expose the peer reported by current
+        // firmware, while the CXR hotspot path is explicit and IP-addressed.
+        var uploadIp: String? = null
+        _installState.value = InstallState.InitializingWifiHotspot
+        withContext(Dispatchers.Main) { RokidSdkManager.deinitWifiHotspot() }
+        delay(1_500)
+        val hotspotStarted = withContext(Dispatchers.Main) {
+            RokidSdkManager.initWifiHotspot()
+        }
+        if (hotspotStarted) {
+            var hotspotWaitTime = 0
+            while (!RokidSdkManager.isWifiHotspotConnected() && hotspotWaitTime < 40_000) {
+                delay(500)
+                hotspotWaitTime += 500
+            }
+            uploadIp = RokidSdkManager.getWifiHotspotIp()
+        }
+
+        // Fall back to Wi-Fi Direct for older firmware or devices where the
+        // hotspot transport is unavailable. Rokid's controller is Handler/Looper
+        // based, so lifecycle calls must run on the main thread.
+        if (uploadIp == null && !RokidSdkManager.isWifiP2PConnected()) {
             _installState.value = InstallState.InitializingWifiP2P
             var connected = false
             for (attempt in 1..2) {
@@ -305,20 +327,22 @@ class ApkInstaller(private val context: Context) {
 
             if (!connected) {
                 throw Exception(
-                    "WiFi P2P connection timed out.\n\n" +
-                    "Keep the glasses unfolded and awake, enable WiFi on both devices, " +
-                    "then put the glasses back into pairing mode by triple-pressing the " +
-                    "function button until the blue LED blinks."
+                    "Neither the glasses hotspot nor WiFi P2P could be established.\n\n" +
+                    "Keep the glasses unfolded, awake, and in pairing mode, then try again."
                 )
             }
         }
 
         // Step 4: Start APK upload
         Log.d(TAG, "Starting APK upload via SDK...")
-        _installState.value = InstallState.Uploading("Uploading ${apkFile.length() / 1024} KB via WiFi P2P...")
+        val transportName = if (uploadIp == null) "WiFi P2P" else "glasses hotspot"
+        _installState.value = InstallState.Uploading(
+            "Uploading ${apkFile.length() / 1024} KB via $transportName..."
+        )
 
         val started = withContext(Dispatchers.Main) {
-            RokidSdkManager.startUploadApk(apkFile.absolutePath)
+            uploadIp?.let { RokidSdkManager.startUploadApk(apkFile.absolutePath, it) }
+                ?: RokidSdkManager.startUploadApk(apkFile.absolutePath)
         }
         if (!started) {
             throw Exception("Failed to start APK upload. Check SDK connection.")

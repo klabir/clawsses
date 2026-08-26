@@ -34,6 +34,14 @@ class HudForegroundRecoveryTest {
     }
 
     @Test
+    fun `deliberate exit can schedule fallback without launcher callback`() {
+        recovery.scheduleForAiExit(10_000L)
+
+        assertTrue(recovery.consumeScheduledRecovery(true, 11_000L))
+        assertFalse(recovery.consumeScheduledRecovery(true, 11_001L))
+    }
+
+    @Test
     fun `duplicate exit signal does not cancel an already scheduled recovery`() {
         recovery.armForAiExit(10_000L)
         assertEquals(SCHEDULE_RECOVERY, recovery.onForegroundChanged(launcher, true, 10_100L))
