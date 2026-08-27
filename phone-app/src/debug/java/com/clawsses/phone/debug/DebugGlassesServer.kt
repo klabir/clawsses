@@ -17,11 +17,12 @@ import java.util.Base64
  *
  * This enables testing phone↔glasses communication on emulators.
  */
-class DebugGlassesServer(private val port: Int = 8081) {
+internal class DebugGlassesServer(
+    private val port: Int = DebugGlassesTransport.DEFAULT_PORT,
+) : DebugGlassesTransport {
 
     companion object {
         private const val TAG = "DebugGlassesServer"
-        const val DEFAULT_PORT = 8081
     }
 
     private var serverSocket: ServerSocket? = null
@@ -36,13 +37,13 @@ class DebugGlassesServer(private val port: Int = 8081) {
     val isClientConnected: StateFlow<Boolean> = _isClientConnected
 
     // Callback for messages from glasses
-    var onMessageFromGlasses: ((String) -> Unit)? = null
+    override var onMessageFromGlasses: ((String) -> Unit)? = null
 
     // Callback for connection state changes
-    var onGlassesConnected: (() -> Unit)? = null
-    var onGlassesDisconnected: (() -> Unit)? = null
+    override var onGlassesConnected: (() -> Unit)? = null
+    override var onGlassesDisconnected: (() -> Unit)? = null
 
-    fun start() {
+    override fun start() {
         if (_isRunning.value) {
             Log.d(TAG, "Server already running")
             return
@@ -218,7 +219,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
         }
     }
 
-    fun sendToGlasses(message: String): Boolean {
+    override fun sendToGlasses(message: String): Boolean {
         val currentSocket = clientSocket ?: return false
 
         // Run on IO thread with mutex to prevent concurrent frame writes
@@ -279,7 +280,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
         return frame
     }
 
-    fun stop() {
+    override fun stop() {
         _isRunning.value = false
         scope?.cancel()
         scope = null
@@ -297,4 +298,7 @@ class DebugGlassesServer(private val port: Int = 8081) {
 
         Log.i(TAG, "Debug glasses server stopped")
     }
+}
+internal object DebugGlassesTransportProvider {
+    fun create(): DebugGlassesTransport? = DebugGlassesServer()
 }

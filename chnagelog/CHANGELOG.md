@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Isolate the unauthenticated emulator WebSocket server in the phone debug source set; release builds now contain only a no-op provider and cannot package the raw listener implementation.
 - Move OpenClaw, glasses protocol, AI activation, HUD state synchronization, notification relay, photo capture, and staged voice callbacks out of Compose into one process-scoped bridge controller.
 - Route both primary and final phone-microphone voice recognition through one generation-gated staged-voice coordinator so cancelled callbacks cannot affect a newer capture.
 - Reuse the external PCM peak calculation for both privacy-safe diagnostics and local speech detection instead of scanning every glasses audio frame twice.
@@ -11,6 +12,7 @@
 
 ### Added
 
+- Add a distinct source-verified `1.3.56 / Build 65` paired artifact for deferred phone/glasses hardware validation.
 - Add a distinct source-verified `1.3.55 / Build 64` paired artifact for deferred phone/glasses hardware validation.
 
 ### Fixed

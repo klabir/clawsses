@@ -8,7 +8,8 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import com.clawsses.phone.BuildConfig
-import com.clawsses.phone.debug.DebugGlassesServer
+import com.clawsses.phone.debug.DebugGlassesTransport
+import com.clawsses.phone.debug.DebugGlassesTransportProvider
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -83,7 +84,7 @@ class GlassesConnectionManager(private val context: Context) {
     private var bleScanner: BluetoothLeScanner? = null
 
     // Debug mode WebSocket server for emulator testing
-    private var debugServer: DebugGlassesServer? = null
+    private var debugServer: DebugGlassesTransport? = null
     private var _debugModeEnabled = MutableStateFlow(false)
     val debugModeEnabled: StateFlow<Boolean> = _debugModeEnabled.asStateFlow()
 
@@ -637,10 +638,16 @@ class GlassesConnectionManager(private val context: Context) {
             return
         }
 
-        Log.i(TAG, "Enabling debug mode - starting WebSocket server on port ${DebugGlassesServer.DEFAULT_PORT}")
+        val server = DebugGlassesTransportProvider.create()
+        if (server == null) {
+            Log.w(TAG, "Debug transport implementation is unavailable in this build")
+            return
+        }
+
+        Log.i(TAG, "Enabling debug mode - starting WebSocket server on port ${DebugGlassesTransport.DEFAULT_PORT}")
         _debugModeEnabled.value = true
 
-        debugServer = DebugGlassesServer().apply {
+        debugServer = server.apply {
             onGlassesConnected = {
                 _connectionState.value = ConnectionState.Connected("Debug Glasses (WebSocket)")
                 outboundTransport.setConnected(true)
