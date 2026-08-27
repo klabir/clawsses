@@ -18,10 +18,12 @@ import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material.icons.filled.WifiTetheringOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -67,6 +69,7 @@ fun GlassesSection(
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
     onSwitchToHiRokid: () -> Unit = {},
+    onRestartGlasses: () -> Boolean = { false },
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -112,6 +115,7 @@ fun GlassesSection(
                         onDisconnect = onDisconnectGlasses,
                         onInitWifiP2P = onInitWifiP2P,
                         onClearSn = onClearSn,
+                        onRestartGlasses = onRestartGlasses,
                     )
 
                 is GlassesConnectionManager.ConnectionState.Error ->
@@ -315,8 +319,11 @@ private fun ConnectedContent(
     onDisconnect: () -> Unit,
     onInitWifiP2P: () -> Unit,
     onClearSn: () -> Unit,
+    onRestartGlasses: () -> Boolean,
 ) {
     var showClearConfirmation by remember { mutableStateOf(false) }
+    var showRestartConfirmation by remember { mutableStateOf(false) }
+    var restartResult by remember { mutableStateOf<String?>(null) }
 
     StatusRow(
         color = Color(0xFF4CAF50),
@@ -488,6 +495,52 @@ private fun ConnectedContent(
     }
 
     Spacer(Modifier.height(16.dp))
+
+    OutlinedButton(
+        onClick = { showRestartConfirmation = true },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Restart glasses")
+    }
+    restartResult?.let { result ->
+        Text(
+            result,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+
+    if (showRestartConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRestartConfirmation = false },
+            title = { Text("Restart glasses?") },
+            text = { Text("The display and connection will be unavailable while the glasses reboot.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRestartConfirmation = false
+                        restartResult = if (onRestartGlasses()) {
+                            "Restart command sent. Reconnecting automatically…"
+                        } else {
+                            "Restart command failed. Check the glasses connection."
+                        }
+                    },
+                ) {
+                    Text("Restart")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestartConfirmation = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    Spacer(Modifier.height(12.dp))
 
     OutlinedButton(
         onClick = onDisconnect,

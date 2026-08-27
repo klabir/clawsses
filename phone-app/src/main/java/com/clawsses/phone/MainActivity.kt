@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.clawsses.phone.ui.theme.ClawssesTheme
 import com.clawsses.phone.ui.screens.MainScreen
+import com.clawsses.phone.service.GlassesConnectionService
 import com.clawsses.shared.TechnicalJankMonitor
 
 class MainActivity : ComponentActivity() {
@@ -85,6 +86,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun initializeApp() {
+        (application as ClawssesApp).runtime.start()
+        if (com.clawsses.phone.glasses.RokidSdkManager.hasSavedConnectionInfo()) {
+            GlassesConnectionService.start(this)
+        }
         setContent {
             ClawssesTheme {
                 Surface(

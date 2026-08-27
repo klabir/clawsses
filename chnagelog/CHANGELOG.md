@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### Changed
+
+### Added
+
+### Fixed
+
+
+## 1.3.54 (build 63)
+
+### Fixed
+
+- Scope every glasses-hotspot callback and Android network request to one installer attempt, ignore stale or duplicate firmware advertisements, verify the Rokid upload service on port 8848 through the selected local network, and start the SDK upload immediately after the verified handoff.
+- Stop an active Rokid upload before cancellation cleanup, await installation callbacks without cross-thread polling, and keep the complete hotspot, fallback, and installation timeout budget below the outer operation limit.
+
+
+## 1.3.53 (build 62)
+
+### Added
+
+- Add a confirmed `Restart glasses` control to the phone's Glasses settings that stops transient audio work, preserves Talk Mode configuration, and sends the official CXR-M firmware reboot command.
+
+
+## 1.3.52 (build 61)
+
+### Changed
+
+- Own the glasses CXR bridge in the application process instead of recreating it with the HUD Activity, and start the phone runtime from permission/service lifecycle boundaries instead of Compose.
+- Isolate session, agent, and model catalog flows from the phone root composition and collect settings-only flows only while Settings is visible.
+- Keep the active glasses response in a 100 ms streaming state instead of copying and searching the complete HUD history for every text chunk.
+- Replace the service-wide unlimited partial wake lock with bounded leases for recognition, reconnect, and APK transfer work.
+
+### Added
+
+- Add lossless 500-chunk HUD streaming coverage, deterministic wake-lock lease tests, and a process-mailbox recreation test.
+- Accept the current Rokid firmware's explicit long-press assistant broadcast in the HUD while retaining the AI-start broadcast for wakeword compatibility.
+- Show a prominent listening/processing banner on the HUD and log privacy-safe external PCM byte/peak telemetry for hardware diagnosis.
+
+### Fixed
+
+- Preserve the glasses CXR bridge and queued phone messages across HUD Activity recreation, remove the forced process kill on HUD exit, and prevent release builds from starting the unauthenticated debug transport.
+- Stream glasses microphone audio directly through CXR-M when the firmware does not retain Android HFP/SCO, and recover activation from scene-status or exit callbacks when the legacy AI-key callback is omitted.
+
 ## 1.3.48 (build 57)
 
 ### Added

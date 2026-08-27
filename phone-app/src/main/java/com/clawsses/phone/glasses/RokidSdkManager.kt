@@ -26,16 +26,30 @@ import com.rokid.cxr.client.extend.callbacks.WifiHotStatusCallback
 import com.rokid.cxr.client.extend.callbacks.PhotoResultCallback
 import com.rokid.cxr.client.extend.infos.RKAppInfo
 import com.rokid.cxr.client.extend.infos.GlassInfo
+import com.rokid.cxr.client.extend.infos.SceneStatusInfo
 import com.rokid.cxr.client.extend.listeners.BrightnessUpdateListener
 import com.rokid.cxr.client.extend.listeners.CustomCmdListener
+import com.rokid.cxr.client.extend.listeners.AudioStreamListener
+import com.rokid.cxr.client.extend.listeners.SceneStatusUpdateListener
 import com.rokid.cxr.client.utils.ValueUtil
 import android.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.net.InetSocketAddress
 
 /**
  * Manages Rokid CXR-M SDK initialization and lifecycle.
@@ -61,6 +75,22 @@ object RokidSdkManager {
     private const val ROKID_LAUNCHER_PACKAGE = "com.rokid.os.sprite.launcher"
     private const val HUD_RECOVERY_DELAY_MS = 250L
     private const val HUD_RECOVERY_FALLBACK_DELAY_MS = 1_000L
+    private const val CLASSIC_BLUETOOTH_ACTIVATION_DELAY_MS = 350L
+    // Added in API 35, while the project deliberately still compiles against API 34.
+    // Android 15+ classifies the glasses hotspot as a local network; omitting this
+    // capability registers the request as `Forbidden: LOCAL_NETWORK` on newer Pixels.
+    private const val NET_CAPABILITY_LOCAL_NETWORK_COMPAT = 36
+    private const val APK_UPLOAD_PORT = 8848
+    private const val HOTSPOT_PROBE_ATTEMPTS = 6
+    private const val HOTSPOT_PROBE_CONNECT_TIMEOUT_MS = 500
+    private const val HOTSPOT_PROBE_RETRY_DELAY_MS = 250L
+    private const val DIRECT_AUDIO_CODEC_PCM = 1
+    // CXR-M 1.2.x added an audio record "mode" parameter. This is not a
+    // sample rate: both 24_000 and legacy/default mode 0 are accepted at the
+    // request layer but never start a stream on Sprite firmware 1.24. Mode 1
+    // is therefore evaluated as the remaining hardware A/B candidate.
+    private const val DIRECT_AUDIO_RECORD_MODE = 1
+    private const val DIRECT_AUDIO_STREAM_TYPE = "AI_assistant"
 
     private var isInitialized = false
     private var cxrApi: CxrApi? = null
@@ -87,10 +117,24 @@ object RokidSdkManager {
     private var isBluetoothConnectedState = false
     private var isWifiP2PConnectedState = false
     private var hotspotNetworkCallback: ConnectivityManager.NetworkCallback? = null
-    private var hotspotConnectedState = false
-    private var hotspotIpAddress: String? = null
+    private val hotspotAttemptGate = HotspotAttemptGate()
+    private val hotspotAttemptLock = Any()
+    private val hotspotScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var activeHotspotAttempt: ActiveHotspotAttempt? = null
     private val _capabilities = MutableStateFlow(GlassesCapabilitySnapshot())
     val capabilities: StateFlow<GlassesCapabilitySnapshot> = _capabilities.asStateFlow()
+
+    data class GlassesHotspotConnection(
+        val attemptId: Long,
+        val ipAddress: String,
+    )
+
+    private data class ActiveHotspotAttempt(
+        val id: Long,
+        val completion: CompletableDeferred<GlassesHotspotConnection>,
+        var probeJob: Job? = null,
+        var probeStarted: Boolean = false,
+    )
 
     // Saved connection info for reconnection
     private var savedSocketUuid: String? = null
@@ -103,6 +147,19 @@ object RokidSdkManager {
 
     // Last known brightness from glasses (tracked via BrightnessUpdateListener)
     private var lastKnownBrightness: Int = 15
+    private var aiSceneRunning = false
+    private var classicBluetoothActivationRequested = false
+    private val activateClassicBluetoothRunnable = Runnable {
+        if (!isConnected() || classicBluetoothActivationRequested) return@Runnable
+        classicBluetoothActivationRequested = true
+        runCatching {
+            cxrApi?.activeBluetoothConnect()
+            Log.i(TAG, "Requested glasses-initiated classic Bluetooth connection")
+        }.onFailure { error ->
+            classicBluetoothActivationRequested = false
+            Log.e(TAG, "Could not request glasses-initiated classic Bluetooth connection", error)
+        }
+    }
 
     // SN auto-generation: first attempt fails, we read the SN and retry
     private var snAutoRetryInProgress = false
@@ -131,6 +188,13 @@ object RokidSdkManager {
     var onAiKeyDown: (() -> Unit)? = null
     var onAiKeyUp: (() -> Unit)? = null
     var onAiExit: (() -> Unit)? = null
+
+    // Direct microphone PCM delivered by CXR. Newer Sprite firmware can keep the
+    // custom CXR link alive while refusing Android HFP/SCO, so recognition must not
+    // assume that a classic Bluetooth audio profile exists.
+    var onAudioStreamStarted: ((codec: Int, originCodec: Int, channels: Int, streamType: String) -> Unit)? = null
+    var onAudioStreamData: ((data: ByteArray, offset: Int, length: Int) -> Unit)? = null
+    var onAudioStreamFinished: (() -> Unit)? = null
 
     // Photo capture callback
     var onPhotoResult: ((status: ValueUtil.CxrStatus?, photoBytes: ByteArray?) -> Unit)? = null
@@ -181,6 +245,8 @@ object RokidSdkManager {
             pendingConnect = false
             snAutoRetryInProgress = false
             requestGlassesSoftwareVersions()
+            syncAssistantInput()
+            scheduleClassicBluetoothActivation()
             openGlassesApp()
             onGlassesConnected?.invoke()
         }
@@ -198,6 +264,8 @@ object RokidSdkManager {
             pendingConnect = false
             snAutoRetryInProgress = false
             requestGlassesSoftwareVersions()
+            syncAssistantInput()
+            scheduleClassicBluetoothActivation()
             openGlassesApp()
             onGlassesConnected?.invoke()
         }
@@ -205,6 +273,8 @@ object RokidSdkManager {
         override fun onDisconnected() {
             Log.i(TAG, "=== onDisconnected === Bluetooth disconnected from glasses")
             isBluetoothConnectedState = false
+            classicBluetoothActivationRequested = false
+            mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
             mainHandler.removeCallbacks(reopenHudRunnable)
             hudForegroundRecovery.reset()
             onGlassesDisconnected?.invoke()
@@ -213,6 +283,8 @@ object RokidSdkManager {
         override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
             Log.e(TAG, "=== onFailed === Bluetooth connection failed: $errorCode")
             isBluetoothConnectedState = false
+            classicBluetoothActivationRequested = false
+            mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
             pendingConnect = false
 
             // SN_CHECK_FAILED means BT connected but SN verification failed.
@@ -280,23 +352,45 @@ object RokidSdkManager {
         }
     }
 
-    private val wifiHotCallback = object : WifiHotStatusCallback {
+    private fun wifiHotCallback(attemptId: Long) = object : WifiHotStatusCallback {
         override fun onWifiHotAvailable(ssid: String?, password: String?, ip: String?, port: Int) {
-            Log.i(TAG, "Glasses hotspot available; connecting without persisting credentials")
-            if (ssid.isNullOrBlank() || password.isNullOrBlank() || ip.isNullOrBlank()) {
-                Log.e(TAG, "Glasses hotspot response was incomplete")
+            if (!hotspotAttemptGate.isActive(attemptId)) {
+                Log.i(TAG, "Ignoring stale hotspot callback for attempt=$attemptId")
                 return
             }
+            Log.i(TAG, "Hotspot advertised for attempt=$attemptId; connecting without persisting credentials")
+            if (ssid.isNullOrBlank() || password.isNullOrBlank() || ip.isNullOrBlank()) {
+                failHotspotAttempt(attemptId, "Glasses hotspot response was incomplete")
+                return
+            }
+            if (port != APK_UPLOAD_PORT) {
+                Log.w(TAG, "Hotspot advertised unexpected port for attempt=$attemptId; SDK still requires $APK_UPLOAD_PORT")
+            }
             _capabilities.value = _capabilities.value.copy(hotspotAdvertised = true)
-            connectToGlassesHotspot(ssid, password, ip)
+            connectToGlassesHotspot(attemptId, ssid, password, ip)
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun connectToGlassesHotspot(ssid: String, password: String, ip: String) {
-        val context = appContext ?: return
+    @SuppressLint("MissingPermission", "WrongConstant")
+    private fun connectToGlassesHotspot(attemptId: Long, ssid: String, password: String, ip: String) {
+        when (hotspotAttemptGate.registerAdvertisement(attemptId, ssid, ip)) {
+            HotspotAttemptGate.AdvertisementDecision.IGNORE_STALE -> {
+                Log.i(TAG, "Ignoring stale hotspot advertisement for attempt=$attemptId")
+                return
+            }
+            HotspotAttemptGate.AdvertisementDecision.IGNORE_DUPLICATE -> {
+                Log.i(TAG, "Ignoring duplicate hotspot advertisement for attempt=$attemptId")
+                return
+            }
+            HotspotAttemptGate.AdvertisementDecision.START_CONNECTION -> Unit
+        }
+
+        val context = appContext ?: run {
+            failHotspotAttempt(attemptId, "Application context is unavailable")
+            return
+        }
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
-            Log.e(TAG, "Glasses hotspot requires Android 10 or newer")
+            failHotspotAttempt(attemptId, "Glasses hotspot requires Android 10 or newer")
             return
         }
 
@@ -305,42 +399,119 @@ object RokidSdkManager {
         hotspotNetworkCallback?.let { callback ->
             runCatching { connectivityManager.unregisterNetworkCallback(callback) }
         }
+        synchronized(hotspotAttemptLock) {
+            activeHotspotAttempt
+                ?.takeIf { it.id == attemptId }
+                ?.let { attempt ->
+                    attempt.probeJob?.cancel()
+                    attempt.probeJob = null
+                    attempt.probeStarted = false
+                }
+        }
 
         val specifier = WifiNetworkSpecifier.Builder()
             .setSsid(ssid)
             .setWpa2Passphrase(password)
             .build()
-        val request = NetworkRequest.Builder()
+        val requestBuilder = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .setNetworkSpecifier(specifier)
-            .build()
+        if (android.os.Build.VERSION.SDK_INT >= 35) {
+            requestBuilder.addCapability(NET_CAPABILITY_LOCAL_NETWORK_COMPAT)
+        }
+        val request = requestBuilder.build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (!connectivityManager.bindProcessToNetwork(network)) {
-                    Log.e(TAG, "Could not bind APK upload to glasses hotspot")
-                    return
-                }
-                hotspotIpAddress = ip
-                hotspotConnectedState = true
-                Log.i(TAG, "Connected to glasses hotspot for APK upload")
+                if (!hotspotAttemptGate.isActive(attemptId)) return
+                Log.i(TAG, "Android hotspot network available for attempt=$attemptId; probing upload service")
+                probeHotspotUploadService(attemptId, connectivityManager, network, ip)
             }
 
             override fun onLost(network: Network) {
-                hotspotConnectedState = false
-                hotspotIpAddress = null
-                Log.i(TAG, "Glasses hotspot disconnected")
+                if (!hotspotAttemptGate.isActive(attemptId)) return
+                Log.i(TAG, "Glasses hotspot disconnected for attempt=$attemptId")
+                failHotspotAttempt(attemptId, "Glasses hotspot disconnected before upload started")
             }
 
             override fun onUnavailable() {
-                hotspotConnectedState = false
-                hotspotIpAddress = null
-                Log.e(TAG, "Glasses hotspot connection unavailable")
+                if (!hotspotAttemptGate.isActive(attemptId)) return
+                failHotspotAttempt(attemptId, "Glasses hotspot connection unavailable")
             }
         }
         hotspotNetworkCallback = callback
-        connectivityManager.requestNetwork(request, callback, HOTSPOT_CONNECT_TIMEOUT_MS)
+        runCatching {
+            connectivityManager.requestNetwork(request, callback, HOTSPOT_CONNECT_TIMEOUT_MS)
+        }.onFailure { error ->
+            failHotspotAttempt(attemptId, "Could not request glasses hotspot network: ${error.message}")
+        }
+    }
+
+    private fun probeHotspotUploadService(
+        attemptId: Long,
+        connectivityManager: ConnectivityManager,
+        network: Network,
+        ipAddress: String,
+    ) {
+        val shouldProbe = synchronized(hotspotAttemptLock) {
+            val attempt = activeHotspotAttempt
+            if (attempt == null || attempt.id != attemptId || attempt.probeStarted) {
+                false
+            } else {
+                attempt.probeStarted = true
+                true
+            }
+        }
+        if (!shouldProbe) return
+
+        val probeJob = hotspotScope.launch {
+            repeat(HOTSPOT_PROBE_ATTEMPTS) { probeIndex ->
+                if (!hotspotAttemptGate.isActive(attemptId)) return@launch
+                val reachable = runCatching {
+                    network.socketFactory.createSocket().use { socket ->
+                        socket.connect(
+                            InetSocketAddress(ipAddress, APK_UPLOAD_PORT),
+                            HOTSPOT_PROBE_CONNECT_TIMEOUT_MS,
+                        )
+                    }
+                }.isSuccess
+                if (reachable) {
+                    if (!connectivityManager.bindProcessToNetwork(network)) {
+                        failHotspotAttempt(attemptId, "Could not bind APK upload to glasses hotspot")
+                        return@launch
+                    }
+                    val completion = synchronized(hotspotAttemptLock) {
+                        activeHotspotAttempt
+                            ?.takeIf { it.id == attemptId }
+                            ?.completion
+                    }
+                    completion?.complete(GlassesHotspotConnection(attemptId, ipAddress))
+                    Log.i(TAG, "Hotspot upload service reachable for attempt=$attemptId; network bound")
+                    return@launch
+                }
+                if (probeIndex < HOTSPOT_PROBE_ATTEMPTS - 1) {
+                    delay(HOTSPOT_PROBE_RETRY_DELAY_MS)
+                }
+            }
+            failHotspotAttempt(attemptId, "Glasses upload service is not reachable on port $APK_UPLOAD_PORT")
+        }
+        synchronized(hotspotAttemptLock) {
+            activeHotspotAttempt
+                ?.takeIf { it.id == attemptId }
+                ?.probeJob = probeJob
+        }
+    }
+
+    private fun failHotspotAttempt(attemptId: Long, message: String) {
+        val completion = synchronized(hotspotAttemptLock) {
+            activeHotspotAttempt
+                ?.takeIf { it.id == attemptId }
+                ?.completion
+        }
+        if (completion?.completeExceptionally(IllegalStateException(message)) == true) {
+            Log.e(TAG, "$message (attempt=$attemptId)")
+        }
     }
 
     private val apkCallback = object : ApkStatusCallback {
@@ -466,6 +637,7 @@ object RokidSdkManager {
             // Set up AI event listener for glasses long-press voice activation
             cxrApi?.setAiEventListener(object : com.rokid.cxr.client.extend.listeners.AiEventListener {
                 override fun onAiKeyDown() {
+                    aiSceneRunning = true
                     Log.i(TAG, "AI key pressed on glasses (long press)")
                     onAiKeyDown?.invoke()
                 }
@@ -474,8 +646,63 @@ object RokidSdkManager {
                     onAiKeyUp?.invoke()
                 }
                 override fun onAiExit() {
+                    aiSceneRunning = false
                     Log.d(TAG, "AI scene exited on glasses")
                     onAiExit?.invoke()
+                }
+            })
+
+            // Newer Sprite firmware can omit AiEventListener.onAiKeyDown while still
+            // publishing the AI scene transition. Treat the rising scene edge as the
+            // activation event and retain AiEventListener as the legacy fallback.
+            cxrApi?.setSceneStatusUpdateListener(object : SceneStatusUpdateListener {
+                override fun onSceneStatusUpdated(sceneStatusInfo: SceneStatusInfo?) {
+                    val running = sceneStatusInfo?.let {
+                        it.isAiAssistRunning || it.isAiChatRunning
+                    } ?: false
+                    val started = running && !aiSceneRunning
+                    aiSceneRunning = running
+                    Log.d(TAG, "AI scene status updated: running=$running")
+                    if (started) {
+                        Log.i(TAG, "AI activation detected from scene status")
+                        onAiKeyDown?.invoke()
+                    }
+                }
+            })
+
+            cxrApi?.setAudioStreamListener(object : AudioStreamListener {
+                override fun onStartAudioStream(
+                    codecType: Int,
+                    originCodec: Int,
+                    channels: Int,
+                    streamType: String?,
+                ) {
+                    Log.i(
+                        TAG,
+                        "Glasses microphone stream started: codec=$codecType, originCodec=$originCodec, channels=$channels",
+                    )
+                    onAudioStreamStarted?.invoke(
+                        codecType,
+                        originCodec,
+                        channels,
+                        streamType.orEmpty(),
+                    )
+                }
+
+                override fun onAudioStream(
+                    streamId: Int,
+                    data: ByteArray?,
+                    offset: Int,
+                    length: Int,
+                ) {
+                    if (data != null && length > 0 && offset >= 0 && offset + length <= data.size) {
+                        onAudioStreamData?.invoke(data, offset, length)
+                    }
+                }
+
+                override fun onAudioStreamFinish(streamId: Int) {
+                    Log.i(TAG, "Glasses microphone stream finished")
+                    onAudioStreamFinished?.invoke()
                 }
             })
 
@@ -640,6 +867,46 @@ object RokidSdkManager {
             }
         })
         Log.d(TAG, "Glasses SDK version check request: $versionStatus")
+    }
+
+    /**
+     * Keep the firmware-owned wake word and AI-key event source enabled.
+     *
+     * CXR-M only registers [AiEventListener]; it does not implicitly enable the
+     * persisted glasses setting that produces those events. Newer Sprite
+     * firmware may retain `settings_voice_control=close` across updates or
+     * companion-app changes, leaving the HUD transport alive while neither the
+     * wake word nor the AI key reaches Clawsses. The firmware accepts the
+     * literal values `open` and `close`, so reapplying `open` on every adopted
+     * Bluetooth session is idempotent and reversible from the glasses settings.
+     */
+    fun syncAssistantInput(): Boolean {
+        if (!isInitialized || !isBluetoothConnectedState) {
+            Log.d(TAG, "Glasses assistant input sync deferred: CXR link not ready")
+            return false
+        }
+        val status = cxrApi?.setVoiceCtrl("open")
+        Log.i(TAG, "Glasses assistant input enable request: $status")
+        return status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+    }
+
+    /**
+     * Ask Sprite firmware to initiate its classic phone/audio profiles itself.
+     *
+     * Firmware 1.24 rejects Pixel-initiated HFP/A2DP immediately while keeping
+     * the CXR control socket alive. CXR-M's parameterless `activeBluetoothConnect`
+     * command targets the currently paired phone ("self") and does not mutate
+     * pairing records. Delay it until the authenticated CXR socket is settled,
+     * and issue it only once per connected session.
+     */
+    private fun scheduleClassicBluetoothActivation() {
+        mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
+        if (!classicBluetoothActivationRequested) {
+            mainHandler.postDelayed(
+                activateClassicBluetoothRunnable,
+                CLASSIC_BLUETOOTH_ACTIVATION_DELAY_MS,
+            )
+        }
     }
 
     /** Refresh capability evidence before selecting a firmware-sensitive transport. */
@@ -889,25 +1156,62 @@ object RokidSdkManager {
         }
     }
 
-    fun initWifiHotspot(): Boolean {
-        if (!isInitialized || !isBluetoothConnectedState) return false
-        hotspotConnectedState = false
-        hotspotIpAddress = null
+    suspend fun awaitWifiHotspotConnection(timeoutMs: Long): GlassesHotspotConnection {
+        val attempt = withContext(Dispatchers.Main.immediate) {
+            check(isInitialized && isBluetoothConnectedState) {
+                "Rokid SDK or Bluetooth connection is not ready"
+            }
+            val replacedAttempt = synchronized(hotspotAttemptLock) { activeHotspotAttempt?.id }
+            if (replacedAttempt != null) {
+                Log.w(TAG, "Replacing unfinished hotspot attempt=$replacedAttempt")
+                cancelHotspotAttempt(replacedAttempt)
+            }
+            val attemptId = hotspotAttemptGate.begin()
+            val active = ActiveHotspotAttempt(
+                id = attemptId,
+                completion = CompletableDeferred(),
+            )
+            synchronized(hotspotAttemptLock) {
+                activeHotspotAttempt = active
+            }
+            val status = runCatching {
+                cxrApi?.initWifiHot(wifiHotCallback(attemptId))
+            }.getOrElse { error ->
+                failHotspotAttempt(attemptId, "Error initializing glasses hotspot: ${error.message}")
+                null
+            }
+            Log.i(TAG, "Hotspot attempt=$attemptId initialization status: $status")
+            if (status != ValueUtil.CxrStatus.REQUEST_SUCCEED) {
+                failHotspotAttempt(attemptId, "Glasses rejected hotspot initialization")
+            }
+            active
+        }
+
         return try {
-            val status = cxrApi?.initWifiHot(wifiHotCallback)
-            Log.d(TAG, "WiFi hotspot initialization status: $status")
-            status == ValueUtil.CxrStatus.REQUEST_SUCCEED
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing glasses hotspot", e)
-            false
+            withTimeout(timeoutMs) { attempt.completion.await() }
+        } finally {
+            if (!attempt.completion.isCompleted) {
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    cancelHotspotAttempt(attempt.id)
+                }
+            }
         }
     }
 
-    fun isWifiHotspotConnected(): Boolean = hotspotConnectedState
-
-    fun getWifiHotspotIp(): String? = hotspotIpAddress
+    private fun cancelHotspotAttempt(attemptId: Long) {
+        val completion = synchronized(hotspotAttemptLock) {
+            val active = activeHotspotAttempt?.takeIf { it.id == attemptId } ?: return
+            active.probeJob?.cancel()
+            activeHotspotAttempt = null
+            hotspotAttemptGate.end(attemptId)
+            active.completion
+        }
+        completion.cancel()
+    }
 
     fun deinitWifiHotspot() {
+        val activeAttemptId = synchronized(hotspotAttemptLock) { activeHotspotAttempt?.id }
+        if (activeAttemptId != null) cancelHotspotAttempt(activeAttemptId)
         val context = appContext
         if (context != null) {
             val connectivityManager =
@@ -918,8 +1222,6 @@ object RokidSdkManager {
             }
         }
         hotspotNetworkCallback = null
-        hotspotConnectedState = false
-        hotspotIpAddress = null
         runCatching { cxrApi?.deinitWifiHot() }
         Log.i(TAG, "Glasses hotspot transport released")
     }
@@ -993,6 +1295,29 @@ object RokidSdkManager {
             status == ValueUtil.CxrStatus.REQUEST_SUCCEED
         } catch (e: Exception) {
             Log.e(TAG, "Error opening glasses app", e)
+            false
+        }
+    }
+
+    /**
+     * Ask the connected Sprite firmware to perform a full glasses reboot.
+     *
+     * This uses CXR-M's official reboot command. A successful return value means
+     * the firmware accepted the request; the Bluetooth/CXR disconnect happens
+     * asynchronously as the glasses shut down.
+     */
+    fun restartGlasses(): Boolean {
+        if (!isInitialized || !isConnected()) {
+            Log.w(TAG, "Cannot restart glasses: CXR link is not ready")
+            return false
+        }
+
+        return try {
+            val status = cxrApi?.notifyGlassReboot()
+            Log.i(TAG, "Glasses reboot request status: $status")
+            status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not request glasses reboot", error)
             false
         }
     }
@@ -1081,6 +1406,8 @@ object RokidSdkManager {
      */
     fun disconnect() {
         try {
+            mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
+            classicBluetoothActivationRequested = false
             deinitWifiP2P()
             cxrApi?.deinitBluetooth()
             isBluetoothConnectedState = false
@@ -1102,6 +1429,35 @@ object RokidSdkManager {
      */
     fun clearCommunicationDevice() {
         cxrApi?.clearCommunicationDevice()
+    }
+
+    /**
+     * Request 24 kHz mono PCM directly from the glasses over CXR.
+     * This is independent of Android's HFP/SCO profile and is the preferred input
+     * path on Sprite firmware that rejects classic Bluetooth audio connections.
+     */
+    fun startMicrophoneStream(): Boolean {
+        if (!isConnected()) return false
+        val status = cxrApi?.openAudioRecord(
+            DIRECT_AUDIO_CODEC_PCM,
+            DIRECT_AUDIO_RECORD_MODE,
+            DIRECT_AUDIO_STREAM_TYPE,
+        )
+        Log.i(TAG, "Glasses microphone stream request: $status")
+        return status == ValueUtil.CxrStatus.REQUEST_SUCCEED
+    }
+
+    fun stopMicrophoneStream() {
+        if (isConnected()) {
+            val status = cxrApi?.closeAudioRecord(DIRECT_AUDIO_STREAM_TYPE)
+            Log.d(TAG, "Glasses microphone stop request: $status")
+        }
+    }
+
+    fun clearMicrophoneStreamCallbacks() {
+        onAudioStreamStarted = null
+        onAudioStreamData = null
+        onAudioStreamFinished = null
     }
 
     // --- AI Scene methods (for voice input via glasses long-press) ---
@@ -1257,5 +1613,5 @@ object RokidSdkManager {
         }
     }
 
-    private const val HOTSPOT_CONNECT_TIMEOUT_MS = 30_000
+    private const val HOTSPOT_CONNECT_TIMEOUT_MS = 20_000
 }

@@ -7,6 +7,7 @@ import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.service.GlassesConnectionService
+import com.clawsses.phone.service.WakeLockReason
 import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.talk.TalkModePhase
 import com.clawsses.phone.talk.TalkModeSource
@@ -56,6 +57,7 @@ class TalkRuntimeCoordinator(
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        Log.i(TAG, "Process runtime started")
         voiceHandler.initialize()
         voiceLanguageManager.queryAvailableLanguages()
         configurePartialResults()
@@ -109,6 +111,11 @@ class TalkRuntimeCoordinator(
         }
 
         voiceRecognitionManager.stopListening()
+        GlassesConnectionService.holdWakeLock(
+            context,
+            WakeLockReason.VOICE_RECOGNITION,
+            VOICE_WAKE_LOCK_TIMEOUT_MS,
+        )
         val cycleId = talkModeManager.beginListening(source, activation)
         if (talkModeManager.state.value.phase != TalkModePhase.LISTENING) return
         val mode = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
@@ -141,6 +148,10 @@ class TalkRuntimeCoordinator(
                     state.phase == TalkModePhase.LISTENING
                 ) {
                     voiceRecognitionManager.cancelListening()
+                    GlassesConnectionService.releaseWakeLock(
+                        context,
+                        WakeLockReason.VOICE_RECOGNITION,
+                    )
                     voiceRecognitionManager.onSpeechStopped = null
                     RokidSdkManager.clearCommunicationDevice()
                     talkModeManager.endConversation()
@@ -173,6 +184,10 @@ class TalkRuntimeCoordinator(
                 glassesManager.wakeSignalManager.wakeState.value !is WakeSignalManager.WakeState.Awake
             ) {
                 voiceRecognitionManager.cancelListening()
+                GlassesConnectionService.releaseWakeLock(
+                    context,
+                    WakeLockReason.VOICE_RECOGNITION,
+                )
                 RokidSdkManager.clearCommunicationDevice()
                 talkModeManager.pauseForStandby()
                 return@launch
@@ -185,6 +200,7 @@ class TalkRuntimeCoordinator(
         cancelRestart()
         cancelFollowUpTimeout()
         voiceRecognitionManager.stopListening()
+        GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         voiceRecognitionManager.onSpeechStopped = null
         ttsPlaybackManager.stop()
         openClawClient.abortActiveRun()
@@ -212,6 +228,7 @@ class TalkRuntimeCoordinator(
     fun prepareTtsPlayback() {
         cancelRestart()
         voiceRecognitionManager.stopListening()
+        GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         talkModeManager.beginSpeaking()
         val requireGlassesOutput = shouldRequireGlassesMediaOutput(
             glassesManager.connectionState.value is GlassesConnectionManager.ConnectionState.Connected,
@@ -228,6 +245,21 @@ class TalkRuntimeCoordinator(
     fun stopCurrentTtsOutput() {
         Log.i(TAG, "Stopping current TTS output by voice command")
         ttsPlaybackManager.stop()
+    }
+
+    /** Stop transient audio work before a glasses reboot without disabling Talk Mode. */
+    fun prepareForGlassesRestart() {
+        cancelRestart()
+        cancelFollowUpTimeout()
+        voiceRecognitionManager.cancelListening()
+        voiceRecognitionManager.onSpeechStopped = null
+        GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
+        ttsPlaybackManager.stop()
+        RokidSdkManager.clearCommunicationDevice()
+        val talk = talkModeManager.state.value
+        if (talk.enabled && talk.source == TalkModeSource.GLASSES) {
+            talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
+        }
     }
 
     fun syncTalkModeStateToGlasses() {
@@ -259,6 +291,7 @@ class TalkRuntimeCoordinator(
         cycleId: Long,
         result: VoiceCommandHandler.VoiceResult,
     ) {
+        GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         cancelFollowUpTimeout()
         val latest = talkModeManager.state.value
         if (!latest.enabled || latest.cycleId != cycleId) return
@@ -502,11 +535,24 @@ class TalkRuntimeCoordinator(
         scope.launch {
             glassesManager.connectionState.collect { state ->
                 when (state) {
-                    is GlassesConnectionManager.ConnectionState.Connected,
+                    is GlassesConnectionManager.ConnectionState.Connected -> {
+                        GlassesConnectionService.start(context)
+                        GlassesConnectionService.releaseWakeLock(context, WakeLockReason.RECONNECT)
+                    }
                     is GlassesConnectionManager.ConnectionState.Reconnecting -> {
                         GlassesConnectionService.start(context)
+                        GlassesConnectionService.holdWakeLock(
+                            context,
+                            WakeLockReason.RECONNECT,
+                            RECONNECT_WAKE_LOCK_TIMEOUT_MS,
+                        )
                     }
                     is GlassesConnectionManager.ConnectionState.Disconnected -> {
+                        GlassesConnectionService.releaseWakeLock(context, WakeLockReason.RECONNECT)
+                        GlassesConnectionService.releaseWakeLock(
+                            context,
+                            WakeLockReason.VOICE_RECOGNITION,
+                        )
                         val talk = talkModeManager.state.value
                         if (talk.enabled && talk.source == TalkModeSource.GLASSES) {
                             cancelRestart()
@@ -568,6 +614,8 @@ class TalkRuntimeCoordinator(
     companion object {
         private const val TAG = "TalkRuntime"
         private const val PREFS_NAME = "clawsses"
+        private const val VOICE_WAKE_LOCK_TIMEOUT_MS = 45_000L
+        private const val RECONNECT_WAKE_LOCK_TIMEOUT_MS = 20_000L
     }
 }
 

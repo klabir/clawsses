@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.clawsses.phone.service.GlassesConnectionService
+import com.clawsses.phone.service.WakeLockReason
 import dadb.Dadb
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +33,6 @@ class ApkInstaller(private val context: Context) {
         private const val GLASSES_APP_ASSET = "glasses-app-release.apk"
         private const val DEFAULT_ADB_PORT = 5555
         private const val ADB_OPERATION_TIMEOUT_MS = 60_000L
-        private const val SDK_OPERATION_TIMEOUT_MS = 240_000L
     }
 
     /**
@@ -205,23 +206,35 @@ class ApkInstaller(private val context: Context) {
 
         Log.i(TAG, "Starting SDK installation via WiFi P2P")
         _installState.value = InstallState.PreparingApk
+        GlassesConnectionService.holdWakeLock(
+            context,
+            WakeLockReason.APK_TRANSFER,
+            ApkInstallerTimeoutPolicy.TOTAL_OPERATION_MS,
+        )
 
         installJob = scope.launch {
             try {
-                withTimeout(SDK_OPERATION_TIMEOUT_MS) {
+                withTimeout(ApkInstallerTimeoutPolicy.TOTAL_OPERATION_MS) {
                     doSdkInstall()
                 }
             } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "SDK installation timed out after ${SDK_OPERATION_TIMEOUT_MS}ms")
+                Log.e(TAG, "SDK installation phase timed out")
+                RokidSdkManager.stopUploadApk()
                 _installState.value = InstallState.Error("Installation timed out. Check glasses connection.")
             } catch (e: CancellationException) {
                 Log.d(TAG, "SDK installation cancelled")
                 _installState.value = InstallState.Idle
             } catch (e: Exception) {
                 Log.e(TAG, "SDK installation failed", e)
+                RokidSdkManager.stopUploadApk()
                 _installState.value = InstallState.Error(formatError(e))
             } finally {
+                GlassesConnectionService.releaseWakeLock(context, WakeLockReason.APK_TRANSFER)
                 RokidSdkManager.deinitWifiHotspot()
+                RokidSdkManager.onApkUploadSucceed = null
+                RokidSdkManager.onApkUploadFailed = null
+                RokidSdkManager.onApkInstallSucceed = null
+                RokidSdkManager.onApkInstallFailed = null
                 cleanupTempApk()
             }
         }
@@ -235,29 +248,30 @@ class ApkInstaller(private val context: Context) {
         Log.d(TAG, "APK prepared: ${apkFile.absolutePath} (${apkFile.length() / 1024} KB)")
 
         // Step 2: Set up callbacks for progress tracking
-        var uploadComplete = false
-        var installComplete = false
-        var installError: String? = null
+        val installCompletion = CompletableDeferred<Unit>()
 
         RokidSdkManager.onApkUploadSucceed = {
             Log.d(TAG, "SDK: APK upload succeeded")
-            uploadComplete = true
             _installState.value = InstallState.Installing("Installing on glasses...")
         }
 
         RokidSdkManager.onApkUploadFailed = {
             Log.e(TAG, "SDK: APK upload failed")
-            installError = "APK upload failed. Check WiFi P2P connection."
+            installCompletion.completeExceptionally(
+                IllegalStateException("APK upload failed. Check glasses hotspot connection."),
+            )
         }
 
         RokidSdkManager.onApkInstallSucceed = {
             Log.d(TAG, "SDK: APK installation succeeded")
-            installComplete = true
+            installCompletion.complete(Unit)
         }
 
         RokidSdkManager.onApkInstallFailed = {
             Log.e(TAG, "SDK: APK installation failed")
-            installError = "APK installation failed on glasses."
+            installCompletion.completeExceptionally(
+                IllegalStateException("APK installation failed on glasses."),
+            )
         }
 
         // Step 3: Check WiFi P2P permission (Android 13+ requires NEARBY_WIFI_DEVICES)
@@ -281,7 +295,7 @@ class ApkInstaller(private val context: Context) {
             RokidSdkManager.refreshGlassesCapabilities()
         }
         var capabilityWaitMs = 0
-        while (capabilityWaitMs < 3_000) {
+        while (capabilityWaitMs < ApkInstallerTimeoutPolicy.CAPABILITY_WAIT_MS) {
             val pending = RokidSdkManager.capabilities.value
             if (pending.glassInfoAvailable || pending.sdkVersionCheckPassed != null) break
             delay(100)
@@ -299,17 +313,22 @@ class ApkInstaller(private val context: Context) {
         if (InstallerTransport.GLASSES_HOTSPOT in transportOrder) {
             _installState.value = InstallState.InitializingWifiHotspot
             withContext(Dispatchers.Main) { RokidSdkManager.deinitWifiHotspot() }
-            delay(1_500)
-            val hotspotStarted = withContext(Dispatchers.Main) {
-                RokidSdkManager.initWifiHotspot()
+            delay(ApkInstallerTimeoutPolicy.HOTSPOT_RESET_DELAY_MS)
+            uploadIp = try {
+                RokidSdkManager.awaitWifiHotspotConnection(
+                    ApkInstallerTimeoutPolicy.HOTSPOT_CONNECTION_MS,
+                ).ipAddress
+            } catch (error: TimeoutCancellationException) {
+                Log.w(TAG, "Glasses hotspot attempt timed out")
+                null
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w(TAG, "Glasses hotspot attempt failed: ${error.message}")
+                null
             }
-            if (hotspotStarted) {
-                var hotspotWaitTime = 0
-                while (!RokidSdkManager.isWifiHotspotConnected() && hotspotWaitTime < 40_000) {
-                    delay(500)
-                    hotspotWaitTime += 500
-                }
-                uploadIp = RokidSdkManager.getWifiHotspotIp()
+            if (uploadIp == null) {
+                withContext(Dispatchers.Main) { RokidSdkManager.deinitWifiHotspot() }
             }
         }
 
@@ -322,8 +341,12 @@ class ApkInstaller(private val context: Context) {
         ) {
             _installState.value = InstallState.InitializingWifiP2P
             var connected = false
-            for (attempt in 1..2) {
-                Log.i(TAG, "Initializing WiFi P2P for APK transfer (attempt $attempt/2)...")
+            for (attempt in 1..ApkInstallerTimeoutPolicy.P2P_ATTEMPTS) {
+                Log.i(
+                    TAG,
+                    "Initializing WiFi P2P for APK transfer " +
+                        "(attempt $attempt/${ApkInstallerTimeoutPolicy.P2P_ATTEMPTS})...",
+                )
                 val started = withContext(Dispatchers.Main) {
                     RokidSdkManager.initWifiP2P()
                 }
@@ -331,7 +354,9 @@ class ApkInstaller(private val context: Context) {
                     Log.w(TAG, "WiFi P2P initialization request was rejected")
                 } else {
                     var waitTime = 0
-                    while (!RokidSdkManager.isWifiP2PConnected() && waitTime < 30_000) {
+                    while (!RokidSdkManager.isWifiP2PConnected() &&
+                        waitTime < ApkInstallerTimeoutPolicy.P2P_ATTEMPT_MS
+                    ) {
                         delay(500)
                         waitTime += 500
                         if (waitTime % 5_000 == 0) {
@@ -345,7 +370,9 @@ class ApkInstaller(private val context: Context) {
                 withContext(Dispatchers.Main) {
                     RokidSdkManager.deinitWifiP2P()
                 }
-                if (attempt == 1) delay(1_500)
+                if (attempt < ApkInstallerTimeoutPolicy.P2P_ATTEMPTS) {
+                    delay(ApkInstallerTimeoutPolicy.P2P_RETRY_DELAY_MS)
+                }
             }
 
             if (!connected) {
@@ -371,23 +398,9 @@ class ApkInstaller(private val context: Context) {
             throw Exception("Failed to start APK upload. Check SDK connection.")
         }
 
-        // Step 5: Wait for installation to complete
-        var waitTime = 0
-        while (!installComplete && installError == null && waitTime < 120000) {
-            delay(500)
-            waitTime += 500
-        }
-
-        // Cleanup temp file
-        cleanupTempApk()
-
-        // Check result
-        if (installError != null) {
-            throw Exception(installError)
-        }
-
-        if (!installComplete) {
-            throw Exception("Installation did not complete. Check glasses screen for prompts.")
+        // Step 5: Await the SDK callback without polling cross-thread flags.
+        withTimeout(ApkInstallerTimeoutPolicy.INSTALL_COMPLETION_MS) {
+            installCompletion.await()
         }
 
         Log.i(TAG, "SDK APK installation successful!")
@@ -485,9 +498,9 @@ class ApkInstaller(private val context: Context) {
      */
     fun cancelInstallation() {
         Log.d(TAG, "Cancelling installation")
+        RokidSdkManager.stopUploadApk()
         installJob?.cancel()
         installJob = null
-        cleanupTempApk()
         _installState.value = InstallState.Idle
     }
 
@@ -582,6 +595,7 @@ class ApkInstaller(private val context: Context) {
     }
 
     fun cleanup() {
+        RokidSdkManager.stopUploadApk()
         installJob?.cancel()
         scope.cancel()
         cleanupTempApk()

@@ -1,7 +1,10 @@
 package com.clawsses.glasses
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -38,6 +41,8 @@ import com.clawsses.glasses.ui.HudCardActionDisplay
 import com.clawsses.glasses.ui.HudCardDisplay
 import com.clawsses.glasses.ui.HudPosition
 import com.clawsses.glasses.ui.HudScreen
+import com.clawsses.glasses.ui.HudStreamingAccumulator
+import com.clawsses.glasses.ui.HudStreamingSnapshot
 import com.clawsses.glasses.ui.HudTelemetry
 import com.clawsses.glasses.ui.InputActionItem
 import com.clawsses.glasses.ui.MenuBarItem
@@ -63,7 +68,6 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 import android.os.BatteryManager
-import android.os.Build
 import com.clawsses.glasses.BuildConfig
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
@@ -75,35 +79,45 @@ class HudActivity : ComponentActivity() {
     private lateinit var jankMonitor: TechnicalJankMonitor
 
     companion object {
-        val DEBUG_MODE = BuildConfig.DEBUG && isEmulator()
-
-        const val DEBUG_HOST = "10.0.2.2"
-        const val DEBUG_PORT = 8081
+        val DEBUG_MODE = GlassesApp.DEBUG_MODE
+        private const val STREAM_PUBLISH_INTERVAL_MS = 100L
+        private const val ACTION_AI_START = "com.android.action.ACTION_AI_START"
+        private const val ACTION_SPRITE_BUTTON_LONG_PRESS =
+            "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS"
         /** Sentinel key for the "New Session" entry in the session picker. */
         const val NEW_SESSION_KEY = "__new_session__"
         /** Sentinel key for loading the next bounded session page. */
         const val MORE_SESSIONS_KEY = "__more_sessions__"
 
-        private fun isEmulator(): Boolean {
-            return (Build.FINGERPRINT.contains("generic")
-                    || Build.FINGERPRINT.contains("emulator")
-                    || Build.MODEL.contains("Emulator")
-                    || Build.MODEL.contains("Android SDK built for")
-                    || Build.MODEL.contains("sdk_gphone")
-                    || Build.MANUFACTURER.contains("Genymotion")
-                    || Build.HARDWARE.contains("goldfish")
-                    || Build.HARDWARE.contains("ranchu")
-                    || Build.PRODUCT.contains("sdk")
-                    || Build.PRODUCT.contains("emulator"))
-        }
     }
 
     private val hudState = MutableStateFlow(ChatHudState())
     private val hudTelemetry = MutableStateFlow(HudTelemetry())
+    private val streamingAccumulator = HudStreamingAccumulator()
+    private val streamingMessage = MutableStateFlow<HudStreamingSnapshot?>(null)
+    private var streamPublishJob: Job? = null
     private lateinit var gestureHandler: GestureHandler
-    private lateinit var phoneConnection: PhoneConnectionService
+    private val phoneConnection: PhoneConnectionService
+        get() = (application as GlassesApp).phoneConnection
     private lateinit var voiceHandler: GlassesVoiceHandler
     private lateinit var cameraCapture: CameraCapture
+    private var aiStartReceiverRegistered = false
+    private val aiStartReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action
+            if (
+                action != ACTION_AI_START &&
+                action != ACTION_SPRITE_BUTTON_LONG_PRESS
+            ) return
+            if (!::voiceHandler.isInitialized) return
+            if (voiceHandler.isListening()) {
+                Log.d(GlassesApp.TAG, "Ignoring duplicate firmware assistant broadcast: $action")
+                return
+            }
+            Log.i(GlassesApp.TAG, "Firmware assistant broadcast received: $action")
+            voiceHandler.startListening { /* result arrives through phone messages */ }
+        }
+    }
 
     // Thumbnails to attach to the next user message echo from the server
 
@@ -169,19 +183,21 @@ class HudActivity : ComponentActivity() {
             handleGesture(gesture)
         }
 
-        phoneConnection = PhoneConnectionService(
-            context = this,
-            onMessageReceived = { message -> handlePhoneMessage(message) },
-            debugMode = DEBUG_MODE,
-            debugHost = DEBUG_HOST,
-            debugPort = DEBUG_PORT
-        )
-
-        Log.i(GlassesApp.TAG, "HudActivity created, debugMode=$DEBUG_MODE")
+        Log.i(GlassesApp.TAG, "HudActivity attached to process-scoped phone bridge, debugMode=$DEBUG_MODE")
 
         voiceHandler = GlassesVoiceHandler()
         voiceHandler.sendToPhone = { message -> phoneConnection.sendToPhone(message) }
         voiceHandler.initialize()
+        val assistantIntentFilter = IntentFilter(ACTION_AI_START).apply {
+            addAction(ACTION_SPRITE_BUTTON_LONG_PRESS)
+        }
+        ContextCompat.registerReceiver(
+            this,
+            aiStartReceiver,
+            assistantIntentFilter,
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+        aiStartReceiverRegistered = true
 
         cameraCapture = CameraCapture(this)
 
@@ -254,6 +270,7 @@ class HudActivity : ComponentActivity() {
                 HudScreen(
                     state = state,
                     telemetry = hudTelemetry,
+                    streamingMessage = streamingMessage,
                     onTap = { handleGesture(Gesture.TAP) },
                     onDoubleTap = { handleGesture(Gesture.DOUBLE_TAP) },
                     onLongPress = { handleGesture(Gesture.LONG_PRESS) },
@@ -288,7 +305,7 @@ class HudActivity : ComponentActivity() {
         }
 
         lifecycleScope.launch {
-            phoneConnection.startListening()
+            phoneConnection.messages.collect(::handlePhoneMessage)
         }
 
         // Observe connection state and request current state when phone connects.
@@ -358,7 +375,6 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun requestCurrentPhoneState() {
-        if (!::phoneConnection.isInitialized) return
         phoneConnection.sendToPhone(
             GlassesStateRequest(
                 versionName = BuildConfig.VERSION_NAME,
@@ -1585,6 +1601,7 @@ class HudActivity : ComponentActivity() {
                     val role = msg.optString("role", "assistant")
                     val content = unwrapContent(msg.optString("content", ""))
                     val incomingThumbnails = parseAttachmentThumbnails(msg)
+                    clearStreamingMessage(id)
 
                     var current = hudState.value
                     val messages = current.messages.toMutableList()
@@ -1648,6 +1665,7 @@ class HudActivity : ComponentActivity() {
                 }
 
                 "chat_history" -> {
+                    clearStreamingMessage()
                     // Parse message list
                     val messagesArray = msg.optJSONArray("messages")
                     val isLoadMore = msg.optBoolean("isLoadMore", false)
@@ -1724,6 +1742,7 @@ class HudActivity : ComponentActivity() {
                 }
 
                 "chat_history_begin" -> {
+                    clearStreamingMessage()
                     pendingHistorySnapshotId = msg.optString("s")
                     pendingHistoryHasMore = msg.optBoolean("hasMore", false)
                     pendingHistoryMessages.clear()
@@ -1816,57 +1835,48 @@ class HudActivity : ComponentActivity() {
                 }
 
                 "chat_stream" -> {
-                    // Streaming text chunk from agent
                     val id = msg.optString("id", "")
                     val chunk = msg.optString("chunk", "")
-
                     val current = hudState.value
-                    val messages = current.messages.toMutableList()
-
-                    val existingIndex = messages.indexOfFirst { it.id == id }
-                    if (existingIndex >= 0) {
-                        // Append chunk to existing streaming message
-                        val existing = messages[existingIndex]
-                        val newContent = existing.content + chunk
-                        messages[existingIndex] = existing.copy(
-                            content = newContent,
-                            isStreaming = true
+                    val startedNewMessage = streamingAccumulator.append(id, chunk)
+                    if (startedNewMessage || current.agentState != AgentState.STREAMING) {
+                        hudState.value = current.copy(
+                            agentState = AgentState.STREAMING,
+                            agentProgress = emptyList(),
                         )
-                    } else {
-                        // Create new streaming message
-                        messages.add(DisplayMessage(
-                            id = id,
-                            role = "assistant",
-                            content = chunk,
-                            isStreaming = true
-                        ))
+                        publishStreamingMessage()
+                    } else if (streamPublishJob == null) {
+                        streamPublishJob = lifecycleScope.launch {
+                            delay(STREAM_PUBLISH_INTERVAL_MS)
+                            publishStreamingMessage()
+                            streamPublishJob = null
+                        }
                     }
-
-                    // Auto-scroll to bottom during streaming (unless user scrolled up)
-                    val shouldAutoScroll = current.isScrolledToEnd
-
-                    hudState.value = current.copy(
-                        messages = messages,
-                        agentState = AgentState.STREAMING,
-                        agentProgress = emptyList(),
-                        scrollPosition = if (shouldAutoScroll) messages.size - 1 else current.scrollPosition,
-                        scrollTrigger = if (shouldAutoScroll) current.scrollTrigger + 1 else current.scrollTrigger
-                    )
                 }
 
                 "chat_stream_end" -> {
-                    // Streaming complete — unwrap soft line breaks now that full content is available
                     val id = msg.optString("id", "")
-
+                    streamPublishJob?.cancel()
+                    streamPublishJob = null
+                    val completedStream = streamingAccumulator.finish(id)
+                    streamingMessage.value = null
                     val current = hudState.value
                     val messages = current.messages.toMutableList()
-
                     val existingIndex = messages.indexOfFirst { it.id == id }
-                    if (existingIndex >= 0) {
+                    if (completedStream != null && existingIndex >= 0) {
                         val existing = messages[existingIndex]
                         messages[existingIndex] = existing.copy(
-                            content = unwrapContent(existing.content),
+                            content = unwrapContent(completedStream.content),
                             isStreaming = false
+                        )
+                    } else if (completedStream != null) {
+                        messages.add(
+                            DisplayMessage(
+                                id = id,
+                                role = "assistant",
+                                content = unwrapContent(completedStream.content),
+                                isStreaming = false,
+                            )
                         )
                     }
 
@@ -2359,6 +2369,19 @@ class HudActivity : ComponentActivity() {
         return thumbnails
     }
 
+    private fun publishStreamingMessage() {
+        streamingMessage.value = streamingAccumulator.snapshot()
+    }
+
+    private fun clearStreamingMessage(id: String? = null) {
+        streamingAccumulator.clear(id)
+        if (id == null || streamingMessage.value?.id == id) {
+            streamPublishJob?.cancel()
+            streamPublishJob = null
+            streamingMessage.value = null
+        }
+    }
+
     /**
      * Unwrap soft line breaks from AI model output so Compose can re-wrap
      * to the actual widget width. Preserves paragraph breaks (blank lines),
@@ -2405,20 +2428,18 @@ class HudActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (aiStartReceiverRegistered) {
+            unregisterReceiver(aiStartReceiver)
+            aiStartReceiverRegistered = false
+        }
+        streamPublishJob?.cancel()
         jankMonitor.close()
         super.onDestroy()
         saveHudPreferences()
         cameraCapture.cleanup()
         voiceHandler.cleanup()
-        phoneConnection.stop()
         clearWakeNotificationJob?.cancel()
         cardExpiryJob?.cancel()
-        // Kill the process so the next launch starts completely fresh.
-        // The CXR native layer may hold global state from the previous
-        // CXRServiceBridge that prevents a second bridge in the same process
-        // from working correctly. The CXR system service maintains the BT
-        // connection independently, so the next launch can re-establish it.
-        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun saveHudPreferences() {

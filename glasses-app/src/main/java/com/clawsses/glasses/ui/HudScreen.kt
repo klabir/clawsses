@@ -389,6 +389,7 @@ private val HudBottomSafeInset = 32.dp
 fun HudScreen(
     state: ChatHudState,
     telemetry: StateFlow<HudTelemetry>,
+    streamingMessage: StateFlow<HudStreamingSnapshot?>,
     onTap: () -> Unit = {},
     onDoubleTap: () -> Unit = {},
     onLongPress: () -> Unit = {},
@@ -493,11 +494,24 @@ fun HudScreen(
                     fontSize = fontSize
                 )
 
+                AnimatedVisibility(
+                    visible = state.voiceState !is VoiceInputState.Idle,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                ) {
+                    VoiceActivityBanner(
+                        voiceState = state.voiceState,
+                        fontFamily = monoFontFamily,
+                        fontSize = fontSize,
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
 
                 // CONTENT AREA — chat messages
                 PagedChatContentArea(
                     messages = state.messages,
+                    streamingMessage = streamingMessage,
                     agentState = state.agentState,
                     progressItems = state.agentProgress,
                     fontSize = fontSize,
@@ -664,6 +678,47 @@ fun HudScreen(
         ) {
             ExitConfirmOverlay(fontFamily = monoFontFamily)
         }
+    }
+}
+
+internal fun voiceActivityLabel(voiceState: VoiceInputState): String? = when (voiceState) {
+    VoiceInputState.Idle -> null
+    is VoiceInputState.Listening -> "LISTENING - SPEAK NOW"
+    is VoiceInputState.Recognizing -> "LISTENING - SPEAK NOW"
+    is VoiceInputState.Processing -> "PROCESSING..."
+    is VoiceInputState.Error -> "VOICE ERROR: ${voiceState.message}"
+}
+
+@Composable
+private fun VoiceActivityBanner(
+    voiceState: VoiceInputState,
+    fontFamily: FontFamily,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+) {
+    val label = voiceActivityLabel(voiceState) ?: return
+    val color = when (voiceState) {
+        is VoiceInputState.Error -> HudColors.error
+        is VoiceInputState.Processing -> HudColors.yellow
+        else -> Color(0xFF64B5F6)
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .border(1.dp, color, RoundedCornerShape(4.dp))
+            .background(color.copy(alpha = 0.18f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = color,
+            fontFamily = fontFamily,
+            fontSize = fontSize,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+        )
     }
 }
 
@@ -844,6 +899,7 @@ private fun TopBar(
 @Composable
 private fun PagedChatContentArea(
     messages: List<DisplayMessage>,
+    streamingMessage: StateFlow<HudStreamingSnapshot?>,
     agentState: AgentState,
     progressItems: List<AgentProgressDisplay>,
     fontSize: androidx.compose.ui.unit.TextUnit,
@@ -858,6 +914,19 @@ private fun PagedChatContentArea(
     onPageStateChanged: (pageIndex: Int, pageCount: Int, atStart: Boolean, atEnd: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val activeStream by streamingMessage.collectAsStateWithLifecycle()
+    val displayMessages = remember(messages, activeStream) {
+        val stream = activeStream ?: return@remember messages
+        val streamedMessage = DisplayMessage(
+            id = stream.id,
+            role = "assistant",
+            content = stream.content,
+            isStreaming = true,
+        )
+        val existingIndex = messages.indexOfFirst { it.id == stream.id }
+        if (existingIndex < 0) messages + streamedMessage
+        else messages.toMutableList().also { it[existingIndex] = streamedMessage }
+    }
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val navigator = remember(sessionKey) { HudPageNavigator() }
@@ -881,9 +950,9 @@ private fun PagedChatContentArea(
                 letterSpacing = 0.sp,
             )
         }
-        val pages = remember(messages, pageWidthPx, pageHeightPx, textStyle, hasMoreHistory) {
+        val pages = remember(displayMessages, pageWidthPx, pageHeightPx, textStyle, hasMoreHistory) {
             paginateHudMessages(
-                messages = messages,
+                messages = displayMessages,
                 textMeasurer = textMeasurer,
                 textStyle = textStyle,
                 pageWidthPx = pageWidthPx,
@@ -895,15 +964,17 @@ private fun PagedChatContentArea(
                 messageSpacingPx = with(density) { 4.dp.roundToPx() },
                 thumbnailHeightPx = with(density) { 20.dp.roundToPx() },
                 historyMarkerHeightPx = with(density) { 32.dp.roundToPx() },
-                showHistoryStart = !hasMoreHistory && messages.isNotEmpty(),
+                showHistoryStart = !hasMoreHistory && displayMessages.isNotEmpty(),
             )
         }
 
         LaunchedEffect(pages, pageNavigationTrigger) {
             if (pages !== previousPages) {
+                val wasAtLatest = previousPages.isEmpty() || navigator.pageIndex == previousPages.lastIndex
                 val anchor = previousPages.getOrNull(navigator.pageIndex)?.anchor
                 val restoredPage = findHudPageForAnchor(pages, anchor)
                 navigator.onDocumentChanged(pages.size.coerceAtLeast(1), restoredPage)
+                if (wasAtLatest) navigator.jumpToLatest(pages.size.coerceAtLeast(1))
                 previousPages = pages
             }
             if (pageNavigationTrigger != lastHandledNavigationTrigger) {
@@ -926,7 +997,7 @@ private fun PagedChatContentArea(
             )
         }
 
-        if (messages.isEmpty() && agentState == AgentState.IDLE && progressItems.isEmpty()) {
+        if (displayMessages.isEmpty() && agentState == AgentState.IDLE && progressItems.isEmpty()) {
             Text(
                 text = "No messages yet",
                 color = HudColors.dimText,

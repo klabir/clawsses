@@ -1,6 +1,5 @@
 package com.clawsses.glasses.service
 
-import android.content.Context
 import android.util.Log
 import com.clawsses.glasses.BuildConfig
 import com.clawsses.glasses.debug.DebugPhoneClient
@@ -8,6 +7,7 @@ import com.clawsses.shared.GlassesStateRequest
 import com.rokid.cxr.Caps
 import com.rokid.cxr.CXRServiceBridge
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -18,8 +18,6 @@ import kotlinx.coroutines.flow.StateFlow
  * Receives terminal updates from phone and sends gesture/voice commands back
  */
 class PhoneConnectionService(
-    private val context: Context,
-    private val onMessageReceived: (String) -> Unit,
     private val debugMode: Boolean = false,
     private val debugHost: String = DebugPhoneClient.DEFAULT_HOST,
     private val debugPort: Int = DebugPhoneClient.DEFAULT_PORT
@@ -33,7 +31,9 @@ class PhoneConnectionService(
 
     private var cxrBridge: CXRServiceBridge? = null
     private var debugClient: DebugPhoneClient? = null
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val incomingMessages = PhoneMessageMailbox()
+    val messages: Flow<String> = incomingMessages.messages
     private var isRunning = false
     private var isConnected = false
     private var connectedDeviceName: String? = null
@@ -77,7 +77,7 @@ class PhoneConnectionService(
         debugClient = DebugPhoneClient().apply {
             onMessageFromPhone = { message ->
                 Log.d(TAG, "Debug: received from phone (${message.length} chars)")
-                onMessageReceived(message)
+                publishMessage(message)
             }
             onConnected = {
                 isConnected = true
@@ -168,7 +168,7 @@ class PhoneConnectionService(
                 if (message.isNotEmpty()) {
                     markConnected("Phone (detected via message)")
                     Log.d(TAG, "Message received (${message.length} chars)")
-                    onMessageReceived(message)
+                    publishMessage(message)
                 } else {
                     Log.w(TAG, "Received empty message from phone")
                 }
@@ -289,6 +289,12 @@ class PhoneConnectionService(
      * Get connected device info
      */
     fun getConnectedDevice(): Pair<String?, String?> = Pair(connectedDeviceName, connectedDeviceMac)
+
+    private fun publishMessage(message: String) {
+        if (!incomingMessages.publish(message)) {
+            Log.w(TAG, "Dropped phone message because the process mailbox is full")
+        }
+    }
 
     /**
      * Soft stop: release our bridge/client references and reset local state, but do NOT

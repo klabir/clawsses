@@ -7,6 +7,7 @@ import android.bluetooth.le.*
 import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
+import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.debug.DebugGlassesServer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -132,6 +133,7 @@ class GlassesConnectionManager(private val context: Context) {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
             outboundTransport.setConnected(true)
+            RokidSdkManager.syncAssistantInput()
             Log.i(TAG, "SDK already connected on init; restored connected state")
         }
     }
@@ -146,6 +148,7 @@ class GlassesConnectionManager(private val context: Context) {
             currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
             reconnectJob?.cancel()
             RokidSdkManager.setScreenOffTimeout(30)
+            RokidSdkManager.syncAssistantInput()
             // Notify wake signal manager that glasses is connected
             wakeSignalManager.handleGlassesConnected()
             Log.d(TAG, "SDK: Glasses connected")
@@ -244,6 +247,7 @@ class GlassesConnectionManager(private val context: Context) {
         }
         RokidSdkManager.onAiExit = {
             Log.d(TAG, "SDK: AI scene exited")
+            wakeSignalManager.handleGlassesActivity()
             onAiExit?.invoke()
         }
     }
@@ -487,6 +491,7 @@ class GlassesConnectionManager(private val context: Context) {
         if (RokidSdkManager.isConnected()) {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
+            RokidSdkManager.syncAssistantInput()
             resetReconnectState()
             Log.i(TAG, "Auto-reconnect skipped: SDK connection is already active")
             return
@@ -511,6 +516,7 @@ class GlassesConnectionManager(private val context: Context) {
             if (RokidSdkManager.isConnected()) {
                 val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
                 _connectionState.value = ConnectionState.Connected(name)
+                RokidSdkManager.syncAssistantInput()
                 resetReconnectState()
                 Log.i(TAG, "Pending auto-reconnect cancelled: SDK connection recovered")
                 return@launch
@@ -533,6 +539,7 @@ class GlassesConnectionManager(private val context: Context) {
                 if (RokidSdkManager.isConnected()) {
                     val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
                     _connectionState.value = ConnectionState.Connected(name)
+                    RokidSdkManager.syncAssistantInput()
                     resetReconnectState()
                     Log.i(TAG, "Auto-reconnect completed: active SDK connection confirmed")
                     return@launch
@@ -621,6 +628,10 @@ class GlassesConnectionManager(private val context: Context) {
      * Starts a WebSocket server that glasses app can connect to.
      */
     fun enableDebugMode() {
+        if (!BuildConfig.DEBUG) {
+            Log.w(TAG, "Debug transport is unavailable in release builds")
+            return
+        }
         if (_debugModeEnabled.value) {
             Log.d(TAG, "Debug mode already enabled")
             return

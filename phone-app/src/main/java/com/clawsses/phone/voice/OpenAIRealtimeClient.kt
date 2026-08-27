@@ -101,6 +101,10 @@ class OpenAIRealtimeClient {
     private var audioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
     private var scope: CoroutineScope? = null
+    @Volatile private var externalAudioInput = false
+    private val externalAudioLock = Any()
+    private var pendingExternalPcmByte: Byte? = null
+    private val externalAudioTelemetry = PcmAudioTelemetry()
 
     @Volatile private var onPartialResult: ((String) -> Unit)? = null
     @Volatile private var onFinalResult: ((String) -> Unit)? = null
@@ -136,6 +140,7 @@ class OpenAIRealtimeClient {
     fun startListening(
         apiKey: String,
         languageTag: String? = null,
+        useExternalAudio: Boolean = false,
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit,
@@ -158,6 +163,9 @@ class OpenAIRealtimeClient {
         commitPending = false
         audioCommitted.set(false)
         sessionReady = false
+        externalAudioInput = useExternalAudio
+        externalAudioTelemetry.reset()
+        synchronized(externalAudioLock) { pendingExternalPcmByte = null }
         preBuffer.clear()
         preBufferDroppedFrames.set(0L)
         synchronized(transcriptLock) { accumulatedTranscript.clear() }
@@ -172,9 +180,9 @@ class OpenAIRealtimeClient {
         _connectionState.value = ConnectionState.Connecting
         _isListening.value = true
 
-        // Start audio capture immediately — buffer until WebSocket session is ready
-        // No-speech timeout starts later when session is configured (server can't detect speech until then)
-        startAudioCapture()
+        // Start local capture immediately unless CXR will provide PCM from the glasses.
+        // No-speech timeout starts later when the session is configured.
+        if (!useExternalAudio) startAudioCapture()
 
         val url = "$REALTIME_URL?intent=transcription"
         val request = Request.Builder()
@@ -412,6 +420,61 @@ class OpenAIRealtimeClient {
         }
     }
 
+    /** Feed 24 kHz mono PCM16 supplied by an external capture source such as CXR. */
+    fun appendExternalAudio(data: ByteArray, offset: Int, length: Int) {
+        if (!externalAudioInput || !_isListening.value || length <= 0 || offset < 0 ||
+            offset + length > data.size
+        ) return
+
+        val chunk = synchronized(externalAudioLock) {
+            val pending = pendingExternalPcmByte
+            val total = length + if (pending != null) 1 else 0
+            val evenLength = total and -2
+            if (evenLength == 0) {
+                pendingExternalPcmByte = data[offset]
+                return@synchronized null
+            }
+            val assembled = ByteArray(evenLength)
+            var sourceOffset = offset
+            var targetOffset = 0
+            if (pending != null) {
+                assembled[0] = pending
+                targetOffset++
+            }
+            val copyLength = evenLength - targetOffset
+            if (copyLength > 0) {
+                System.arraycopy(data, sourceOffset, assembled, targetOffset, copyLength)
+            }
+            val consumedFromInput = copyLength
+            pendingExternalPcmByte = if (consumedFromInput < length) {
+                data[offset + length - 1]
+            } else null
+            assembled
+        } ?: return
+        processAudioChunk(chunk)
+    }
+
+    private fun processAudioChunk(chunk: ByteArray) {
+        if (externalAudioInput) externalAudioTelemetry.recordPcm16(chunk)
+        updateLocalSpeechState(chunk)
+        if (!sessionReady) {
+            if (preBuffer.offer(chunk) && preBufferDroppedFrames.incrementAndGet() == 1L) {
+                Log.w(TAG, "Realtime session is slow; retaining only the latest audio window")
+            }
+            return
+        }
+
+        var buffered = preBuffer.poll()
+        while (buffered != null) {
+            sendAudioData(buffered)
+            buffered = preBuffer.poll()
+        }
+        sendAudioData(chunk)
+        if (commitPending && audioCommitted.compareAndSet(false, true)) {
+            commitAudioBuffer()
+        }
+    }
+
     private fun sendAudioData(audioData: ByteArray) {
         val base64Audio = Base64.encodeToString(audioData, Base64.NO_WRAP)
         val message = JSONObject().apply {
@@ -553,6 +616,7 @@ class OpenAIRealtimeClient {
         val finalText = synchronized(transcriptLock) {
             accumulatedTranscript.toString().trim()
         }
+        logExternalAudioTelemetry()
         Log.i(TAG, "Delivering final result (${finalText.length} chars)")
 
         val callback = onFinalResult
@@ -569,6 +633,7 @@ class OpenAIRealtimeClient {
         if (expectedSessionId == 0L || activeSessionId != expectedSessionId) return
         if (!resultDelivered.compareAndSet(false, true)) return
 
+        logExternalAudioTelemetry()
         Log.e(TAG, "Delivering transcription error")
         _connectionState.value = ConnectionState.Error(message)
 
@@ -608,6 +673,8 @@ class OpenAIRealtimeClient {
         stopRecording()
 
         sessionReady = false
+        externalAudioInput = false
+        synchronized(externalAudioLock) { pendingExternalPcmByte = null }
         preBuffer.clear()
 
         webSocket?.let {
@@ -627,6 +694,15 @@ class OpenAIRealtimeClient {
         onSpeechStopped = null
     }
 
+    private fun logExternalAudioTelemetry() {
+        if (!externalAudioInput) return
+        val snapshot = externalAudioTelemetry.snapshot()
+        Log.i(
+            TAG,
+            "External audio telemetry: bytes=${snapshot.totalBytes}, maxPeak=${snapshot.maxPeak}",
+        )
+    }
+
     /**
      * Silent cleanup without delivering results. Used when re-starting a new session.
      */
@@ -638,6 +714,8 @@ class OpenAIRealtimeClient {
         stopRecording()
 
         sessionReady = false
+        externalAudioInput = false
+        synchronized(externalAudioLock) { pendingExternalPcmByte = null }
         preBuffer.clear()
 
         webSocket?.let {

@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.clawsses.phone.glasses.ApkInstaller
+import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.talk.TalkModeState
@@ -62,6 +63,7 @@ fun SettingsScreen(
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
     onSwitchToHiRokid: () -> Unit = {},
+    onRestartGlasses: () -> Boolean = { false },
     // Software Update
     installState: ApkInstaller.InstallState,
     sdkConnected: Boolean,
@@ -146,6 +148,7 @@ fun SettingsScreen(
                     savePhotosToGallery = savePhotosToGallery,
                     onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
                     onSwitchToHiRokid = onSwitchToHiRokid,
+                    onRestartGlasses = onRestartGlasses,
                 )
             }
 
@@ -197,7 +200,7 @@ fun SettingsScreen(
             }
 
             // Developer section (emulator only)
-            if (isEmulator()) {
+            if (BuildConfig.DEBUG && isEmulator()) {
                 item { SectionHeader("Developer") }
                 item {
                     DeveloperSection(

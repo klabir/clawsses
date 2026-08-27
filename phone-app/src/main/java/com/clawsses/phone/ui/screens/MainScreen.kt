@@ -150,17 +150,6 @@ fun MainScreen() {
     val talkModeState by talkModeManager.state.collectAsStateWithLifecycle()
     val isListening by voiceRecognitionManager.isListening.collectAsStateWithLifecycle()
     val voiceMode by voiceRecognitionManager.activeMode.collectAsStateWithLifecycle()
-    val installState by apkInstaller.installState.collectAsStateWithLifecycle()
-    val selectedVoiceLanguage by voiceLanguageManager.selectedLanguage.collectAsStateWithLifecycle()
-    val sessionList by openClawClient.sessionList.collectAsStateWithLifecycle()
-    val agentList by openClawClient.agentList.collectAsStateWithLifecycle()
-    val modelList by openClawClient.modelList.collectAsStateWithLifecycle()
-    val currentModelRef by openClawClient.currentModelRef.collectAsStateWithLifecycle()
-    val isSelectingModel by openClawClient.isSelectingModel.collectAsStateWithLifecycle()
-    val modelSelectionError by openClawClient.modelSelectionError.collectAsStateWithLifecycle()
-    val currentSessionKey by openClawClient.currentSessionKey.collectAsStateWithLifecycle()
-    val unreadSessions by openClawClient.unreadSessions.collectAsStateWithLifecycle()
-    val wakeOnStreamEnabled by glassesManager.wakeSignalManager.enabled.collectAsStateWithLifecycle()
     val glassesWakeState by glassesManager.wakeSignalManager.wakeState.collectAsStateWithLifecycle()
     val ttsEnabled by ttsSettingsManager.isEnabled.collectAsStateWithLifecycle()
     val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsStateWithLifecycle()
@@ -192,9 +181,6 @@ fun MainScreen() {
     val hudCardBodies = remember { mutableStateMapOf<String, String>() }
     var inputText by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
-    var showSessionPicker by remember { mutableStateOf(false) }
-    var showAgentPicker by remember { mutableStateOf(false) }
-    var showModelPicker by remember { mutableStateOf(false) }
     val pendingPhotos by runtime.pendingPhotos.collectAsStateWithLifecycle()
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
     val latestTalkModeState = rememberUpdatedState(talkModeState)
@@ -309,11 +295,6 @@ fun MainScreen() {
         delayMs: Long,
         reason: TalkRestartReason = TalkRestartReason.RESPONSE_COMPLETE,
     ) = runtime.talkCoordinator.scheduleRestart(delayMs, reason)
-
-    // Start the process-scoped runtime exactly once after permissions are available.
-    LaunchedEffect(Unit) {
-        runtime.start()
-    }
 
     LaunchedEffect(liveCaptionState, glassesState) {
         if (glassesState is GlassesConnectionManager.ConnectionState.Connected) {
@@ -584,49 +565,72 @@ fun MainScreen() {
     }
 
     LaunchedEffect(Unit) {
-        glassesManager.onAiKeyDown = {
-            android.util.Log.i("MainScreen", ">>> AI key down from glasses - starting voice recognition")
+        val activationPending = java.util.concurrent.atomic.AtomicBoolean(false)
+        val activateGlassesVoice = activate@{
+            if (!activationPending.compareAndSet(false, true)) return@activate
             mainHandler.post {
-                val interruptedTts = TtsPlaybackManager.isPlaybackActive() ||
-                    ttsPlaybackManager.state.value.blocksVoiceCapture()
-                if (interruptedTts) {
-                    android.util.Log.i(
-                        "MainScreen",
-                        "Rokid AI key interrupted TTS so a voice command can be recognized",
-                    )
-                    stopCurrentTtsOutput()
-                }
-                if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
-                val talk = talkModeManager.state.value
-                if (talk.enabled) {
-                    startTalkListening(
-                        TalkModeSource.GLASSES,
-                        !interruptedTts && talk.phase in setOf(
-                            TalkModePhase.SENDING,
-                            TalkModePhase.WAITING,
-                            TalkModePhase.SPEAKING,
-                            TalkModePhase.ABORTING,
-                        ) || ttsPlaybackManager.state.value != com.clawsses.phone.tts.TtsPlaybackState.IDLE
-                    )
-                } else {
-                    RokidSdkManager.setCommunicationDevice()
-                    startVoiceRecognitionWithManager(
-                        voiceRecognitionManager = voiceRecognitionManager,
-                        voiceHandler = voiceHandler,
-                        openClawClient = openClawClient,
-                        glassesManager = glassesManager,
-                        mainHandler = mainHandler,
-                        isRetry = false,
-                        languageTag = voiceLanguageManager.getActiveLanguageTag(),
-                        pendingPhotos = { pendingPhotos },
-                        onPhotosConsumed = { runtime.replacePendingPhotos(emptyList()) },
-                        onStopTtsRequested = stopCurrentTtsOutput,
-                    )
+                try {
+                    android.util.Log.i("MainScreen", ">>> AI activation from glasses - starting voice recognition")
+                    val interruptedTts = TtsPlaybackManager.isPlaybackActive() ||
+                        ttsPlaybackManager.state.value.blocksVoiceCapture()
+                    if (interruptedTts) {
+                        android.util.Log.i(
+                            "MainScreen",
+                            "Rokid AI activation interrupted TTS so a voice command can be recognized",
+                        )
+                        stopCurrentTtsOutput()
+                    }
+                    if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
+                    val talk = talkModeManager.state.value
+                    if (talk.enabled) {
+                        startTalkListening(
+                            TalkModeSource.GLASSES,
+                            !interruptedTts && talk.phase in setOf(
+                                TalkModePhase.SENDING,
+                                TalkModePhase.WAITING,
+                                TalkModePhase.SPEAKING,
+                                TalkModePhase.ABORTING,
+                            ) || ttsPlaybackManager.state.value != com.clawsses.phone.tts.TtsPlaybackState.IDLE
+                        )
+                    } else {
+                        RokidSdkManager.setCommunicationDevice()
+                        startVoiceRecognitionWithManager(
+                            voiceRecognitionManager = voiceRecognitionManager,
+                            voiceHandler = voiceHandler,
+                            openClawClient = openClawClient,
+                            glassesManager = glassesManager,
+                            mainHandler = mainHandler,
+                            isRetry = false,
+                            languageTag = voiceLanguageManager.getActiveLanguageTag(),
+                            pendingPhotos = { pendingPhotos },
+                            onPhotosConsumed = { runtime.replacePendingPhotos(emptyList()) },
+                            onStopTtsRequested = stopCurrentTtsOutput,
+                        )
+                    }
+                } finally {
+                    activationPending.set(false)
                 }
             }
         }
+        glassesManager.onAiKeyDown = activateGlassesVoice
         glassesManager.onAiExit = {
-            android.util.Log.d("MainScreen", "AI scene exited on glasses (recognizer continues)")
+            val talk = talkModeManager.state.value
+            val needsExitFallback = if (talk.enabled) {
+                talk.phase in setOf(
+                    TalkModePhase.IDLE,
+                    TalkModePhase.STANDBY,
+                    TalkModePhase.DISCONNECTED,
+                    TalkModePhase.ERROR,
+                )
+            } else {
+                !voiceRecognitionManager.isListening.value
+            }
+            if (needsExitFallback && !activationPending.get()) {
+                android.util.Log.i("MainScreen", "AI scene exited without a start callback; using activation fallback")
+                activateGlassesVoice()
+            } else {
+                android.util.Log.d("MainScreen", "AI scene exited on glasses (recognizer continues)")
+            }
         }
     }
 
@@ -1214,55 +1218,7 @@ fun MainScreen() {
 
             // Session selector
             if (openClawState is OpenClawClient.ConnectionState.Connected) {
-                SessionSelector(
-                    sessions = sessionList,
-                    currentSessionKey = currentSessionKey,
-                    unreadSessionKeys = unreadSessions,
-                    expanded = showSessionPicker,
-                    onToggle = {
-                        if (!showSessionPicker) {
-                            openClawClient.requestSessions()
-                        }
-                        showSessionPicker = !showSessionPicker
-                    },
-                    onSelect = { session ->
-                        showSessionPicker = false
-                        openClawClient.switchSession(session.key)
-                    },
-                    onDismiss = { showSessionPicker = false }
-                )
-
-                AgentSelector(
-                    agents = agentList,
-                    currentAgentId = openClawClient.agentIdFromSessionKey(currentSessionKey),
-                    expanded = showAgentPicker,
-                    onToggle = {
-                        if (!showAgentPicker) openClawClient.requestAgents()
-                        showAgentPicker = !showAgentPicker
-                    },
-                    onSelect = { agent ->
-                        showAgentPicker = false
-                        openClawClient.switchAgent(agent.id, agent.name)
-                    },
-                    onDismiss = { showAgentPicker = false }
-                )
-
-                ModelSelector(
-                    models = modelList,
-                    currentModelRef = currentModelRef,
-                    expanded = showModelPicker,
-                    selecting = isSelectingModel,
-                    error = modelSelectionError,
-                    onToggle = {
-                        if (!showModelPicker) openClawClient.requestModels()
-                        showModelPicker = !showModelPicker
-                    },
-                    onSelect = { model ->
-                        showModelPicker = false
-                        openClawClient.selectModel(model)
-                    },
-                    onDismiss = { showModelPicker = false }
-                )
+                MainCatalogControls(openClawClient)
             }
 
             PhoneChatPane(
@@ -1276,21 +1232,25 @@ fun MainScreen() {
         }
     }
 
-    // Glasses state for settings
-    val debugModeEnabled by glassesManager.debugModeEnabled.collectAsStateWithLifecycle()
-    val discoveredDevices by glassesManager.discoveredDevices.collectAsStateWithLifecycle()
-    val wifiP2PConnected by glassesManager.wifiP2PConnected.collectAsStateWithLifecycle()
-    var hasCachedSn by remember { mutableStateOf(RokidSdkManager.hasCachedSn()) }
-    var cachedSn by remember { mutableStateOf(RokidSdkManager.getCachedSn()) }
-    var cachedDeviceName by remember { mutableStateOf(RokidSdkManager.getCachedDeviceName()) }
-    val sdkConnected = glassesState is GlassesConnectionManager.ConnectionState.Connected && !debugModeEnabled
-
     // Settings screen (full-screen overlay with slide-up animation)
     AnimatedVisibility(
         visible = showSettings,
         enter = slideInVertically(initialOffsetY = { it }),
         exit = slideOutVertically(targetOffsetY = { it }),
     ) {
+        // Settings-only flows are collected only while the overlay is composed.
+        val installState by apkInstaller.installState.collectAsStateWithLifecycle()
+        val wakeOnStreamEnabled by
+            glassesManager.wakeSignalManager.enabled.collectAsStateWithLifecycle()
+        val debugModeEnabled by glassesManager.debugModeEnabled.collectAsStateWithLifecycle()
+        val discoveredDevices by glassesManager.discoveredDevices.collectAsStateWithLifecycle()
+        val wifiP2PConnected by glassesManager.wifiP2PConnected.collectAsStateWithLifecycle()
+        var hasCachedSn by remember { mutableStateOf(RokidSdkManager.hasCachedSn()) }
+        var cachedSn by remember { mutableStateOf(RokidSdkManager.getCachedSn()) }
+        var cachedDeviceName by remember { mutableStateOf(RokidSdkManager.getCachedDeviceName()) }
+        val sdkConnected =
+            glassesState is GlassesConnectionManager.ConnectionState.Connected && !debugModeEnabled
+
         SettingsScreen(
             // Server
             openClawHost = openClawHost,
@@ -1340,6 +1300,11 @@ fun MainScreen() {
                 prefs.edit().putBoolean("save_photos_to_gallery", enabled).apply()
             },
             onSwitchToHiRokid = { switchToHiRokid() },
+            onRestartGlasses = {
+                if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
+                runtime.talkCoordinator.prepareForGlassesRestart()
+                RokidSdkManager.restartGlasses()
+            },
             // Software Update
             installState = installState,
             sdkConnected = sdkConnected,
