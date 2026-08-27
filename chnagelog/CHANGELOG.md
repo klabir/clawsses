@@ -4,7 +4,14 @@
 
 ### Changed
 
+- Move OpenClaw, glasses protocol, AI activation, HUD state synchronization, notification relay, photo capture, and staged voice callbacks out of Compose into one process-scoped bridge controller.
+- Route both primary and final phone-microphone voice recognition through one generation-gated staged-voice coordinator so cancelled callbacks cannot affect a newer capture.
+- Reuse the external PCM peak calculation for both privacy-safe diagnostics and local speech detection instead of scanning every glasses audio frame twice.
+- Declare Gson directly and remove unused Retrofit, converter, logging-interceptor, duplicate Core KTX, and ViewBinding configuration from the phone module.
+
 ### Added
+
+- Add a distinct source-verified `1.3.55 / Build 64` paired artifact for deferred phone/glasses hardware validation.
 
 ### Fixed
 

@@ -455,8 +455,8 @@ class OpenAIRealtimeClient {
     }
 
     private fun processAudioChunk(chunk: ByteArray) {
-        if (externalAudioInput) externalAudioTelemetry.recordPcm16(chunk)
-        updateLocalSpeechState(chunk)
+        val peak = if (externalAudioInput) externalAudioTelemetry.recordPcm16(chunk) else null
+        updateLocalSpeechState(chunk, peak)
         if (!sessionReady) {
             if (preBuffer.offer(chunk) && preBufferDroppedFrames.incrementAndGet() == 1L) {
                 Log.w(TAG, "Realtime session is slow; retaining only the latest audio window")
@@ -488,17 +488,8 @@ class OpenAIRealtimeClient {
         }
     }
 
-    private fun updateLocalSpeechState(audioData: ByteArray) {
-        var peak = 0
-        var index = 0
-        while (index + 1 < audioData.size) {
-            val sample = (((audioData[index + 1].toInt() shl 8) or
-                (audioData[index].toInt() and 0xff)).toShort().toInt())
-            val magnitude = if (sample == Short.MIN_VALUE.toInt()) Short.MAX_VALUE.toInt()
-                else kotlin.math.abs(sample)
-            if (magnitude > peak) peak = magnitude
-            index += 2
-        }
+    private fun updateLocalSpeechState(audioData: ByteArray, measuredPeak: Int? = null) {
+        val peak = measuredPeak ?: pcm16Peak(audioData)
 
         if (!speechDetected) {
             consecutiveSpeechFrames = if (peak >= SPEECH_PEAK_THRESHOLD) {

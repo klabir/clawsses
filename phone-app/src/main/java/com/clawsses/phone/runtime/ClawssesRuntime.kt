@@ -58,7 +58,33 @@ class ClawssesRuntime(context: Context) {
         pendingPhotos = _pendingPhotos,
     )
 
-    fun start() = talkCoordinator.start()
+    val stagedVoiceCoordinator = StagedVoiceCoordinator(
+        glassesManager = glassesManager,
+        voiceHandler = voiceHandler,
+        voiceLanguageManager = voiceLanguageManager,
+        voiceRecognitionManager = voiceRecognitionManager,
+        stopCurrentTtsOutput = talkCoordinator::stopCurrentTtsOutput,
+    )
+
+    val phoneGlassesBridge = PhoneGlassesBridgeController(
+        context = appContext,
+        glassesManager = glassesManager,
+        openClawClient = openClawClient,
+        voiceLanguageManager = voiceLanguageManager,
+        voiceRecognitionManager = voiceRecognitionManager,
+        liveCaptionManager = liveCaptionManager,
+        talkModeManager = talkModeManager,
+        ttsSettingsManager = ttsSettingsManager,
+        ttsPlaybackManager = ttsPlaybackManager,
+        pendingPhotos = _pendingPhotos,
+        talkCoordinator = talkCoordinator,
+        stagedVoiceCoordinator = stagedVoiceCoordinator,
+    )
+
+    fun start() {
+        talkCoordinator.start()
+        phoneGlassesBridge.start()
+    }
 
     fun replacePendingPhotos(photos: List<String>) {
         _pendingPhotos.value = photos
@@ -75,6 +101,7 @@ class ClawssesRuntime(context: Context) {
     }
 
     fun cleanup() {
+        phoneGlassesBridge.cleanup()
         talkCoordinator.cleanup()
         glassesManager.dispose()
         openClawClient.cleanup()

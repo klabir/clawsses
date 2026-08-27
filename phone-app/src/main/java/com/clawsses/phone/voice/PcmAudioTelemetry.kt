@@ -19,26 +19,33 @@ internal class PcmAudioTelemetry {
         maxPeak.set(0)
     }
 
-    fun recordPcm16(data: ByteArray) {
+    /** Records privacy-safe counters and returns the already-computed peak for local VAD. */
+    fun recordPcm16(data: ByteArray): Int {
         totalBytes.addAndGet(data.size.toLong())
-        var chunkPeak = 0
-        var index = 0
-        while (index + 1 < data.size) {
-            val sample = (((data[index + 1].toInt() shl 8) or
-                (data[index].toInt() and 0xff)).toShort().toInt())
-            val magnitude = if (sample == Short.MIN_VALUE.toInt()) {
-                Short.MAX_VALUE.toInt()
-            } else {
-                abs(sample)
-            }
-            if (magnitude > chunkPeak) chunkPeak = magnitude
-            index += 2
-        }
+        val chunkPeak = pcm16Peak(data)
         maxPeak.updateAndGet { previous -> maxOf(previous, chunkPeak) }
+        return chunkPeak
     }
 
     fun snapshot(): PcmAudioTelemetrySnapshot = PcmAudioTelemetrySnapshot(
         totalBytes = totalBytes.get(),
         maxPeak = maxPeak.get(),
     )
+}
+
+internal fun pcm16Peak(data: ByteArray): Int {
+    var chunkPeak = 0
+    var index = 0
+    while (index + 1 < data.size) {
+        val sample = (((data[index + 1].toInt() shl 8) or
+            (data[index].toInt() and 0xff)).toShort().toInt())
+        val magnitude = if (sample == Short.MIN_VALUE.toInt()) {
+            Short.MAX_VALUE.toInt()
+        } else {
+            abs(sample)
+        }
+        if (magnitude > chunkPeak) chunkPeak = magnitude
+        index += 2
+    }
+    return chunkPeak
 }

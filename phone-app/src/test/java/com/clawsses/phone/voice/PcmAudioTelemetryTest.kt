@@ -9,8 +9,9 @@ class PcmAudioTelemetryTest {
         val telemetry = PcmAudioTelemetry()
 
         telemetry.recordPcm16(byteArrayOf(0, 0, 0xE8.toByte(), 0x03)) // 0, 1000
-        telemetry.recordPcm16(byteArrayOf(0x30, 0xF8.toByte())) // -2000
+        val latestPeak = telemetry.recordPcm16(byteArrayOf(0x30, 0xF8.toByte())) // -2000
 
+        assertEquals(2000, latestPeak)
         assertEquals(PcmAudioTelemetrySnapshot(totalBytes = 6, maxPeak = 2000), telemetry.snapshot())
     }
 
