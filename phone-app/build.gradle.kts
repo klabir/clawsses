@@ -5,6 +5,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
+import java.util.zip.ZipFile
 
 abstract class BundleGlassesApkTask : DefaultTask() {
     @get:InputFile
@@ -18,6 +19,29 @@ abstract class BundleGlassesApkTask : DefaultTask() {
         val outputFile = outputDirectory.file("glasses-app-release.apk").get().asFile
         outputFile.parentFile.mkdirs()
         sourceApk.get().asFile.copyTo(outputFile, overwrite = true)
+    }
+}
+
+abstract class VerifyReleaseExcludesDebugTransportTask : DefaultTask() {
+    @get:InputFile
+    abstract val releaseApk: RegularFileProperty
+
+    @TaskAction
+    fun verify() {
+        val forbiddenClassPath = "com/clawsses/phone/debug/DebugGlassesServer"
+        ZipFile(releaseApk.get().asFile).use { apk ->
+            val leakedFrom = apk.entries().asSequence()
+                .filter { it.name.matches(Regex("classes\\d*\\.dex")) }
+                .firstOrNull { entry ->
+                    apk.getInputStream(entry).use { input ->
+                        input.readBytes().toString(Charsets.ISO_8859_1)
+                            .contains(forbiddenClassPath)
+                    }
+                }
+            check(leakedFrom == null) {
+                "Release APK contains emulator-only debug transport in ${leakedFrom?.name}"
+            }
+        }
     }
 }
 
@@ -193,4 +217,18 @@ dependencies {
 
 baselineProfile {
     automaticGenerationDuringBuild = false
+}
+
+val verifyReleaseExcludesDebugTransport =
+    tasks.register<VerifyReleaseExcludesDebugTransportTask>("verifyReleaseExcludesDebugTransport") {
+        group = "verification"
+        description = "Fails if the unauthenticated emulator transport is packaged in the phone release APK."
+        dependsOn("assembleRelease")
+        releaseApk.set(
+            layout.buildDirectory.file("outputs/apk/release/phone-app-release-unsigned.apk")
+        )
+    }
+
+tasks.named("check").configure {
+    dependsOn(verifyReleaseExcludesDebugTransport)
 }

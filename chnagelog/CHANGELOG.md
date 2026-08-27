@@ -12,6 +12,7 @@
 
 ### Added
 
+- Add a release-APK verification gate that fails the build if the emulator-only raw WebSocket listener is ever packaged again.
 - Add a distinct source-verified `1.3.56 / Build 65` paired artifact for deferred phone/glasses hardware validation.
 - Add a distinct source-verified `1.3.55 / Build 64` paired artifact for deferred phone/glasses hardware validation.
 
