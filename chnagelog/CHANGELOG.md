@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.69 (build 78)
+
+### Fixed
+
+- Close the active camera session, camera device, image reader, and handler thread through one idempotent terminal cleanup path.
+- Recycle the previous captured thumbnail before starting another photo capture.
+
+### Changed
+
+- Select and decode camera images through tested bounded sizing math while retaining the existing output dimensions, JPEG quality, and thumbnail format.
+
+### Added
+
+- Add regression coverage for capture-size selection, power-of-two decode sampling, aspect-ratio preservation, and no-upscale behavior.
+
 ## 1.3.68 (build 77)
 
 ### Changed
