@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.75 (build 84)
+
+### Changed
+
+- Rebuild only the final two measured HUD pages when text is appended to a long streaming response, preserving older page layouts by character anchor.
+- Keep a two-page reflow window so a growing final word can still wrap safely across the preceding page boundary.
+
+### Fixed
+
+- Make streaming pagination cost proportional to the live tail instead of repeatedly measuring every page of a long single response.
+
+### Added
+
+- Add regression scenarios for 100-page append-only responses with and without a preceding completed message.
+
 ## 1.3.74 (build 83)
 
 ### Changed

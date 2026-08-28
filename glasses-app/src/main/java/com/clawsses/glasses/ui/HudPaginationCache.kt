@@ -6,6 +6,7 @@ import androidx.compose.ui.text.TextStyle
 internal data class HudPaginationReusePlan(
     val reusablePageCount: Int,
     val restartMessageIndex: Int,
+    val restartCharacterOffset: Int = 0,
     val unchanged: Boolean = false,
 )
 
@@ -32,6 +33,29 @@ internal fun planHudPaginationReuse(
 
     if (commonPrefixSize == previousMessages.size && commonPrefixSize == messages.size) {
         return HudPaginationReusePlan(previousPages.size, messages.size, unchanged = true)
+    }
+    val oldTail = previousMessages.lastOrNull()
+    val newTail = messages.lastOrNull()
+    val appendOnlyTail = previousMessages.size == messages.size &&
+        commonPrefixSize == messages.lastIndex &&
+        oldTail != null && newTail != null &&
+        oldTail.id == newTail.id &&
+        oldTail.role == newTail.role &&
+        oldTail.thumbnails == newTail.thumbnails &&
+        newTail.content.startsWith(oldTail.content)
+    if (appendOnlyTail) {
+        // Rebuild two pages so a growing final word can safely reflow across the previous
+        // page boundary, while all older pages of a very long response remain untouched.
+        val restartPageIndex = (previousPages.lastIndex - 1).coerceAtLeast(0)
+        val anchor = previousPages[restartPageIndex].anchor ?: return HudPaginationReusePlan(0, 0)
+        val restartMessageIndex = messages.indexOfFirst { it.id == anchor.messageId }
+        if (restartMessageIndex >= 0) {
+            return HudPaginationReusePlan(
+                reusablePageCount = restartPageIndex,
+                restartMessageIndex = restartMessageIndex,
+                restartCharacterOffset = anchor.characterOffset,
+            )
+        }
     }
     if (commonPrefixSize == 0) return HudPaginationReusePlan(0, 0)
 
@@ -145,6 +169,7 @@ internal class HudPaginationCache {
             thumbnailHeightPx = thumbnailHeightPx,
             historyMarkerHeightPx = historyMarkerHeightPx,
             showHistoryStart = showHistoryStart && reusablePages.isEmpty(),
+            firstMessageStartOffset = reusePlan.restartCharacterOffset,
         )
         val pages = reusablePages + rebuiltPages
 

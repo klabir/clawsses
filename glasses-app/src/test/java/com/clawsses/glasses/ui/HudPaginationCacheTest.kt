@@ -33,8 +33,69 @@ class HudPaginationCacheTest {
         )
 
         assertFalse(plan.unchanged)
-        assertEquals(1, plan.reusablePageCount)
+        assertEquals(0, plan.reusablePageCount)
+        assertEquals(0, plan.restartMessageIndex)
+    }
+
+    @Test
+    fun veryLongAppendOnlyTailRebuildsOnlyFinalTwoPages() {
+        val prefix = message("prefix")
+        val oldTail = message("tail", "x".repeat(10_000))
+        val newTail = oldTail.copy(content = oldTail.content + " more")
+        val tailPages = (0 until 100).map { pageIndex ->
+            HudPage(
+                listOf(
+                    HudMessageFragment(
+                        message = oldTail,
+                        content = "x".repeat(100),
+                        startOffset = pageIndex * 100,
+                        endOffset = (pageIndex + 1) * 100,
+                        showThumbnails = false,
+                    )
+                )
+            )
+        }
+        val pages = listOf(page(prefix)) + tailPages
+
+        val plan = planHudPaginationReuse(
+            previousMessages = listOf(prefix, oldTail),
+            previousPages = pages,
+            messages = listOf(prefix, newTail),
+            layoutCompatible = true,
+        )
+
+        assertEquals(99, plan.reusablePageCount)
         assertEquals(1, plan.restartMessageIndex)
+        assertEquals(9_800, plan.restartCharacterOffset)
+    }
+
+    @Test
+    fun singleLongStreamingMessageStillUsesBoundedTailRebuild() {
+        val oldTail = message("tail", "x".repeat(10_000))
+        val pages = (0 until 100).map { pageIndex ->
+            HudPage(
+                listOf(
+                    HudMessageFragment(
+                        message = oldTail,
+                        content = "x".repeat(100),
+                        startOffset = pageIndex * 100,
+                        endOffset = (pageIndex + 1) * 100,
+                        showThumbnails = false,
+                    )
+                )
+            )
+        }
+
+        val plan = planHudPaginationReuse(
+            previousMessages = listOf(oldTail),
+            previousPages = pages,
+            messages = listOf(oldTail.copy(content = oldTail.content + " more")),
+            layoutCompatible = true,
+        )
+
+        assertEquals(98, plan.reusablePageCount)
+        assertEquals(0, plan.restartMessageIndex)
+        assertEquals(9_800, plan.restartCharacterOffset)
     }
 
     @Test
