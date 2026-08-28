@@ -75,6 +75,9 @@ class GlassesConnectionManager(private val context: Context) {
     private val _wifiP2PConnected = MutableStateFlow(false)
     val wifiP2PConnected: StateFlow<Boolean> = _wifiP2PConnected.asStateFlow()
 
+    private val _peerBuild = MutableStateFlow<Int?>(null)
+    val peerBuild: StateFlow<Int?> = _peerBuild.asStateFlow()
+
     private val _lastMessages = MutableStateFlow<List<String>>(emptyList())
     val lastMessages: StateFlow<List<String>> = _lastMessages.asStateFlow()
 
@@ -479,6 +482,7 @@ class GlassesConnectionManager(private val context: Context) {
         }
         _connectionState.value = ConnectionState.Disconnected
         outboundTransport.setConnected(false)
+        _peerBuild.value = null
         _wifiP2PConnected.value = false
         // Explicitly stop the foreground service on user-initiated disconnect.
         // The LaunchedEffect won't stop it because hasSavedConnectionInfo() is still true.
@@ -736,6 +740,7 @@ class GlassesConnectionManager(private val context: Context) {
 
     /** Enable reliable ACK delivery only after a matching glasses build announces support. */
     fun updatePeerVersion(versionCode: Int?) {
+        _peerBuild.value = versionCode
         outboundTransport.setPeerBuild(versionCode)
     }
 

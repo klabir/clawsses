@@ -68,6 +68,7 @@ fun SettingsScreen(
     installState: ApkInstaller.InstallState,
     sdkConnected: Boolean,
     onInstall: () -> Unit,
+    onInstallViaHiRokid: () -> Unit,
     onCancelInstall: () -> Unit,
     // Voice
     voiceLanguageManager: VoiceLanguageManager,
@@ -159,6 +160,7 @@ fun SettingsScreen(
                     installState = installState,
                     sdkConnected = sdkConnected,
                     onInstall = onInstall,
+                    onInstallViaHiRokid = onInstallViaHiRokid,
                     onCancel = onCancelInstall,
                 )
             }

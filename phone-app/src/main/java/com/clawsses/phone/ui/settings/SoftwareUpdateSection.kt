@@ -32,6 +32,7 @@ fun SoftwareUpdateSection(
     installState: ApkInstaller.InstallState,
     sdkConnected: Boolean,
     onInstall: () -> Unit,
+    onInstallViaHiRokid: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -39,14 +40,9 @@ fun SoftwareUpdateSection(
         VersionContent()
         Spacer(Modifier.height(16.dp))
 
-        if (!sdkConnected) {
-            UnavailableContent()
-            return
-        }
-
         when (installState) {
             is ApkInstaller.InstallState.Idle ->
-                IdleContent(onInstall)
+                IdleContent(sdkConnected, onInstall, onInstallViaHiRokid)
 
             is ApkInstaller.InstallState.CheckingConnection ->
                 ProgressContent("Checking connection...", -1, null, onCancel = null)
@@ -56,6 +52,12 @@ fun SoftwareUpdateSection(
 
             is ApkInstaller.InstallState.InitializingWifiHotspot ->
                 ProgressContent("Connecting to glasses hotspot...", -1, null, onCancel = null)
+
+            is ApkInstaller.InstallState.AwaitingHiRokidAuthorization ->
+                ProgressContent("Approve the installer in Hi Rokid...", -1, null, onCancel)
+
+            is ApkInstaller.InstallState.ConnectingHiRokid ->
+                ProgressContent(installState.message, -1, "Keep Hi Rokid and the glasses awake", onCancel)
 
             is ApkInstaller.InstallState.PreparingApk ->
                 ProgressContent("Preparing APK...", -1, null, onCancel = null)
@@ -67,10 +69,10 @@ fun SoftwareUpdateSection(
                 ProgressContent(installState.message, -1, "Do not disconnect the glasses", onCancel = null)
 
             is ApkInstaller.InstallState.Success ->
-                SuccessContent(installState.message, onInstall)
+                SuccessContent(installState.message, onInstallViaHiRokid)
 
             is ApkInstaller.InstallState.Error ->
-                ErrorContent(installState.message, installState.canRetry, onInstall)
+                ErrorContent(installState.message, installState.canRetry, onInstall, onInstallViaHiRokid)
         }
     }
 }
@@ -89,26 +91,17 @@ private fun VersionContent() {
 }
 
 @Composable
-private fun UnavailableContent() {
+private fun IdleContent(
+    sdkConnected: Boolean,
+    onInstall: () -> Unit,
+    onInstallViaHiRokid: () -> Unit,
+) {
     Text(
         "Glasses App",
         style = MaterialTheme.typography.bodyLarge,
     )
     Text(
-        "Connect glasses via Bluetooth to install updates",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-@Composable
-private fun IdleContent(onInstall: () -> Unit) {
-    Text(
-        "Glasses App",
-        style = MaterialTheme.typography.bodyLarge,
-    )
-    Text(
-        "Push the latest glasses app via Bluetooth",
+        "Use CXR-M, or the official Hi Rokid bridge when the Wi-Fi transfer is unavailable.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -117,11 +110,21 @@ private fun IdleContent(onInstall: () -> Unit) {
 
     Button(
         onClick = onInstall,
+        enabled = sdkConnected,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text("Install to Glasses")
+        Text(if (sdkConnected) "Install via CXR-M" else "Connect Glasses for CXR-M")
+    }
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(
+        onClick = onInstallViaHiRokid,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Install via Hi Rokid")
     }
 }
 
@@ -231,7 +234,12 @@ private fun SuccessContent(message: String, onInstallAgain: () -> Unit) {
 }
 
 @Composable
-private fun ErrorContent(message: String, canRetry: Boolean, onRetry: () -> Unit) {
+private fun ErrorContent(
+    message: String,
+    canRetry: Boolean,
+    onRetry: () -> Unit,
+    onInstallViaHiRokid: () -> Unit,
+) {
     Row(
         verticalAlignment = Alignment.Top,
     ) {
@@ -265,6 +273,13 @@ private fun ErrorContent(message: String, canRetry: Boolean, onRetry: () -> Unit
             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text("Try Again")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onInstallViaHiRokid,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Use Hi Rokid Bridge")
         }
     }
 }

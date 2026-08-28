@@ -53,9 +53,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val hiRokidAuthorizationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        (application as ClawssesApp).runtime.apkInstaller.handleHiRokidAuthorization(
+            result.resultCode,
+            result.data,
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         jankMonitor = TechnicalJankMonitor(window, "ClawssesPerf", "phone")
+        (application as ClawssesApp).runtime.apkInstaller.launchHiRokidAuthorization =
+            hiRokidAuthorizationLauncher::launch
 
         if (hasAllPermissions()) {
             initializeApp()
@@ -75,6 +86,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        (application as ClawssesApp).runtime.apkInstaller.launchHiRokidAuthorization = null
         jankMonitor.close()
         super.onDestroy()
     }

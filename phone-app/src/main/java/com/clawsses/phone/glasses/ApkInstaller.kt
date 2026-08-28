@@ -2,17 +2,21 @@ package com.clawsses.phone.glasses
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.clawsses.phone.service.GlassesConnectionService
 import com.clawsses.phone.service.WakeLockReason
+import com.clawsses.phone.BuildConfig
 import dadb.Dadb
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.delay
@@ -26,13 +30,17 @@ import kotlinx.coroutines.delay
  *
  * The ADB method is more reliable for development and doesn't require the full SDK setup.
  */
-class ApkInstaller(private val context: Context) {
+class ApkInstaller(
+    private val context: Context,
+    private val glassesManager: GlassesConnectionManager,
+) {
 
     companion object {
         private const val TAG = "ApkInstaller"
         private const val GLASSES_APP_ASSET = "glasses-app-release.apk"
         private const val DEFAULT_ADB_PORT = 5555
         private const val ADB_OPERATION_TIMEOUT_MS = 60_000L
+        private const val PEER_HANDSHAKE_TIMEOUT_MS = 60_000L
     }
 
     /**
@@ -51,6 +59,8 @@ class ApkInstaller(private val context: Context) {
         object CheckingConnection : InstallState()
         object InitializingWifiP2P : InstallState()
         object InitializingWifiHotspot : InstallState()
+        object AwaitingHiRokidAuthorization : InstallState()
+        data class ConnectingHiRokid(val message: String) : InstallState()
         object PreparingApk : InstallState()
         data class Uploading(val message: String = "Uploading APK...", val progress: Int = -1) : InstallState()
         data class Installing(val message: String = "Installing...") : InstallState()
@@ -66,6 +76,10 @@ class ApkInstaller(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var installJob: Job? = null
+    private val hiRokidInstaller = HiRokidInstaller(context, glassesManager)
+
+    /** Activity-owned launcher; the authorization token is returned directly and never persisted. */
+    var launchHiRokidAuthorization: ((Intent) -> Unit)? = null
 
     // ADB connection settings
     private var adbHost: String = ""
@@ -235,6 +249,88 @@ class ApkInstaller(private val context: Context) {
                 RokidSdkManager.onApkUploadFailed = null
                 RokidSdkManager.onApkInstallSucceed = null
                 RokidSdkManager.onApkInstallFailed = null
+                cleanupTempApk()
+            }
+        }
+    }
+
+    fun installViaHiRokid() {
+        if (!canStartInstall()) return
+        if (!hiRokidInstaller.isAvailable()) {
+            _installState.value = InstallState.Error(
+                "Enable or install the official Hi Rokid app, then try again.",
+                canRetry = true,
+            )
+            return
+        }
+        val launcher = launchHiRokidAuthorization
+        if (launcher == null) {
+            _installState.value = InstallState.Error(
+                "Open Clawsses on the phone to authorize the Hi Rokid installer.",
+                canRetry = true,
+            )
+            return
+        }
+        _installState.value = InstallState.AwaitingHiRokidAuthorization
+        runCatching { launcher(hiRokidInstaller.authorizationIntent()) }
+            .onFailure { error ->
+                _installState.value = InstallState.Error(
+                    "Could not open Hi Rokid authorization: ${error.message ?: error.javaClass.simpleName}",
+                    canRetry = true,
+                )
+            }
+    }
+
+    fun handleHiRokidAuthorization(resultCode: Int, data: Intent?) {
+        if (_installState.value !is InstallState.AwaitingHiRokidAuthorization) return
+        val token = hiRokidInstaller.parseAuthorizationResult(resultCode, data)
+        if (token == null) {
+            _installState.value = InstallState.Error(
+                "Hi Rokid authorization was cancelled or denied.",
+                canRetry = true,
+            )
+            return
+        }
+
+        GlassesConnectionService.holdWakeLock(
+            context,
+            WakeLockReason.APK_TRANSFER,
+            ApkInstallerTimeoutPolicy.TOTAL_OPERATION_MS,
+        )
+        installJob = scope.launch {
+            try {
+                _installState.value = InstallState.PreparingApk
+                val apkFile = withContext(Dispatchers.IO) {
+                    extractApkFromAssets()
+                        ?: throw IllegalStateException("Bundled glasses APK is missing.")
+                }
+                hiRokidInstaller.install(apkFile, token) { message ->
+                    _installState.value = InstallState.ConnectingHiRokid(message)
+                }
+                _installState.value = InstallState.Installing(
+                    "Installed. Reconnecting to verify Build ${BuildConfig.VERSION_CODE}...",
+                )
+                withTimeout(PEER_HANDSHAKE_TIMEOUT_MS) {
+                    glassesManager.peerBuild
+                        .filter { it == BuildConfig.VERSION_CODE }
+                        .first()
+                }
+                _installState.value = InstallState.Success(
+                    "Glasses Build ${BuildConfig.VERSION_CODE} installed and verified via Hi Rokid.",
+                )
+            } catch (error: TimeoutCancellationException) {
+                _installState.value = InstallState.Error(
+                    "Hi Rokid install timed out before the Build ${BuildConfig.VERSION_CODE} handshake.",
+                    canRetry = true,
+                )
+            } catch (error: CancellationException) {
+                _installState.value = InstallState.Idle
+            } catch (error: Exception) {
+                Log.e(TAG, "Hi Rokid installation failed", error)
+                _installState.value = InstallState.Error(formatError(error), canRetry = true)
+            } finally {
+                hiRokidInstaller.cancel()
+                GlassesConnectionService.releaseWakeLock(context, WakeLockReason.APK_TRANSFER)
                 cleanupTempApk()
             }
         }
@@ -499,6 +595,7 @@ class ApkInstaller(private val context: Context) {
     fun cancelInstallation() {
         Log.d(TAG, "Cancelling installation")
         RokidSdkManager.stopUploadApk()
+        hiRokidInstaller.cancel()
         installJob?.cancel()
         installJob = null
         _installState.value = InstallState.Idle
@@ -596,6 +693,7 @@ class ApkInstaller(private val context: Context) {
 
     fun cleanup() {
         RokidSdkManager.stopUploadApk()
+        hiRokidInstaller.cancel()
         installJob?.cancel()
         scope.cancel()
         cleanupTempApk()

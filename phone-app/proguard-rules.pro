@@ -1,6 +1,7 @@
 # Rokid's CXR-M AAR contains JNI entry points and supplies no consumer keep rules. Preserve the
 # vendor bridge boundary while allowing the rest of the phone application to be optimized.
 -keep class com.rokid.cxr.** { *; }
+-keep class com.rokid.sprite.aiapp.externalapp.** { *; }
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;
 }

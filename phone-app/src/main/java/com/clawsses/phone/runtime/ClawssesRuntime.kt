@@ -33,7 +33,7 @@ class ClawssesRuntime(context: Context) {
     val voiceRecognitionManager = VoiceRecognitionManager(appContext)
     val liveCaptionManager = LiveCaptionManager(appContext)
     val talkModeManager = TalkModeManager(appContext)
-    val apkInstaller = ApkInstaller(appContext)
+    val apkInstaller = ApkInstaller(appContext, glassesManager)
     val ttsSettingsManager = TtsSettingsManager(appContext)
     val elevenLabsClient = ElevenLabsClient()
     val openAiTtsClient = OpenAiTtsClient()

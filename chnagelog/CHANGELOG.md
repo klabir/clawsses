@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## 1.3.62 (build 71)
+
+### Added
+
+- Add an in-app installer fallback through the official Hi Rokid CXR-L bridge when the CXR-M hotspot or P2P transport is unavailable.
+- Require both the Hi Rokid service and glasses Bluetooth callbacks before starting exactly one APK upload.
+
+### Changed
+
+- Keep Hi Rokid authorization tokens in memory only, release CXR-M ownership during installation, and restore the Clawsses connection afterward.
+- Launch the newly installed HUD through CXR-L before returning Bluetooth ownership to Clawsses.
+- Report installation success only after the matching glasses build reconnects and completes its version handshake.
+- Apply the explicit local hardware-test signing switch to both paired release APKs while keeping normal public release outputs unsigned.
+
 ## 1.3.61 (build 70)
 
 ### Changed

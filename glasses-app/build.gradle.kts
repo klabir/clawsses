@@ -6,6 +6,10 @@ plugins {
 
 val clawssesVersionCode = providers.gradleProperty("clawsses.versionCode").get().toInt()
 val clawssesVersionName = providers.gradleProperty("clawsses.versionName").get()
+val useDebugSigningForHardwareTest = providers
+    .gradleProperty("clawsses.hardwareTestSigning")
+    .map(String::toBooleanStrict)
+    .orElse(false)
 
 android {
     namespace = "com.clawsses.glasses"
@@ -22,6 +26,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            if (useDebugSigningForHardwareTest.get()) {
+                // Explicit local paired-device gate. Public release builds remain unsigned.
+                signingConfig = signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

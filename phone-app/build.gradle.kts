@@ -173,7 +173,11 @@ androidComponents {
         val bundleTask = tasks.register<BundleGlassesApkTask>(taskName) {
             dependsOn(":glasses-app:assemble${glassesBuildType.replaceFirstChar(Char::uppercaseChar)}")
             val glassesApkName = if (glassesBuildType == "release") {
-                "glasses-app-release-unsigned.apk"
+                if (useDebugSigningForHardwareTest.get()) {
+                    "glasses-app-release.apk"
+                } else {
+                    "glasses-app-release-unsigned.apk"
+                }
             } else {
                 "glasses-app-debug.apk"
             }
@@ -195,6 +199,12 @@ dependencies {
 
     // Rokid CXR-M SDK (Phone side)
     implementation("com.rokid.cxr:client-m:1.2.2")
+    // Official Hi Rokid bridge used as an installer fallback when CXR-M Wi-Fi is unavailable.
+    implementation("com.rokid.cxr:client-l:1.1.1") {
+        // client-m already supplies the hardware-verified bridge classes and JNI libraries.
+        // CXR-L only needs its Hi Rokid Binder/client layer for the installer path.
+        exclude(group = "com.rokid.cxr", module = "cxr-service-bridge")
+    }
 
     // Android Core
     implementation("androidx.core:core-ktx:1.12.0")
