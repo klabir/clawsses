@@ -17,25 +17,29 @@ class StartupBenchmark {
 
     @Test fun warmStart() = measure(StartupMode.WARM)
 
-    private fun measure(mode: StartupMode) = benchmarkRule.measureRepeated(
-        packageName = PACKAGE_NAME,
-        metrics = listOf(StartupTimingMetric()),
-        compilationMode = CompilationMode.Partial(),
-        startupMode = mode,
-        iterations = 5,
-        setupBlock = {
-            grantRuntimePermissions()
-            pressHome()
-        },
-    ) {
-        startActivityAndWait()
-        device.waitForIdle()
+    private fun measure(mode: StartupMode) {
+        val targetPackage = benchmarkTargetPackage()
+        clearBenchmarkTarget(targetPackage)
+        benchmarkRule.measureRepeated(
+            packageName = targetPackage,
+            metrics = listOf(StartupTimingMetric()),
+            compilationMode = CompilationMode.Partial(),
+            startupMode = mode,
+            iterations = 5,
+            setupBlock = {
+                grantRuntimePermissions(targetPackage)
+                pressHome()
+            },
+        ) {
+            startActivityAndWait()
+            device.waitForIdle()
+        }
     }
 }
 
-private fun androidx.benchmark.macro.MacrobenchmarkScope.grantRuntimePermissions() {
+private fun androidx.benchmark.macro.MacrobenchmarkScope.grantRuntimePermissions(packageName: String) {
     REQUIRED_PERMISSIONS.forEach { permission ->
-        device.executeShellCommand("pm grant $PACKAGE_NAME $permission")
+        device.executeShellCommand("pm grant $packageName $permission")
     }
 }
 
@@ -46,5 +50,3 @@ private val REQUIRED_PERMISSIONS = listOf(
     "android.permission.RECORD_AUDIO",
     "android.permission.NEARBY_WIFI_DEVICES",
 )
-
-private const val PACKAGE_NAME = "com.clawsses.phone"

@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import com.clawsses.phone.ClawssesApp
 import com.clawsses.phone.MainActivity
 import com.clawsses.phone.R
+import com.clawsses.phone.runtime.BenchmarkIsolation
 
 /**
  * Foreground service that keeps the app alive when the phone screen is off.
@@ -37,16 +38,19 @@ class GlassesConnectionService : Service() {
         private const val EXTRA_WAKE_LOCK_TIMEOUT_MS = "wake_lock_timeout_ms"
 
         fun start(context: Context) {
+            if (BenchmarkIsolation.isActive(context)) return
             val intent = Intent(context, GlassesConnectionService::class.java)
             context.startForegroundService(intent)
         }
 
         fun stop(context: Context) {
+            if (BenchmarkIsolation.isActive(context)) return
             val intent = Intent(context, GlassesConnectionService::class.java)
             context.stopService(intent)
         }
 
         fun holdWakeLock(context: Context, reason: WakeLockReason, timeoutMs: Long) {
+            if (BenchmarkIsolation.isActive(context)) return
             context.startForegroundService(
                 Intent(context, GlassesConnectionService::class.java)
                     .setAction(ACTION_HOLD_WAKE_LOCK)
@@ -56,6 +60,7 @@ class GlassesConnectionService : Service() {
         }
 
         fun releaseWakeLock(context: Context, reason: WakeLockReason) {
+            if (BenchmarkIsolation.isActive(context)) return
             context.startForegroundService(
                 Intent(context, GlassesConnectionService::class.java)
                     .setAction(ACTION_RELEASE_WAKE_LOCK)

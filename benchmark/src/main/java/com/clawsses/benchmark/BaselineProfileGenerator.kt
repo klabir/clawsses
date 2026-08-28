@@ -10,16 +10,20 @@ import org.junit.runner.RunWith
 class BaselineProfileGenerator {
     @get:Rule val baselineProfileRule = BaselineProfileRule()
 
-    @Test fun generate() = baselineProfileRule.collect(
-        packageName = PACKAGE_NAME,
-        includeInStartupProfile = true,
-    ) {
-        REQUIRED_PERMISSIONS.forEach { permission ->
-            device.executeShellCommand("pm grant $PACKAGE_NAME $permission")
+    @Test fun generate() {
+        val targetPackage = benchmarkTargetPackage()
+        clearBenchmarkTarget(targetPackage)
+        baselineProfileRule.collect(
+            packageName = targetPackage,
+            includeInStartupProfile = true,
+        ) {
+            REQUIRED_PERMISSIONS.forEach { permission ->
+                device.executeShellCommand("pm grant $targetPackage $permission")
+            }
+            pressHome()
+            startActivityAndWait()
+            device.waitForIdle()
         }
-        pressHome()
-        startActivityAndWait()
-        device.waitForIdle()
     }
 }
 
@@ -30,5 +34,3 @@ private val REQUIRED_PERMISSIONS = listOf(
     "android.permission.RECORD_AUDIO",
     "android.permission.NEARBY_WIFI_DEVICES",
 )
-
-private const val PACKAGE_NAME = "com.clawsses.phone"

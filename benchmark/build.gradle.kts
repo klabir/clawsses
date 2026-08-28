@@ -12,6 +12,7 @@ android {
         minSdk = 28
         targetSdk = 34
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "TARGET_PACKAGE", "\"com.clawsses.phone.benchmark\"")
     }
 
     targetProjectPath = ":phone-app"
@@ -23,6 +24,10 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 }
 

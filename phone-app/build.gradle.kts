@@ -5,6 +5,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.util.zip.ZipFile
 
 abstract class BundleGlassesApkTask : DefaultTask() {
@@ -142,6 +143,16 @@ android {
 // Bundle the matching glasses APK through a generated variant asset directory. Builds no longer
 // mutate src/main/assets, and release-derived phone variants cannot silently ship the debug HUD.
 androidComponents {
+    finalizeDsl { extension ->
+        // The Baseline Profile plugin creates these build types during its own finalizeDsl
+        // callback. Apply the suffix afterward so profiling can never replace production data.
+        extension.buildTypes.configureEach {
+            if (name.startsWith("nonMinified") || name.startsWith("benchmark")) {
+                applicationIdSuffix = ".benchmark"
+            }
+        }
+    }
+
     onVariants(selector().all()) { variant ->
         val glassesBuildType = if (variant.name.contains("release", ignoreCase = true)) {
             "release"
@@ -217,6 +228,31 @@ dependencies {
 
 baselineProfile {
     automaticGenerationDuringBuild = false
+}
+
+tasks.withType<KotlinCompile>().configureEach {
+    // Compose encodes the Kotlin module name in generated singleton accessors. Keep it stable
+    // across release, nonMinifiedRelease, and benchmarkRelease so one generated profile is valid.
+    compilerOptions.moduleName.set("phone_app")
+}
+
+val normalizeReleaseBaselineProfiles = tasks.register("normalizeReleaseBaselineProfiles") {
+    group = "verification"
+    description = "Removes D8-generated synthetic lambda rules that are unstable across variants."
+    doLast {
+        fileTree("src/release/generated/baselineProfiles") {
+            include("*.txt")
+        }.files.forEach { profile ->
+            val stableRules = profile.readLines().filterNot { rule ->
+                rule.contains("\$\$ExternalSyntheticLambda")
+            }
+            profile.writeText(stableRules.joinToString(separator = "\n", postfix = "\n"))
+        }
+    }
+}
+
+tasks.matching { it.name == "copyReleaseBaselineProfileIntoSrc" }.configureEach {
+    finalizedBy(normalizeReleaseBaselineProfiles)
 }
 
 val verifyReleaseExcludesDebugTransport =

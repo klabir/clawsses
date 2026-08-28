@@ -4,12 +4,16 @@
 
 ### Changed
 
+- Generate baseline and startup profiles from isolated benchmark-only app variants so profiling cannot overwrite production Clawsses data or Keystore-backed settings.
+- Regenerate startup profiles with a stable Kotlin module name and remove D8-generated synthetic-lambda rules that cannot remain valid across build variants.
 
 ### Added
 
+- Add a benchmark runtime guard that refuses to manipulate a target package unless it uses the dedicated `.benchmark` application-ID suffix.
 
 ### Fixed
 
+- Prevent benchmark launches from initializing Rokid, OpenClaw, foreground-service, and wake-lock lifecycles that belong only to the production package.
 
 ## 1.3.59 (build 68)
 

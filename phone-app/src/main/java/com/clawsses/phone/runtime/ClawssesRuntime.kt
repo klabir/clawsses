@@ -1,6 +1,7 @@
 package com.clawsses.phone.runtime
 
 import android.content.Context
+import android.util.Log
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.DeviceIdentity
@@ -82,6 +83,10 @@ class ClawssesRuntime(context: Context) {
     )
 
     fun start() {
+        if (BenchmarkIsolation.isActive(appContext)) {
+            Log.i(TAG, "Benchmark mode: external process runtime disabled")
+            return
+        }
         talkCoordinator.start()
         phoneGlassesBridge.start()
     }
@@ -109,5 +114,9 @@ class ClawssesRuntime(context: Context) {
         voiceRecognitionManager.cleanup()
         liveCaptionManager.cleanup()
         ttsPlaybackManager.dispose()
+    }
+
+    private companion object {
+        const val TAG = "ClawssesRuntime"
     }
 }
