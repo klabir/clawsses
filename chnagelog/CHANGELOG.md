@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.76 (build 85)
+
+### Changed
+
+- Move the HUD emulator WebSocket client and its network permission into the debug source set while keeping the production CXR-S transport unchanged.
+- Route debug transport construction through a build-variant provider so release builds expose only a no-op provider.
+
+### Fixed
+
+- Prevent the unminified glasses release from shipping the unauthenticated emulator socket client or declaring an unused internet capability.
+
+### Added
+
+- Add a release artifact gate that fails the build if the HUD debug client or `android.permission.INTERNET` reappears in the production APK.
+
 ## 1.3.75 (build 84)
 
 ### Changed
