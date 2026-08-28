@@ -25,6 +25,9 @@ import com.clawsses.glasses.camera.CameraCapture
 import com.clawsses.glasses.camera.PhotoCaptureState
 import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.media.ThumbnailBitmapCache
+import com.clawsses.glasses.protocol.PhoneHudDecodeResult
+import com.clawsses.glasses.protocol.PhoneHudMessage
+import com.clawsses.glasses.protocol.PhoneHudMessageCodec
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.input.ModelPageSelection
 import com.clawsses.glasses.input.ModelPickerMove
@@ -1590,11 +1593,32 @@ class HudActivity : ComponentActivity() {
     private fun handlePhoneMessage(json: String) {
         try {
             Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
+            when (val decoded = PhoneHudMessageCodec.decode(json)) {
+                is PhoneHudDecodeResult.Success -> {
+                    val transactionId = decoded.envelope.transactionId
+                    if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
+                        acknowledgeTransport(transactionId)
+                        return
+                    }
+                    handleTypedPhoneMessage(decoded.envelope.message)
+                    if (transactionId != null) recordAndAcknowledgeTransport(transactionId)
+                    return
+                }
+                is PhoneHudDecodeResult.Malformed -> {
+                    Log.w(
+                        GlassesApp.TAG,
+                        "Rejected malformed phone message type=${decoded.type}: ${decoded.reason}",
+                    )
+                    if (decoded.transactionId != null) recordAndAcknowledgeTransport(decoded.transactionId)
+                    return
+                }
+                is PhoneHudDecodeResult.UnknownType -> Unit
+            }
             val msg = JSONObject(json)
             val type = msg.optString("type", "")
             val transactionId = msg.optString("_tx").takeIf { it.isNotBlank() }
             if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
-                phoneConnection.sendToPhone("""{"type":"transport_ack","tx":"$transactionId"}""")
+                acknowledgeTransport(transactionId)
                 return
             }
 
@@ -2221,15 +2245,184 @@ class HudActivity : ComponentActivity() {
                 }
             }
             if (transactionId != null) {
-                processedTransportTransactions.addLast(transactionId)
-                while (processedTransportTransactions.size > 64) {
-                    processedTransportTransactions.removeFirst()
-                }
-                phoneConnection.sendToPhone("""{"type":"transport_ack","tx":"$transactionId"}""")
+                recordAndAcknowledgeTransport(transactionId)
             }
         } catch (e: Exception) {
             Log.e(GlassesApp.TAG, "Error parsing phone message (${json.length} chars)", e)
         }
+    }
+
+    private fun handleTypedPhoneMessage(message: PhoneHudMessage) {
+        when (message) {
+            is PhoneHudMessage.CompletedMessage -> {
+                clearStreamingMessage(message.id)
+                val current = hudState.value
+                val displayMessage = message.toDisplayMessage()
+                val reduction = HudStateReducer.reduce(
+                    current,
+                    HudStateEvent.MessageCompleted(displayMessage),
+                )
+                hudState.value = reduction.state
+                if (message.role == "user" && reduction.state.messages === current.messages) {
+                    Log.d(GlassesApp.TAG, "User echo already displayed; transport ACK retained")
+                }
+            }
+            is PhoneHudMessage.History -> {
+                clearStreamingMessage()
+                applyTypedHistory(
+                    message.messages.map { it.toDisplayMessage() },
+                    message.isLoadMore,
+                    message.hasMore,
+                )
+            }
+            is PhoneHudMessage.HistoryBegin -> {
+                clearStreamingMessage()
+                pendingHistorySnapshotId = message.snapshotId
+                pendingHistoryHasMore = message.hasMore
+                pendingHistoryIsLoadMore = message.isLoadMore
+                pendingHistoryMessages.clear()
+            }
+            is PhoneHudMessage.HistoryChunk -> {
+                if (message.snapshotId != pendingHistorySnapshotId) {
+                    Log.w(GlassesApp.TAG, "Ignored stale history chunk")
+                } else {
+                    pendingHistoryMessages
+                        .getOrPut(message.id) { PendingHistoryMessage(message.role) }
+                        .content
+                        .append(message.content)
+                }
+            }
+            is PhoneHudMessage.HistoryEnd -> {
+                if (message.snapshotId != pendingHistorySnapshotId) {
+                    Log.w(GlassesApp.TAG, "Ignored stale history end")
+                } else {
+                    val messages = pendingHistoryMessages.map { (id, pending) ->
+                        DisplayMessage(
+                            id = id,
+                            role = pending.role,
+                            content = unwrapContent(pending.content.toString()),
+                            isStreaming = false,
+                        )
+                    }
+                    applyTypedHistory(messages, pendingHistoryIsLoadMore, pendingHistoryHasMore)
+                    pendingHistorySnapshotId = null
+                    pendingHistoryIsLoadMore = false
+                    pendingHistoryMessages.clear()
+                }
+            }
+            is PhoneHudMessage.AgentPhase -> {
+                hudState.value = HudStateReducer.reduce(
+                    hudState.value,
+                    HudStateEvent.AgentPhaseChanged(message.phase),
+                ).state
+            }
+            is PhoneHudMessage.AgentProgress -> {
+                hudState.value = HudStateReducer.reduce(
+                    hudState.value,
+                    HudStateEvent.AgentProgressChanged(
+                        message.id,
+                        message.kind,
+                        message.label,
+                        message.state,
+                    ),
+                ).state
+            }
+            is PhoneHudMessage.Stream -> {
+                val current = hudState.value
+                val startedNewMessage = streamingAccumulator.append(message.id, message.chunk)
+                if (startedNewMessage || current.agentState != AgentState.STREAMING) {
+                    hudState.value = current.copy(
+                        agentState = AgentState.STREAMING,
+                        agentProgress = emptyList(),
+                    )
+                    publishStreamingMessage()
+                } else if (streamPublishJob == null && streamingAccumulator.hasUnpublishedChanges()) {
+                    streamPublishJob = lifecycleScope.launch {
+                        delay(STREAM_PUBLISH_INTERVAL_MS)
+                        publishStreamingMessage()
+                        streamPublishJob = null
+                    }
+                }
+            }
+            is PhoneHudMessage.StreamEnd -> {
+                streamPublishJob?.cancel()
+                streamPublishJob = null
+                val completedStream = streamingAccumulator.finish(message.id)
+                streamingMessage.value = null
+                hudState.value = HudStateReducer.reduce(
+                    hudState.value,
+                    HudStateEvent.StreamCompleted(
+                        message.id,
+                        completedStream?.content?.let(::unwrapContent),
+                    ),
+                ).state
+            }
+            is PhoneHudMessage.Connection -> {
+                hudState.value = HudStateReducer.reduce(
+                    hudState.value,
+                    HudStateEvent.ConnectionChanged(
+                        message.connected,
+                        message.sessionId,
+                        message.sessionName,
+                    ),
+                ).state
+            }
+            is PhoneHudMessage.RunState -> {
+                hudState.value = HudStateReducer.reduce(
+                    hudState.value,
+                    HudStateEvent.RunChanged(message.state, message.canAbort),
+                ).state
+            }
+        }
+    }
+
+    private fun applyTypedHistory(
+        messages: List<DisplayMessage>,
+        isLoadMore: Boolean,
+        hasMore: Boolean,
+    ) {
+        val reduction = HudStateReducer.reduce(
+            hudState.value,
+            HudStateEvent.HistoryLoaded(messages, isLoadMore, hasMore),
+        )
+        hudState.value = reduction.state
+        if (reduction.prependedCount > 0) {
+            clearPrependJob?.cancel()
+            clearPrependJob = lifecycleScope.launch {
+                delay(5_000L)
+                hudState.update { it.copy(newPrependCount = 0) }
+            }
+        }
+    }
+
+    private fun PhoneHudMessage.CompletedMessage.toDisplayMessage() = DisplayMessage(
+        id = id,
+        role = role,
+        content = unwrapContent(content),
+        isStreaming = false,
+        thumbnails = thumbnails.mapNotNull { thumbnail ->
+            ThumbnailBitmapCache.decode(
+                encoded = thumbnail.encoded,
+                format = thumbnail.format,
+                width = thumbnail.width,
+                height = thumbnail.height,
+            )
+        },
+    )
+
+    private fun acknowledgeTransport(transactionId: String) {
+        phoneConnection.sendToPhone(
+            JSONObject().apply {
+                put("type", "transport_ack")
+                put("tx", transactionId)
+            }.toString(),
+        )
+    }
+
+    private fun recordAndAcknowledgeTransport(transactionId: String) {
+        processedTransportTransactions.addLast(transactionId)
+        while (processedTransportTransactions.size > 64) processedTransportTransactions.removeFirst()
+        acknowledgeTransport(transactionId)
     }
 
     private fun parseAttachmentThumbnails(message: JSONObject): List<Bitmap> {

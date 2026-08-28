@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 1.3.74 (build 83)
+
+### Changed
+
+- Decode chat, history, streaming, agent, connection, and run updates through one strict typed Phone-to-HUD protocol boundary before mutating HUD state.
+- Preserve the legacy compatibility handler only for unknown future message types.
+
+### Fixed
+
+- Reject missing IDs and incorrectly typed booleans or arrays instead of silently turning malformed Phone messages into actionable HUD defaults.
+- Acknowledge malformed reliable packets after rejecting them so one invalid payload cannot remain in an infinite transport retry loop.
+
+### Added
+
+- Add decoder regression coverage for compact history, transport envelopes, malformed actionable fields, unknown future messages, and missing streaming identity.
+
 ## 1.3.73 (build 82)
 
 ### Changed
