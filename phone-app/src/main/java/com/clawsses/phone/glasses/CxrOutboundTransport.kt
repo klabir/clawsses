@@ -50,6 +50,7 @@ internal data class CxrQueuedMessage(
     val priority: CxrPriority,
     val coalesceKey: String?,
     val reliable: Boolean,
+    val bypassWakeGate: Boolean = false,
 )
 
 /**
@@ -108,7 +109,13 @@ internal class CxrOutboundQueue(private val maxSize: Int = 128) {
         return EnqueueResult(dropped = dropped)
     }
 
-    fun poll(): CxrQueuedMessage? = messages.pollFirst()
+    fun poll(allowRegular: Boolean = true): CxrQueuedMessage? {
+        if (allowRegular) return messages.pollFirst()
+
+        val bypass = messages.firstOrNull { it.bypassWakeGate } ?: return null
+        messages.remove(bypass)
+        return bypass
+    }
 
     fun clearTransient(): Int {
         val count = messages.count { it.priority == CxrPriority.TRANSIENT }
@@ -142,9 +149,10 @@ internal class CxrOutboundQueue(private val maxSize: Int = 128) {
 /**
  * Process-scoped, serial phone-to-glasses transport.
  *
- * The existing wake manager feeds this transport only when delivery is allowed. Reliable ACKs
- * are negotiated by glasses build number so a newly installed phone remains compatible with the
- * previous glasses build during a paired update.
+ * Every outbound payload enters this single queue immediately. The wake manager controls only a
+ * delivery gate; wake-control packets can bypass that gate without creating a second buffer.
+ * Reliable ACKs are negotiated by glasses build number so a newly installed phone remains
+ * compatible with the previous glasses build during a paired update.
  */
 class CxrOutboundTransport(
     private val scope: CoroutineScope,
@@ -167,6 +175,7 @@ class CxrOutboundTransport(
     val metrics: StateFlow<CxrTransportMetrics> = _metrics.asStateFlow()
 
     @Volatile private var connected = false
+    @Volatile private var wakeDeliveryAllowed = false
     @Volatile private var acknowledgmentsSupported = false
     @Volatile private var epoch = 0L
     private val worker: Job = scope.launch { workerLoop() }
@@ -190,8 +199,15 @@ class CxrOutboundTransport(
         }
     }
 
-    fun enqueue(payload: String) {
-        val message = classify(payload) ?: run {
+    fun setWakeDeliveryAllowed(value: Boolean) {
+        if (wakeDeliveryAllowed == value) return
+        wakeDeliveryAllowed = value
+        Log.d(TAG, "Wake delivery gate ${if (value) "opened" else "closed"}")
+        wakeWorker.trySend(Unit)
+    }
+
+    fun enqueue(payload: String, bypassWakeGate: Boolean = false) {
+        val message = classify(payload, bypassWakeGate) ?: run {
             updateMetrics(failed = 1)
             return
         }
@@ -234,7 +250,7 @@ class CxrOutboundTransport(
     private suspend fun workerLoop() {
         for (ignored in wakeWorker) {
             while (connected) {
-                val message = synchronized(lock) { queue.poll() } ?: break
+                val message = synchronized(lock) { queue.poll(wakeDeliveryAllowed) } ?: break
                 deliver(message)
                 refreshDepth()
             }
@@ -309,7 +325,12 @@ class CxrOutboundTransport(
         )
     }
 
-    private fun classify(payload: String): CxrQueuedMessage? = runCatching {
+    fun pendingCount(): Int = synchronized(lock) { queue.size }
+
+    private fun classify(
+        payload: String,
+        bypassWakeGate: Boolean,
+    ): CxrQueuedMessage? = runCatching {
         val json = JsonParser.parseString(payload).asJsonObject
         val type = json.get("type")?.asString.orEmpty()
         val id = json.get("id")?.asString
@@ -338,7 +359,7 @@ class CxrOutboundTransport(
             coalesceKey != null -> CxrPriority.TRANSIENT
             else -> CxrPriority.NORMAL
         }
-        CxrQueuedMessage(payload, type, priority, coalesceKey, reliable)
+        CxrQueuedMessage(payload, type, priority, coalesceKey, reliable, bypassWakeGate)
     }.getOrNull()
 
     private fun addTransaction(payload: String, transactionId: String): String {

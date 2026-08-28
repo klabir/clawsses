@@ -4,7 +4,39 @@
 
 ### Changed
 
+
+### Added
+
+
+### Fixed
+
+
+## 1.3.57 (build 66)
+
+### Changed
+
+- Route every phone-to-HUD payload through one bounded CXR queue; the wake coordinator now controls only the hardware/display delivery gate, while wake-control packets bypass that gate through the same queue.
+
+### Fixed
+
+- Reset a rejected wake acknowledgment to an eligible retry state instead of suppressing the scheduled retry as a duplicate wake attempt.
+
+
+## 1.3.56 (build 65)
+
+### Changed
+
 - Isolate the unauthenticated emulator WebSocket server in the phone debug source set; release builds now contain only a no-op provider and cannot package the raw listener implementation.
+
+### Added
+
+- Add a release-APK verification gate that fails the build if the emulator-only raw WebSocket listener is ever packaged again.
+
+
+## 1.3.55 (build 64)
+
+### Changed
+
 - Move OpenClaw, glasses protocol, AI activation, HUD state synchronization, notification relay, photo capture, and staged voice callbacks out of Compose into one process-scoped bridge controller.
 - Route both primary and final phone-microphone voice recognition through one generation-gated staged-voice coordinator so cancelled callbacks cannot affect a newer capture.
 - Reuse the external PCM peak calculation for both privacy-safe diagnostics and local speech detection instead of scanning every glasses audio frame twice.
@@ -12,12 +44,7 @@
 
 ### Added
 
-- Add a release-APK verification gate that fails the build if the emulator-only raw WebSocket listener is ever packaged again.
-- Add a distinct source-verified `1.3.56 / Build 65` paired artifact for deferred phone/glasses hardware validation.
-- Add a distinct source-verified `1.3.55 / Build 64` paired artifact for deferred phone/glasses hardware validation.
-
-### Fixed
-
+- Add distinct source-verified paired artifacts for deferred phone/glasses hardware validation.
 
 ## 1.3.54 (build 63)
 

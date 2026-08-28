@@ -5,7 +5,16 @@ import com.clawsses.shared.WakeSignal
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.util.concurrent.ConcurrentLinkedQueue
+
+enum class WakeLogLevel { DEBUG, INFO, WARN }
+
+private fun logWakeSignal(level: WakeLogLevel, message: String) {
+    when (level) {
+        WakeLogLevel.DEBUG -> Log.d("WakeSignalManager", message)
+        WakeLogLevel.INFO -> Log.i("WakeSignalManager", message)
+        WakeLogLevel.WARN -> Log.w("WakeSignalManager", message)
+    }
+}
 
 /**
  * Manages wake signal coordination between phone and glasses.
@@ -13,25 +22,24 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * When the glasses may be in standby (display off), this manager:
  * 1. Wakes the hardware display via CXR-M SDK (setGlassBrightness from phone side)
  * 2. Sends a wake signal message to glasses for notification UI
- * 3. Buffers messages and waits for acknowledgment before delivering
- * 4. Handles timeout and retry logic for reliable delivery
+ * 3. Gates the single outbound transport queue until the display responds
+ * 4. Handles timeout and retry logic without owning a second message buffer
  *
  * The Rokid micro-LED display is controlled from the phone via CXR SDK — Android
  * PowerManager on the glasses does NOT work. The phone calls setGlassBrightness()
  * and setScreenOffTimeout() to physically turn on the display.
  */
 class WakeSignalManager(
-    private val sendToGlasses: (String) -> Unit,
-    private val wakeHardwareDisplay: () -> Boolean = { false }
+    private val enqueueToGlasses: (String, Boolean) -> Unit,
+    private val setDeliveryAllowed: (Boolean) -> Unit,
+    private val pendingMessageCount: () -> Int = { 0 },
+    private val wakeHardwareDisplay: () -> Boolean = { false },
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+    private val logger: (WakeLogLevel, String) -> Unit = ::logWakeSignal,
 ) {
     companion object {
-        private const val TAG = "WakeSignalManager"
-
         // Timeout waiting for wake acknowledgment
         private const val WAKE_ACK_TIMEOUT_MS = 3000L
-
-        // Maximum buffer size to prevent memory issues
-        private const val MAX_BUFFER_SIZE = 100
 
         // Minimum interval between wake signals to avoid spam
         private const val MIN_WAKE_INTERVAL_MS = 1000L
@@ -58,11 +66,6 @@ class WakeSignalManager(
         /** Wake signal sent, waiting for acknowledgment */
         data class WakingUp(val reason: String, val sentAt: Long) : WakeState()
     }
-
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    // Message buffer for when glasses is waking up
-    private val messageBuffer = ConcurrentLinkedQueue<BufferedMessage>()
 
     // Current wake state
     private val _wakeState = MutableStateFlow<WakeState>(WakeState.Unknown)
@@ -91,23 +94,14 @@ class WakeSignalManager(
     private var _enabled = MutableStateFlow(true)
     val enabled: StateFlow<Boolean> = _enabled
 
-    data class BufferedMessage(
-        val json: String,
-        val reason: String,
-        val timestamp: Long = System.currentTimeMillis()
-    )
-
     /**
      * Enable or disable the wake signal feature.
      * When disabled, messages are sent directly without buffering.
      */
     fun setEnabled(enabled: Boolean) {
         _enabled.value = enabled
-        if (!enabled) {
-            // Flush any buffered messages immediately when disabled
-            flushBuffer()
-        }
-        Log.i(TAG, "Wake signal feature ${if (enabled) "enabled" else "disabled"}")
+        setDeliveryAllowed(!enabled || _wakeState.value is WakeState.Awake)
+        logger(WakeLogLevel.INFO, "Wake signal feature ${if (enabled) "enabled" else "disabled"}")
     }
 
     /**
@@ -123,9 +117,9 @@ class WakeSignalManager(
         isStreamContent: Boolean = false,
         isNewMessage: Boolean = false
     ): Boolean {
-        // If feature is disabled, send directly
+        // If feature is disabled, keep the single transport queue open.
         if (!_enabled.value) {
-            sendToGlasses(json)
+            enqueueToGlasses(json, false)
             return true
         }
 
@@ -138,8 +132,7 @@ class WakeSignalManager(
 
         return when (val state = _wakeState.value) {
             is WakeState.Awake -> {
-                // Glasses is awake, send directly
-                sendToGlasses(json)
+                enqueueToGlasses(json, false)
 
                 if (isStreamContent) {
                     // Reset standby detection — streaming counts as activity
@@ -148,7 +141,7 @@ class WakeSignalManager(
                     // Keep-alive: periodically reset glasses screen-off timeout
                     // via CXR SDK to prevent the 30s hardware timer from firing
                     if (now - lastHardwareWakeTime > WAKE_KEEPALIVE_INTERVAL_MS) {
-                        Log.d(TAG, "Stream keep-alive: resetting display timeout")
+                        logger(WakeLogLevel.DEBUG, "Stream keep-alive: resetting display timeout")
                         wakeHardwareDisplay()
                         lastHardwareWakeTime = now
                     }
@@ -158,8 +151,7 @@ class WakeSignalManager(
             }
 
             is WakeState.WakingUp -> {
-                // Glasses is waking up, buffer the message
-                bufferMessage(json, if (isStreamContent) "stream" else "message")
+                enqueueToGlasses(json, false)
                 false
             }
 
@@ -169,7 +161,8 @@ class WakeSignalManager(
 
                 if (lastConfirmedActivityTime > 0 && timeSinceLastActivity < 5000) {
                     // Very recent confirmed activity — glasses is likely still awake
-                    sendToGlasses(json)
+                    setDeliveryAllowed(true)
+                    enqueueToGlasses(json, false)
                     true
                 } else {
                     // May be in standby — wake hardware and initiate wake protocol
@@ -178,8 +171,8 @@ class WakeSignalManager(
                         isNewMessage -> WakeSignal.REASON_CRON_MESSAGE
                         else -> WakeSignal.REASON_NEW_MESSAGE
                     }
-                    bufferMessage(json, reason)
                     initiateWake(reason)
+                    enqueueToGlasses(json, false)
                     false
                 }
             }
@@ -218,23 +211,23 @@ class WakeSignalManager(
      * This is called when glasses sends a wake_ack message.
      */
     fun handleWakeAck(ready: Boolean) {
-        Log.i(TAG, "Received wake acknowledgment: ready=$ready")
+        logger(WakeLogLevel.INFO, "Received wake acknowledgment: ready=$ready")
 
         wakeTimeoutJob?.cancel()
         lastConfirmedActivityTime = System.currentTimeMillis()
 
         if (ready) {
             _wakeState.value = WakeState.Awake
+            setDeliveryAllowed(true)
             resetStandbyTimer()
-
-            // Deliver all buffered messages
-            flushBuffer()
         } else {
             // Wake failed - try again after a delay
-            Log.w(TAG, "Wake acknowledgment indicated failure, retrying...")
+            logger(WakeLogLevel.WARN, "Wake acknowledgment indicated failure, retrying...")
+            _wakeState.value = WakeState.Unknown
+            setDeliveryAllowed(false)
             scope.launch {
                 delay(500)
-                if (messageBuffer.isNotEmpty()) {
+                if (pendingMessageCount() > 0) {
                     initiateWake(WakeSignal.REASON_NEW_MESSAGE)
                 }
             }
@@ -251,14 +244,10 @@ class WakeSignalManager(
         // If we were in unknown or waking state, mark as awake
         when (_wakeState.value) {
             is WakeState.Unknown, is WakeState.WakingUp -> {
-                Log.d(TAG, "Glasses activity detected, marking as awake")
+                logger(WakeLogLevel.DEBUG, "Glasses activity detected, marking as awake")
                 _wakeState.value = WakeState.Awake
+                setDeliveryAllowed(true)
                 wakeTimeoutJob?.cancel()
-
-                // Flush any buffered messages
-                if (messageBuffer.isNotEmpty()) {
-                    flushBuffer()
-                }
             }
             else -> {}
         }
@@ -273,11 +262,12 @@ class WakeSignalManager(
      */
     fun handleGlassesDisconnected() {
         _wakeState.value = WakeState.Unknown
+        setDeliveryAllowed(false)
         wakeTimeoutJob?.cancel()
         standbyTimerJob?.cancel()
         lastConfirmedActivityTime = 0
-        // Keep buffered messages - they'll be delivered on reconnect
-        Log.d(TAG, "Glasses disconnected, state reset to Unknown")
+        // The process transport retains non-transient messages for reconnect.
+        logger(WakeLogLevel.DEBUG, "Glasses disconnected, state reset to Unknown")
     }
 
     /**
@@ -286,35 +276,19 @@ class WakeSignalManager(
      */
     fun handleGlassesConnected() {
         _wakeState.value = WakeState.Awake
+        setDeliveryAllowed(true)
         lastConfirmedActivityTime = System.currentTimeMillis()
         lastHardwareWakeTime = System.currentTimeMillis()
         wakeTimeoutJob?.cancel()
         resetStandbyTimer()
 
-        // Flush buffered messages
-        if (messageBuffer.isNotEmpty()) {
-            Log.i(TAG, "Glasses connected, flushing ${messageBuffer.size} buffered messages")
-            flushBuffer()
-        }
     }
 
     /** Stop timers and buffered work owned by a disposed UI connection manager. */
     fun dispose() {
         wakeTimeoutJob?.cancel()
         standbyTimerJob?.cancel()
-        messageBuffer.clear()
         scope.cancel()
-    }
-
-    private fun bufferMessage(json: String, reason: String) {
-        if (messageBuffer.size >= MAX_BUFFER_SIZE) {
-            // Drop oldest message to make room
-            messageBuffer.poll()
-            Log.w(TAG, "Buffer full, dropping oldest message")
-        }
-
-        messageBuffer.offer(BufferedMessage(json, reason))
-        Log.d(TAG, "Buffered message (total: ${messageBuffer.size})")
     }
 
     private fun initiateWake(reason: String, messageId: String? = null) {
@@ -322,34 +296,35 @@ class WakeSignalManager(
 
         // Rate limit wake signals
         if (now - lastWakeSignalTime < MIN_WAKE_INTERVAL_MS) {
-            Log.d(TAG, "Skipping wake signal (rate limited)")
+            logger(WakeLogLevel.DEBUG, "Skipping wake signal (rate limited)")
             return
         }
 
         // Already waking up
         if (_wakeState.value is WakeState.WakingUp) {
-            Log.d(TAG, "Already waking up, skipping duplicate wake signal")
+            logger(WakeLogLevel.DEBUG, "Already waking up, skipping duplicate wake signal")
             return
         }
 
         lastWakeSignalTime = now
         _wakeState.value = WakeState.WakingUp(reason, now)
+        setDeliveryAllowed(false)
 
         // Wake the hardware display from the phone side via CXR-M SDK.
         // This is the primary wake mechanism — setGlassBrightness() turns on
         // the micro-LED display, setScreenOffTimeout() resets the idle timer.
         val hwWakeResult = wakeHardwareDisplay()
         lastHardwareWakeTime = now
-        Log.i(TAG, "Hardware wake: $hwWakeResult")
+        logger(WakeLogLevel.INFO, "Hardware wake: $hwWakeResult")
 
         // Send wake signal message to glasses for notification UI
         val wakeSignal = WakeSignal(
             reason = reason,
-            bufferedCount = messageBuffer.size,
+            bufferedCount = pendingMessageCount(),
             messageId = messageId
         )
-        Log.i(TAG, "Sending wake signal: reason=$reason, buffered=${messageBuffer.size}")
-        sendToGlasses(wakeSignal.toJson())
+        logger(WakeLogLevel.INFO, "Sending wake signal: reason=$reason, queued=${pendingMessageCount()}")
+        enqueueToGlasses(wakeSignal.toJson(), true)
 
         // Set timeout for wake acknowledgment
         wakeTimeoutJob?.cancel()
@@ -360,11 +335,9 @@ class WakeSignalManager(
             // or is offline. Deliver messages anyway — CXR bridge delivers even
             // when display is off, so content won't be lost.
             if (_wakeState.value is WakeState.WakingUp) {
-                Log.w(TAG, "Wake acknowledgment timeout, delivering messages anyway")
+                logger(WakeLogLevel.WARN, "Wake acknowledgment timeout, delivering messages anyway")
                 _wakeState.value = WakeState.Unknown
-
-                // Deliver buffered messages
-                flushBuffer()
+                setDeliveryAllowed(true)
             }
         }
     }
@@ -379,35 +352,21 @@ class WakeSignalManager(
         standbyTimerJob = scope.launch {
             delay(STANDBY_DETECTION_MS)
             if (_wakeState.value is WakeState.Awake) {
-                Log.d(TAG, "Standby detection: no activity for ${STANDBY_DETECTION_MS}ms, marking Unknown")
+                logger(
+                    WakeLogLevel.DEBUG,
+                    "Standby detection: no activity for ${STANDBY_DETECTION_MS}ms, marking Unknown",
+                )
                 _wakeState.value = WakeState.Unknown
+                setDeliveryAllowed(false)
             }
         }
     }
-
-    private fun flushBuffer() {
-        var count = 0
-        while (true) {
-            val msg = messageBuffer.poll() ?: break
-            sendToGlasses(msg.json)
-            count++
-        }
-        if (count > 0) {
-            Log.i(TAG, "Flushed $count buffered messages")
-        }
-    }
-
-    /**
-     * Get current buffer size for debugging/monitoring
-     */
-    fun getBufferSize(): Int = messageBuffer.size
 
     /**
      * Cleanup resources
      */
     fun cleanup() {
         scope.cancel()
-        messageBuffer.clear()
         wakeTimeoutJob?.cancel()
         standbyTimerJob?.cancel()
     }

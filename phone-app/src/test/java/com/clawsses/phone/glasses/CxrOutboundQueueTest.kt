@@ -110,6 +110,33 @@ class CxrOutboundQueueTest {
         assertTrue("chat_history_end" in RELIABLE_CXR_TYPES)
     }
 
+    @Test
+    fun `wake control bypasses closed delivery gate without draining regular payloads`() {
+        val queue = CxrOutboundQueue()
+        queue.enqueue(message("chat_message", CxrPriority.NORMAL, reliable = false))
+        queue.enqueue(
+            message(
+                type = "wake_signal",
+                priority = CxrPriority.NORMAL,
+                reliable = false,
+                bypassWakeGate = true,
+            )
+        )
+
+        assertEquals("wake_signal", queue.poll(allowRegular = false)?.type)
+        assertEquals(1, queue.size)
+        assertEquals("chat_message", queue.poll(allowRegular = true)?.type)
+    }
+
+    @Test
+    fun `closed delivery gate returns no message when only regular payloads wait`() {
+        val queue = CxrOutboundQueue()
+        queue.enqueue(message("chat_message", CxrPriority.NORMAL, reliable = false))
+
+        assertEquals(null, queue.poll(allowRegular = false))
+        assertEquals(1, queue.size)
+    }
+
     private fun stream(id: String, chunk: String) = CxrQueuedMessage(
         payload = """{"type":"chat_stream","id":"$id","chunk":"$chunk"}""",
         type = "chat_stream",
@@ -131,11 +158,13 @@ class CxrOutboundQueueTest {
         priority: CxrPriority,
         reliable: Boolean,
         coalesceKey: String? = null,
+        bypassWakeGate: Boolean = false,
     ) = CxrQueuedMessage(
         payload = """{"type":"$type"}""",
         type = type,
         priority = priority,
         coalesceKey = coalesceKey,
         reliable = reliable,
+        bypassWakeGate = bypassWakeGate,
     )
 }

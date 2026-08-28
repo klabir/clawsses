@@ -111,7 +111,13 @@ class GlassesConnectionManager(private val context: Context) {
 
     // Wake signal manager for handling standby wake-up and message buffering
     val wakeSignalManager = WakeSignalManager(
-        sendToGlasses = { message -> outboundTransport.enqueue(message) },
+        enqueueToGlasses = { message, bypassWakeGate ->
+            outboundTransport.enqueue(message, bypassWakeGate)
+        },
+        setDeliveryAllowed = { allowed ->
+            outboundTransport.setWakeDeliveryAllowed(allowed)
+        },
+        pendingMessageCount = { outboundTransport.pendingCount() },
         wakeHardwareDisplay = {
             if (!_debugModeEnabled.value) {
                 RokidSdkManager.wakeGlassesScreen()
@@ -134,6 +140,7 @@ class GlassesConnectionManager(private val context: Context) {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
             outboundTransport.setConnected(true)
+            wakeSignalManager.handleGlassesConnected()
             RokidSdkManager.syncAssistantInput()
             Log.i(TAG, "SDK already connected on init; restored connected state")
         }
@@ -684,7 +691,7 @@ class GlassesConnectionManager(private val context: Context) {
 
     /**
      * Send a JSON message to glasses with wake signal coordination.
-     * Uses WakeSignalManager to buffer messages if glasses may be in standby.
+     * Uses WakeSignalManager to gate the single outbound queue if glasses may be in standby.
      *
      * @param jsonMessage The JSON message to send
      * @param isStreamContent True if this is part of an ongoing stream (for wake signal)
