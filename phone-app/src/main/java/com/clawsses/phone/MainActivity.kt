@@ -22,6 +22,7 @@ import com.clawsses.shared.TechnicalJankMonitor
 
 class MainActivity : ComponentActivity() {
     private lateinit var jankMonitor: TechnicalJankMonitor
+    private var appInitialized = false
 
     private val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         arrayOf(
@@ -49,11 +50,8 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.all { it.value }
-        if (allGranted) {
-            initializeApp()
-        }
+    ) {
+        startConnectionServiceIfPermitted()
     }
 
     private val hiRokidAuthorizationLauncher = registerForActivityResult(
@@ -75,11 +73,10 @@ class MainActivity : ComponentActivity() {
         (application as ClawssesApp).runtime.apkInstaller.launchHiRokidAuthorization =
             hiRokidAuthorizationLauncher::launch
 
-        if (hasAllPermissions()) {
-            initializeApp()
-        } else {
-            permissionLauncher.launch(requiredPermissions)
-        }
+        // Render the text/OpenClaw shell regardless of optional hardware capability grants.
+        initializeApp()
+        val missing = requiredPermissions.filterNot(::hasPermission)
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
     }
 
     override fun onResume() {
@@ -98,17 +95,14 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun hasAllPermissions(): Boolean {
-        return requiredPermissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
-    }
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     private fun initializeApp() {
+        if (appInitialized) return
+        appInitialized = true
         (application as ClawssesApp).runtime.start()
-        if (com.clawsses.phone.glasses.RokidSdkManager.hasSavedConnectionInfo()) {
-            GlassesConnectionService.start(this)
-        }
+        startConnectionServiceIfPermitted()
         setContent {
             ClawssesTheme {
                 Surface(
@@ -118,6 +112,19 @@ class MainActivity : ComponentActivity() {
                     MainScreen()
                 }
             }
+        }
+    }
+
+    private fun startConnectionServiceIfPermitted() {
+        val bluetoothAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            hasPermission(Manifest.permission.BLUETOOTH_CONNECT) &&
+                hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+        } else {
+            hasPermission(Manifest.permission.BLUETOOTH) &&
+                hasPermission(Manifest.permission.BLUETOOTH_ADMIN)
+        }
+        if (bluetoothAllowed && com.clawsses.phone.glasses.RokidSdkManager.hasSavedConnectionInfo()) {
+            GlassesConnectionService.start(this)
         }
     }
 }

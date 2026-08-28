@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 1.3.73 (build 82)
+
+### Changed
+
+- Start the text and OpenClaw application shell even when optional Bluetooth, Wi-Fi, location, or microphone capabilities are denied.
+- Store queued camera photos in a bounded four-item, 16 MiB file-backed repository instead of retaining unbounded Base64 payloads in Compose state.
+
+### Fixed
+
+- Allow only one active glasses photo request, reject overlapping captures, ignore stale callbacks, and fail a capture after a bounded 20-second timeout.
+- Consume queued photo files atomically when sending so rapid repeated actions cannot attach the same image twice.
+
+### Added
+
+- Add regression coverage for photo queue count/byte budgets and generation-safe camera capture attempts.
+
 ## 1.3.72 (build 81)
 
 ### Fixed

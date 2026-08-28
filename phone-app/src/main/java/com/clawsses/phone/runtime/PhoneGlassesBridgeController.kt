@@ -3,12 +3,14 @@ package com.clawsses.phone.runtime
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import com.rokid.cxr.client.utils.ValueUtil
 import com.clawsses.phone.glasses.CxrOutboundTransport
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.ImagePipeline
 import com.clawsses.phone.media.MediaStoreSaver
+import com.clawsses.phone.media.PendingPhotoRepository
 import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.GlassesChatHistoryPage
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -42,14 +44,15 @@ import com.clawsses.shared.SessionOperationUpdate
 import com.clawsses.shared.TtsState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.LinkedHashMap
@@ -71,7 +74,7 @@ class PhoneGlassesBridgeController(
     private val talkModeManager: TalkModeManager,
     private val ttsSettingsManager: TtsSettingsManager,
     private val ttsPlaybackManager: TtsPlaybackManager,
-    private val pendingPhotos: MutableStateFlow<List<String>>,
+    private val pendingPhotoRepository: PendingPhotoRepository,
     private val talkCoordinator: TalkRuntimeCoordinator,
     private val stagedVoiceCoordinator: StagedVoiceCoordinator,
 ) {
@@ -80,8 +83,10 @@ class PhoneGlassesBridgeController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = AtomicBoolean(false)
     private val activationPending = AtomicBoolean(false)
+    private val photoCaptureGate = PhotoCaptureAttemptGate()
     private val hudCardBodies = LinkedHashMap<String, String>()
     private var pendingHistoryBeforeMessageId: String? = null
+    private var photoCaptureTimeoutJob: Job? = null
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -108,45 +113,22 @@ class PhoneGlassesBridgeController(
     }
 
     fun capturePhoto(sendAfterCapture: Boolean, visionPrompt: String? = null) {
-        RokidSdkManager.onPhotoResult = { status, photoBytes ->
-            scope.launch {
-                try {
-                    if (photoBytes == null || photoBytes.isEmpty()) {
-                        Log.e(TAG, "Photo capture failed (status=$status)")
-                        sendPhotoError()
-                        return@launch
-                    }
-                    if (prefs.getBoolean(KEY_SAVE_PHOTOS, false)) {
-                        scope.launch(Dispatchers.IO) { MediaStoreSaver.saveImage(appContext, photoBytes) }
-                    }
-                    val base64 = Base64.encodeToString(photoBytes, Base64.NO_WRAP)
-                    if (sendAfterCapture) {
-                        openClawClient.sendMessage(visionPrompt.orEmpty(), listOf(base64))
-                    } else {
-                        pendingPhotos.value = pendingPhotos.value + base64
-                        val thumbnail = ImagePipeline.createHudThumbnail(photoBytes)
-                        glassesManager.sendRawMessage(
-                            JSONObject().apply {
-                                put("type", "photo_result")
-                                put("status", "captured")
-                                if (thumbnail != null) {
-                                    put("thumbnail", thumbnail.encoded)
-                                    put("thumbnailFormat", thumbnail.format)
-                                    put("thumbnailWidth", thumbnail.width)
-                                    put("thumbnailHeight", thumbnail.height)
-                                }
-                            }.toString(),
-                        )
-                    }
-                } finally {
-                    RokidSdkManager.onPhotoResult = null
+        scope.launch {
+            when (val begin = photoCaptureGate.begin()) {
+                PhotoCaptureAttemptGate.BeginResult.Busy -> {
+                    Log.w(TAG, "Ignoring overlapping photo capture")
+                    sendPhotoError("busy")
+                }
+                is PhotoCaptureAttemptGate.BeginResult.Started -> {
+                    beginPhotoCapture(begin.attemptId, sendAfterCapture, visionPrompt)
                 }
             }
         }
-        RokidSdkManager.takeGlassPhotoGlobal(1280, 720, 80)
     }
 
     fun cleanup() {
+        photoCaptureTimeoutJob?.cancel()
+        RokidSdkManager.onPhotoResult = null
         stagedVoiceCoordinator.cancel(sendIdle = false)
         clearCallbacks()
         scope.cancel()
@@ -391,11 +373,12 @@ class PhoneGlassesBridgeController(
     }
 
     private fun handleUserInput(command: GlassesCommand.UserInput) {
-        val images = pendingPhotos.value.ifEmpty { null }
-        if (command.text.isNotEmpty() || images != null) {
-            openClawClient.sendMessage(command.text, images, command.clientMessageId)
+        scope.launch {
+            val images = pendingPhotoRepository.consumeEncoded().ifEmpty { null }
+            if (command.text.isNotEmpty() || images != null) {
+                openClawClient.sendMessage(command.text, images, command.clientMessageId)
+            }
         }
-        pendingPhotos.value = emptyList()
     }
 
     private fun handleStartVoice() {
@@ -560,14 +543,12 @@ class PhoneGlassesBridgeController(
     }
 
     private fun removePhoto(command: GlassesCommand.RemovePhoto) {
-        val current = pendingPhotos.value
-        val index = command.index
-        pendingPhotos.value = when {
-            command.all -> emptyList()
-            index != null && index in current.indices -> current.toMutableList().apply {
-                removeAt(index)
+        scope.launch {
+            val index = command.index
+            when {
+                command.all -> pendingPhotoRepository.clear()
+                index != null -> pendingPhotoRepository.removeAt(index)
             }
-            else -> current
         }
     }
 
@@ -700,11 +681,88 @@ class PhoneGlassesBridgeController(
         )
     }
 
-    private fun sendPhotoError() {
+    private fun sendPhotoError(reason: String? = null) {
         glassesManager.sendRawMessage(
             JSONObject().apply {
                 put("type", "photo_result")
                 put("status", "error")
+                if (reason != null) put("reason", reason)
+            }.toString(),
+        )
+    }
+
+    private fun beginPhotoCapture(
+        attemptId: Long,
+        sendAfterCapture: Boolean,
+        visionPrompt: String?,
+    ) {
+        RokidSdkManager.onPhotoResult = { status, photoBytes ->
+            scope.launch { completePhotoCapture(attemptId, status, photoBytes, sendAfterCapture, visionPrompt) }
+        }
+        photoCaptureTimeoutJob?.cancel()
+        photoCaptureTimeoutJob = scope.launch {
+            delay(PHOTO_CAPTURE_TIMEOUT_MS)
+            if (photoCaptureGate.complete(attemptId)) {
+                RokidSdkManager.onPhotoResult = null
+                Log.e(TAG, "Photo capture timed out (attempt=$attemptId)")
+                sendPhotoError("timeout")
+            }
+        }
+        val status = RokidSdkManager.takeGlassPhotoGlobal(1280, 720, 80)
+        if (status != ValueUtil.CxrStatus.REQUEST_SUCCEED && photoCaptureGate.complete(attemptId)) {
+            photoCaptureTimeoutJob?.cancel()
+            RokidSdkManager.onPhotoResult = null
+            Log.e(TAG, "Photo capture request failed (attempt=$attemptId, status=$status)")
+            sendPhotoError("request_failed")
+        }
+    }
+
+    private suspend fun completePhotoCapture(
+        attemptId: Long,
+        status: ValueUtil.CxrStatus?,
+        photoBytes: ByteArray?,
+        sendAfterCapture: Boolean,
+        visionPrompt: String?,
+    ) {
+        if (!photoCaptureGate.complete(attemptId)) {
+            Log.w(TAG, "Ignoring stale photo callback (attempt=$attemptId)")
+            return
+        }
+        photoCaptureTimeoutJob?.cancel()
+        RokidSdkManager.onPhotoResult = null
+        if (photoBytes == null || photoBytes.isEmpty()) {
+            Log.e(TAG, "Photo capture failed (attempt=$attemptId, status=$status)")
+            sendPhotoError("empty")
+            return
+        }
+        if (prefs.getBoolean(KEY_SAVE_PHOTOS, false)) {
+            scope.launch(Dispatchers.IO) { MediaStoreSaver.saveImage(appContext, photoBytes) }
+        }
+        if (sendAfterCapture) {
+            val base64 = withContext(Dispatchers.Default) {
+                Base64.encodeToString(photoBytes, Base64.NO_WRAP)
+            }
+            openClawClient.sendMessage(visionPrompt.orEmpty(), listOf(base64))
+            return
+        }
+        val stored = pendingPhotoRepository.add(photoBytes)
+        if (stored == null) {
+            sendPhotoError("queue_limit")
+            return
+        }
+        val thumbnail = withContext(Dispatchers.Default) {
+            ImagePipeline.createHudThumbnail(photoBytes)
+        }
+        glassesManager.sendRawMessage(
+            JSONObject().apply {
+                put("type", "photo_result")
+                put("status", "captured")
+                if (thumbnail != null) {
+                    put("thumbnail", thumbnail.encoded)
+                    put("thumbnailFormat", thumbnail.format)
+                    put("thumbnailWidth", thumbnail.width)
+                    put("thumbnailHeight", thumbnail.height)
+                }
             }.toString(),
         )
     }
@@ -787,5 +845,6 @@ class PhoneGlassesBridgeController(
         private const val KEY_TRANSLATE_CAPTIONS = "translate_captions"
         private const val KEY_CAPTION_TARGET_LANGUAGE = "caption_target_language"
         private const val MAX_HUD_CARDS = 20
+        private const val PHOTO_CAPTURE_TIMEOUT_MS = 20_000L
     }
 }

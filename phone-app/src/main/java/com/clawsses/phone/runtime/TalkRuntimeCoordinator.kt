@@ -5,6 +5,7 @@ import android.util.Log
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
+import com.clawsses.phone.media.PendingPhotoRepository
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.service.GlassesConnectionService
 import com.clawsses.phone.service.WakeLockReason
@@ -32,7 +33,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -48,7 +48,7 @@ class TalkRuntimeCoordinator(
     private val voiceRecognitionManager: VoiceRecognitionManager,
     private val talkModeManager: TalkModeManager,
     private val ttsPlaybackManager: TtsPlaybackManager,
-    private val pendingPhotos: MutableStateFlow<List<String>>,
+    private val pendingPhotoRepository: PendingPhotoRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = AtomicBoolean(false)
@@ -357,11 +357,10 @@ class TalkRuntimeCoordinator(
                 scheduleRestart(1_500L, TalkRestartReason.RECOGNITION_ERROR)
                 return@launch
             }
-            val images = pendingPhotos.value.ifEmpty { null }
+            val images = pendingPhotoRepository.consumeEncoded().ifEmpty { null }
             talkModeManager.setPhase(TalkModePhase.WAITING, cycleId)
             openClawClient.sendMessage(text, images)
             if (images != null) {
-                pendingPhotos.value = emptyList()
                 glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
             }
         }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
+import com.clawsses.phone.media.PendingPhotoRepository
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.AndroidNetworkMonitor
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -16,9 +17,6 @@ import com.clawsses.phone.voice.LiveCaptionManager
 import com.clawsses.phone.voice.VoiceCommandHandler
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Process-scoped runtime graph. Vendor SDK, audio, recognition, and gateway clients must not be
@@ -48,8 +46,8 @@ class ClawssesRuntime(context: Context) {
         ttsSettingsManager,
     )
 
-    private val _pendingPhotos = MutableStateFlow<List<String>>(emptyList())
-    val pendingPhotos: StateFlow<List<String>> = _pendingPhotos.asStateFlow()
+    val pendingPhotoRepository = PendingPhotoRepository(appContext)
+    val pendingPhotos = pendingPhotoRepository.photos
 
     val talkCoordinator = TalkRuntimeCoordinator(
         context = appContext,
@@ -60,7 +58,7 @@ class ClawssesRuntime(context: Context) {
         voiceRecognitionManager = voiceRecognitionManager,
         talkModeManager = talkModeManager,
         ttsPlaybackManager = ttsPlaybackManager,
-        pendingPhotos = _pendingPhotos,
+        pendingPhotoRepository = pendingPhotoRepository,
     )
 
     val stagedVoiceCoordinator = StagedVoiceCoordinator(
@@ -81,7 +79,7 @@ class ClawssesRuntime(context: Context) {
         talkModeManager = talkModeManager,
         ttsSettingsManager = ttsSettingsManager,
         ttsPlaybackManager = ttsPlaybackManager,
-        pendingPhotos = _pendingPhotos,
+        pendingPhotoRepository = pendingPhotoRepository,
         talkCoordinator = talkCoordinator,
         stagedVoiceCoordinator = stagedVoiceCoordinator,
     )
@@ -95,20 +93,6 @@ class ClawssesRuntime(context: Context) {
         phoneGlassesBridge.start()
     }
 
-    fun replacePendingPhotos(photos: List<String>) {
-        _pendingPhotos.value = photos
-    }
-
-    fun addPendingPhoto(photo: String) {
-        _pendingPhotos.value = _pendingPhotos.value + photo
-    }
-
-    fun removePendingPhoto(index: Int) {
-        val current = _pendingPhotos.value
-        if (index !in current.indices) return
-        _pendingPhotos.value = current.toMutableList().apply { removeAt(index) }
-    }
-
     fun cleanup() {
         phoneGlassesBridge.cleanup()
         talkCoordinator.cleanup()
@@ -118,6 +102,7 @@ class ClawssesRuntime(context: Context) {
         voiceRecognitionManager.cleanup()
         liveCaptionManager.cleanup()
         ttsPlaybackManager.dispose()
+        pendingPhotoRepository.close()
     }
 
     private companion object {
