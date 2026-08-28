@@ -930,6 +930,7 @@ private fun PagedChatContentArea(
     val textMeasurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val navigator = remember(sessionKey) { HudPageNavigator() }
+    val paginationCache = remember(sessionKey) { HudPaginationCache() }
     var currentPageIndex by remember(sessionKey) { mutableIntStateOf(0) }
     var previousPages by remember(sessionKey) { mutableStateOf(emptyList<HudPage>()) }
     var lastHandledNavigationTrigger by remember(sessionKey) { mutableIntStateOf(pageNavigationTrigger) }
@@ -951,7 +952,7 @@ private fun PagedChatContentArea(
             )
         }
         val pages = remember(displayMessages, pageWidthPx, pageHeightPx, textStyle, hasMoreHistory) {
-            paginateHudMessages(
+            paginationCache.paginate(
                 messages = displayMessages,
                 textMeasurer = textMeasurer,
                 textStyle = textStyle,

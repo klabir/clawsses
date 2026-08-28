@@ -11,6 +11,17 @@
 ### Fixed
 
 
+## 1.3.58 (build 67)
+
+### Changed
+
+- Reuse completed HUD pages during streaming and remeasure only the first affected page plus the growing tail, while retaining full reflow for history prepends, display-size changes, and font changes.
+
+### Added
+
+- Add pagination-cache regression coverage for tail growth, appended messages, cross-page message fragments, history prepends, and layout invalidation.
+
+
 ## 1.3.57 (build 66)
 
 ### Changed
