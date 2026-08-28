@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ApplicationInfo
 import android.util.Log
-import com.clawsses.phone.service.GlassesConnectionService
 import com.rokid.cxr.link.CXRLink
 import com.rokid.cxr.link.callbacks.ICXRLinkCbk
 import com.rokid.cxr.link.callbacks.IGlassAppCbk
@@ -91,8 +90,7 @@ internal class HiRokidInstaller(
         link = cxrLink
 
         withContext(Dispatchers.Main.immediate) {
-            glassesManager.disconnect()
-            GlassesConnectionService.stop(appContext)
+            glassesManager.disconnectForExternalHandoff()
         }
         delay(HANDOFF_DELAY_MS)
 
@@ -178,7 +176,6 @@ internal class HiRokidInstaller(
             cleanupConnection()
             withContext(Dispatchers.Main.immediate) {
                 if (RokidSdkManager.hasSavedConnectionInfo()) {
-                    GlassesConnectionService.start(appContext)
                     glassesManager.retryReconnectNow()
                 }
             }

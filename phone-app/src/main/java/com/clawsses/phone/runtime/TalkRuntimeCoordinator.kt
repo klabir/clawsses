@@ -536,11 +536,9 @@ class TalkRuntimeCoordinator(
             glassesManager.connectionState.collect { state ->
                 when (state) {
                     is GlassesConnectionManager.ConnectionState.Connected -> {
-                        GlassesConnectionService.start(context)
                         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.RECONNECT)
                     }
                     is GlassesConnectionManager.ConnectionState.Reconnecting -> {
-                        GlassesConnectionService.start(context)
                         GlassesConnectionService.holdWakeLock(
                             context,
                             WakeLockReason.RECONNECT,

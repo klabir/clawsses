@@ -13,6 +13,7 @@
 
 - Preserve the transport acknowledgment when a completed user message duplicates the HUD's optimistic local echo.
 - Restore history anchors, session selections, and agent identity through deterministic reducer transitions instead of scattered Activity mutations.
+- Keep the Phone foreground service alive during Hi Rokid installation handoff, separate external handoff from user disconnect, and prevent runtime callbacks from attempting forbidden background foreground-service restarts.
 
 ### Added
 

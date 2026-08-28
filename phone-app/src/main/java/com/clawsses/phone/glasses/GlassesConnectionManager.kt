@@ -473,6 +473,19 @@ class GlassesConnectionManager(private val context: Context) {
      * reconnect later without re-pairing.
      */
     fun disconnect() {
+        disconnectInternal(stopForegroundService = true)
+    }
+
+    /**
+     * Temporarily release CXR-M for an official companion-app handoff.
+     * Keep the process foreground service alive because Android may not allow it
+     * to be recreated while the companion app owns the foreground.
+     */
+    internal fun disconnectForExternalHandoff() {
+        disconnectInternal(stopForegroundService = false)
+    }
+
+    private fun disconnectInternal(stopForegroundService: Boolean) {
         userInitiatedDisconnect = true
         resetReconnectState()
         if (_debugModeEnabled.value) {
@@ -484,9 +497,12 @@ class GlassesConnectionManager(private val context: Context) {
         outboundTransport.setConnected(false)
         _peerBuild.value = null
         _wifiP2PConnected.value = false
-        // Explicitly stop the foreground service on user-initiated disconnect.
-        // The LaunchedEffect won't stop it because hasSavedConnectionInfo() is still true.
-        com.clawsses.phone.service.GlassesConnectionService.stop(context)
+        if (stopForegroundService) {
+            // Explicitly stop the foreground service on a real user disconnect.
+            // External installer handoffs keep it alive so Android never needs to
+            // recreate it while another app owns the foreground.
+            com.clawsses.phone.service.GlassesConnectionService.stop(context)
+        }
     }
 
     /**
