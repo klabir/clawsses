@@ -18,7 +18,7 @@ android {
     defaultConfig {
         applicationId = "com.clawsses.glasses"
         minSdk = 28  // Required for CXR-S SDK
-        targetSdk = 34
+        targetSdk = 35
         versionCode = clawssesVersionCode
         versionName = clawssesVersionName
     }

@@ -96,7 +96,7 @@ android {
     defaultConfig {
         applicationId = "com.clawsses.phone"
         minSdk = 28  // Required by CXR-M SDK
-        targetSdk = 34
+        targetSdk = 35
         versionCode = clawssesVersionCode
         versionName = clawssesVersionName
 

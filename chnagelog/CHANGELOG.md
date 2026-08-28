@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 1.3.63 (build 72)
+
+### Changed
+
+- Target Android 15 / API 35 across the phone, glasses, and benchmark applications after the isolated API-35 compile migration.
+- Opt the phone UI into explicit edge-to-edge rendering with dark system-bar icon treatment while retaining Compose system-inset handling.
+
+### Verified
+
+- Preserve typed connected-device and microphone foreground-service declarations, immutable notification intents, and explicit dynamic-receiver export flags under the Android 15 target behavior changes.
+
 ## 1.3.62 (build 71)
 
 ### Added

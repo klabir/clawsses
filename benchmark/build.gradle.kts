@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         minSdk = 28
-        targetSdk = 34
+        targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "TARGET_PACKAGE", "\"com.clawsses.phone.benchmark\"")
     }
