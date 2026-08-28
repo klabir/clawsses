@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.72 (build 81)
+
+### Fixed
+
+- Discard delayed history responses after a session switch so one session can no longer overwrite another session's chat.
+- Preserve gateway message IDs and derive deterministic fallback IDs that remain stable when older history is prepended.
+- Deduplicate the HUD's optimistic user echo by client message ID instead of dropping legitimate repeated text.
+- Load real three-message history pages on the HUD with a stable oldest-message cursor and an accurate `hasMore` state.
+
+### Added
+
+- Add regression coverage for stable history identity, session-operation invalidation, cursor-based pages, prepend anchoring, and repeated user messages.
+
 ## 1.3.71 (build 80)
 
 ### Fixed

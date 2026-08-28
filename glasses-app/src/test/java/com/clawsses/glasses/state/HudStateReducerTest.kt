@@ -16,17 +16,30 @@ import org.junit.Test
 
 class HudStateReducerTest {
     @Test
-    fun `duplicate optimistic user echo preserves messages but clears staged photos`() {
+    fun `matching optimistic user echo is replaced by id`() {
         val existing = DisplayMessage("local", "user", "hello")
         val state = ChatHudState(messages = listOf(existing))
 
         val reduced = HudStateReducer.reduce(
             state,
-            HudStateEvent.MessageCompleted(DisplayMessage("remote", "user", "hello")),
+            HudStateEvent.MessageCompleted(DisplayMessage("local", "user", "hello")),
         ).state
 
-        assertEquals(listOf(existing), reduced.messages)
-        assertEquals(0, reduced.scrollTrigger)
+        assertEquals(1, reduced.messages.size)
+        assertEquals("local", reduced.messages.single().id)
+        assertEquals(1, reduced.scrollTrigger)
+    }
+
+    @Test
+    fun `identical legitimate user messages with different ids are retained`() {
+        val state = ChatHudState(messages = listOf(DisplayMessage("first", "user", "yes")))
+
+        val reduced = HudStateReducer.reduce(
+            state,
+            HudStateEvent.MessageCompleted(DisplayMessage("second", "user", "yes")),
+        ).state
+
+        assertEquals(listOf("first", "second"), reduced.messages.map { it.id })
     }
 
     @Test
@@ -55,21 +68,25 @@ class HudStateReducerTest {
             scrollPosition = 1,
             isLoadingMoreHistory = true,
         )
-        val all = listOf(message("old-1"), message("old-2")) + state.messages
+        val olderPage = listOf(message("old-1"), message("old-2"))
 
         val reduction = HudStateReducer.reduce(
             state,
-            HudStateEvent.HistoryLoaded(all, isLoadMore = true, hasMore = true),
+            HudStateEvent.HistoryLoaded(olderPage, isLoadMore = true, hasMore = true),
         )
 
         assertEquals(2, reduction.prependedCount)
+        assertEquals(
+            listOf("old-1", "old-2", "new-1", "new-2"),
+            reduction.state.messages.map { it.id },
+        )
         assertEquals(3, reduction.state.scrollPosition)
         assertEquals(2, reduction.state.newPrependCount)
         assertTrue(reduction.state.hasMoreHistory)
     }
 
     @Test
-    fun `empty history prepend marks beginning reached`() {
+    fun `empty final history page marks beginning reached`() {
         val state = ChatHudState(
             messages = listOf(message("only")),
             isLoadingMoreHistory = true,
@@ -78,12 +95,24 @@ class HudStateReducerTest {
 
         val reduction = HudStateReducer.reduce(
             state,
-            HudStateEvent.HistoryLoaded(state.messages, isLoadMore = true, hasMore = true),
+            HudStateEvent.HistoryLoaded(emptyList(), isLoadMore = true, hasMore = false),
         )
 
         assertEquals(0, reduction.prependedCount)
         assertFalse(reduction.state.isLoadingMoreHistory)
         assertFalse(reduction.state.hasMoreHistory)
+    }
+
+    @Test
+    fun `stale load-more page is ignored when no request is pending`() {
+        val state = ChatHudState(messages = listOf(message("current")))
+
+        val reduction = HudStateReducer.reduce(
+            state,
+            HudStateEvent.HistoryLoaded(listOf(message("stale")), isLoadMore = true, hasMore = true),
+        )
+
+        assertSame(state, reduction.state)
     }
 
     @Test

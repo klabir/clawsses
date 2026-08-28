@@ -17,6 +17,18 @@ class GlassesCommandCodecTest {
                 """{"type":"take_photo","sendAfterCapture":true,"visionPrompt":"read this"}""",
             ),
         )
+        assertEquals(
+            GlassesCommandDecodeResult.Success(GlassesCommand.UserInput("hello", "local-1")),
+            GlassesCommandCodec.decode(
+                """{"type":"user_input","text":"hello","id":"local-1"}""",
+            ),
+        )
+        assertEquals(
+            GlassesCommandDecodeResult.Success(GlassesCommand.RequestMoreHistory("oldest")),
+            GlassesCommandCodec.decode(
+                """{"type":"request_more_history","beforeMessageId":"oldest"}""",
+            ),
+        )
     }
 
     @Test
@@ -28,6 +40,10 @@ class GlassesCommandCodecTest {
         assertEquals(
             GlassesCommandDecodeResult.Success(GlassesCommand.RemovePhoto(false, null)),
             GlassesCommandCodec.decode("""{"type":"remove_photo"}"""),
+        )
+        assertEquals(
+            GlassesCommandDecodeResult.Success(GlassesCommand.UserInput("hello", null)),
+            GlassesCommandCodec.decode("""{"type":"user_input","text":"hello"}"""),
         )
     }
 

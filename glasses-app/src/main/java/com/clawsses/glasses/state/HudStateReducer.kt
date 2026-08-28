@@ -103,27 +103,19 @@ object HudStateReducer {
         current: ChatHudState,
         incoming: DisplayMessage,
     ): HudStateReduction {
-        val isDuplicateUserEcho = incoming.role == "user" && current.messages.any {
-            it.role == "user" && it.content == incoming.content
-        }
-        if (isDuplicateUserEcho) {
-            return HudStateReduction(
-                if (current.photoThumbnails.isEmpty()) current
-                else current.copy(photoThumbnails = emptyList())
-            )
-        }
-
+        val existingIndex = current.messages.indexOfFirst { it.id == incoming.id }
+        val existing = current.messages.getOrNull(existingIndex)
         val completed = incoming.copy(
             isStreaming = false,
             thumbnails = if (incoming.role == "user" && incoming.thumbnails.isEmpty()) {
-                current.photoThumbnails.toList()
+                existing?.thumbnails?.takeIf { it.isNotEmpty() }
+                    ?: current.photoThumbnails.toList()
             } else {
                 incoming.thumbnails
             },
         )
         val messages = current.messages.toMutableList()
-        val existingIndex = messages.indexOfFirst { it.id == completed.id }
-        if (completed.role != "user" && existingIndex >= 0) {
+        if (existingIndex >= 0) {
             messages[existingIndex] = completed
         } else {
             messages += completed
@@ -143,21 +135,24 @@ object HudStateReducer {
         current: ChatHudState,
         event: HudStateEvent.HistoryLoaded,
     ): HudStateReduction {
-        if (event.isLoadMore && current.isLoadingMoreHistory) {
-            val prependedCount = (event.messages.size - current.messages.size).coerceAtLeast(0)
+        if (event.isLoadMore) {
+            if (!current.isLoadingMoreHistory) return HudStateReduction(current)
+            val existingIds = current.messages.mapTo(HashSet()) { it.id }
+            val olderMessages = event.messages.filterNot { it.id in existingIds }
+            val prependedCount = olderMessages.size
             return if (prependedCount == 0) {
                 HudStateReduction(
                     current.copy(
-                        messages = event.messages,
                         isLoadingMoreHistory = false,
-                        hasMoreHistory = false,
+                        hasMoreHistory = event.hasMore,
                         newPrependCount = 0,
                     )
                 )
             } else {
+                val combined = olderMessages + current.messages
                 HudStateReduction(
                     state = current.copy(
-                        messages = event.messages,
+                        messages = combined,
                         scrollPosition = current.scrollPosition + prependedCount,
                         isLoadingMoreHistory = false,
                         hasMoreHistory = event.hasMore,

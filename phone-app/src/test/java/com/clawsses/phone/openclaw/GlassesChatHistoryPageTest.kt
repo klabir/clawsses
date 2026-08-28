@@ -18,7 +18,8 @@ class GlassesChatHistoryPageTest {
             )
         }
 
-        val packets = GlassesChatHistoryPage.buildPackets(messages)
+        val page = GlassesChatHistoryPage.latest(messages, gatewayHasMore = false)
+        val packets = GlassesChatHistoryPage.buildPackets(page.messages, hasMore = page.hasMore)
         val parsed = packets.map { JsonParser.parseString(it).asJsonObject }
         val reconstructed = linkedMapOf<String, StringBuilder>()
 
@@ -34,6 +35,25 @@ class GlassesChatHistoryPageTest {
         messages.takeLast(GlassesChatHistoryPage.MAX_MESSAGES).forEach { message ->
             assertEquals(message.content, reconstructed[message.id].toString())
         }
+    }
+
+    @Test
+    fun `older pages retain cursor order and advertise remaining history`() {
+        val messages = (1..8).map { ChatMessage(id = "m$it", role = "assistant", content = "$it") }
+
+        val page = GlassesChatHistoryPage.before(messages, "m7", gatewayHasMore = false)!!
+
+        assertEquals(listOf("m4", "m5", "m6"), page.messages.map { it.id })
+        assertTrue(page.hasMore)
+        val begin = JsonParser.parseString(
+            GlassesChatHistoryPage.buildPackets(
+                page.messages,
+                isLoadMore = true,
+                hasMore = page.hasMore,
+            ).first(),
+        ).asJsonObject
+        assertTrue(begin["isLoadMore"].asBoolean)
+        assertTrue(begin["hasMore"].asBoolean)
     }
 
     @Test

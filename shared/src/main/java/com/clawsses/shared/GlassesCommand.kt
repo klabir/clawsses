@@ -4,7 +4,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 
 sealed interface GlassesCommand {
-    data class UserInput(val text: String) : GlassesCommand
+    data class UserInput(val text: String, val clientMessageId: String?) : GlassesCommand
     data object StartVoice : GlassesCommand
     data object CancelVoice : GlassesCommand
     data class ListSessions(val offset: Int) : GlassesCommand
@@ -24,7 +24,7 @@ sealed interface GlassesCommand {
     data class HudCardAction(val cardId: String, val actionId: String) : GlassesCommand
     data class TakePhoto(val sendAfterCapture: Boolean, val visionPrompt: String?) : GlassesCommand
     data class RemovePhoto(val all: Boolean, val index: Int?) : GlassesCommand
-    data object RequestMoreHistory : GlassesCommand
+    data class RequestMoreHistory(val beforeMessageId: String?) : GlassesCommand
 }
 
 sealed interface GlassesCommandDecodeResult {
@@ -47,7 +47,12 @@ object GlassesCommandCodec {
     }
 
     private fun decode(type: String, json: JsonObject): GlassesCommandDecodeResult = when (type) {
-        "user_input" -> success(GlassesCommand.UserInput(json.string("text")))
+        "user_input" -> success(
+            GlassesCommand.UserInput(
+                text = json.string("text"),
+                clientMessageId = json.stringOrNull("id"),
+            ),
+        )
         "start_voice" -> success(GlassesCommand.StartVoice)
         "cancel_voice" -> success(GlassesCommand.CancelVoice)
         "list_sessions" -> success(GlassesCommand.ListSessions(json.intOrDefault("offset", 0)))
@@ -93,7 +98,9 @@ object GlassesCommandCodec {
                 index = json.optionalInt("index"),
             ),
         )
-        "request_more_history" -> success(GlassesCommand.RequestMoreHistory)
+        "request_more_history" -> success(
+            GlassesCommand.RequestMoreHistory(json.stringOrNull("beforeMessageId")),
+        )
         else -> GlassesCommandDecodeResult.UnknownType(type)
     }
 

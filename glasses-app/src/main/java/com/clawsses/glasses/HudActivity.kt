@@ -135,6 +135,7 @@ class HudActivity : ComponentActivity() {
     // from visible HUD state and swap it in only after the matching end marker arrives.
     private var pendingHistorySnapshotId: String? = null
     private var pendingHistoryHasMore = false
+    private var pendingHistoryIsLoadMore = false
     private val pendingHistoryMessages = linkedMapOf<String, PendingHistoryMessage>()
     private val processedTransportTransactions = ArrayDeque<String>()
 
@@ -847,6 +848,7 @@ class HudActivity : ComponentActivity() {
         // Send user_input to phone
         val json = JSONObject().apply {
             put("type", "user_input")
+            put("id", userMsg.id)
             put("text", text)
         }
         phoneConnection.sendToPhone(json.toString())
@@ -1266,7 +1268,7 @@ class HudActivity : ComponentActivity() {
 
         val json = JSONObject().apply {
             put("type", "request_more_history")
-            put("currentCount", current.messages.size)
+            put("beforeMessageId", current.messages.first().id)
         }
         phoneConnection.sendToPhone(json.toString())
         Log.d(GlassesApp.TAG, "Requesting more history (currentCount=${current.messages.size})")
@@ -1686,6 +1688,7 @@ class HudActivity : ComponentActivity() {
                     clearStreamingMessage()
                     pendingHistorySnapshotId = msg.optString("s")
                     pendingHistoryHasMore = msg.optBoolean("hasMore", false)
+                    pendingHistoryIsLoadMore = msg.optBoolean("isLoadMore", false)
                     pendingHistoryMessages.clear()
                     Log.d(GlassesApp.TAG, "History snapshot started")
                 }
@@ -1725,11 +1728,12 @@ class HudActivity : ComponentActivity() {
                             hudState.value,
                             HudStateEvent.HistoryLoaded(
                                 messages = messages,
-                                isLoadMore = false,
+                                isLoadMore = pendingHistoryIsLoadMore,
                                 hasMore = pendingHistoryHasMore,
                             ),
                         ).state
                         pendingHistorySnapshotId = null
+                        pendingHistoryIsLoadMore = false
                         pendingHistoryMessages.clear()
                         Log.d(GlassesApp.TAG, "Loaded complete chunked history (${messages.size} messages)")
                     }

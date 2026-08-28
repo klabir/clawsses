@@ -81,6 +81,7 @@ class PhoneGlassesBridgeController(
     private val started = AtomicBoolean(false)
     private val activationPending = AtomicBoolean(false)
     private val hudCardBodies = LinkedHashMap<String, String>()
+    private var pendingHistoryBeforeMessageId: String? = null
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -285,10 +286,20 @@ class PhoneGlassesBridgeController(
         openClawClient.onAgentList = { glassesManager.sendRawMessage(it.toJson()) }
         openClawClient.onConnectionUpdate = { glassesManager.sendRawMessage(it.toJson()) }
         openClawClient.onMoreHistoryLoaded = { prependedCount, hasMore ->
-            sendHistoryToGlasses(
-                openClawClient.chatMessages.value,
-                "phone history expansion; prepended=$prependedCount, phoneHasMore=$hasMore",
-            )
+            val beforeMessageId = pendingHistoryBeforeMessageId
+            pendingHistoryBeforeMessageId = null
+            if (beforeMessageId != null) {
+                val page = GlassesChatHistoryPage.before(
+                    openClawClient.chatMessages.value,
+                    beforeMessageId,
+                    hasMore,
+                )
+                sendHistoryPageToGlasses(
+                    page ?: GlassesChatHistoryPage.Page(emptyList(), hasMore),
+                    isLoadMore = true,
+                    reason = "phone history expansion; prepended=$prependedCount, phoneHasMore=$hasMore",
+                )
+            }
         }
     }
 
@@ -370,10 +381,7 @@ class PhoneGlassesBridgeController(
                     command.visionPrompt,
                 )
                 is GlassesCommand.RemovePhoto -> removePhoto(command)
-                GlassesCommand.RequestMoreHistory -> sendHistoryToGlasses(
-                    openClawClient.chatMessages.value,
-                    "legacy history request",
-                )
+                is GlassesCommand.RequestMoreHistory -> requestMoreHistory(command.beforeMessageId)
             }
             is GlassesCommandDecodeResult.UnknownType ->
                 Log.w(TAG, "Ignoring unknown glasses message type=${result.type}")
@@ -384,7 +392,9 @@ class PhoneGlassesBridgeController(
 
     private fun handleUserInput(command: GlassesCommand.UserInput) {
         val images = pendingPhotos.value.ifEmpty { null }
-        if (command.text.isNotEmpty() || images != null) openClawClient.sendMessage(command.text, images)
+        if (command.text.isNotEmpty() || images != null) {
+            openClawClient.sendMessage(command.text, images, command.clientMessageId)
+        }
         pendingPhotos.value = emptyList()
     }
 
@@ -613,11 +623,60 @@ class PhoneGlassesBridgeController(
     }
 
     private fun sendHistoryToGlasses(messages: List<ChatMessage>, reason: String) {
-        val packets = GlassesChatHistoryPage.buildPackets(
-            messages,
-            CxrPayloadLimits.MAX_BYTES - CxrOutboundTransport.ACK_METADATA_RESERVE_BYTES,
+        sendHistoryPageToGlasses(
+            page = GlassesChatHistoryPage.latest(
+                messages,
+                gatewayHasMore = openClawClient.hasMoreHistory.value,
+            ),
+            isLoadMore = false,
+            reason = reason,
         )
-        Log.i(TAG, "Sending history ($reason): ${messages.size} messages, ${packets.size} packets")
+    }
+
+    private fun requestMoreHistory(beforeMessageId: String?) {
+        val id = beforeMessageId?.takeIf { it.isNotBlank() }
+            ?: return sendHistoryPageToGlasses(
+                GlassesChatHistoryPage.Page(emptyList(), hasMore = false),
+                isLoadMore = true,
+                reason = "missing history cursor",
+            )
+        val page = GlassesChatHistoryPage.before(
+            openClawClient.chatMessages.value,
+            id,
+            openClawClient.hasMoreHistory.value,
+        )
+        if (page != null && page.messages.isNotEmpty()) {
+            sendHistoryPageToGlasses(page, isLoadMore = true, reason = "cached history page")
+            return
+        }
+        if (openClawClient.hasMoreHistory.value && !openClawClient.isLoadingMoreHistory.value) {
+            pendingHistoryBeforeMessageId = id
+            openClawClient.loadMoreHistory()
+            return
+        }
+        sendHistoryPageToGlasses(
+            page ?: GlassesChatHistoryPage.Page(emptyList(), hasMore = false),
+            isLoadMore = true,
+            reason = "history beginning reached",
+        )
+    }
+
+    private fun sendHistoryPageToGlasses(
+        page: GlassesChatHistoryPage.Page,
+        isLoadMore: Boolean,
+        reason: String,
+    ) {
+        val packets = GlassesChatHistoryPage.buildPackets(
+            page.messages,
+            CxrPayloadLimits.MAX_BYTES - CxrOutboundTransport.ACK_METADATA_RESERVE_BYTES,
+            isLoadMore = isLoadMore,
+            hasMore = page.hasMore,
+        )
+        Log.i(
+            TAG,
+            "Sending history ($reason): ${page.messages.size} messages, " +
+                "${packets.size} packets, loadMore=$isLoadMore, hasMore=${page.hasMore}",
+        )
         packets.forEach(glassesManager::sendRawMessage)
     }
 
