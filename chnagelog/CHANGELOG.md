@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.61 (build 70)
+
+### Changed
+
+- Enable R8 optimization and resource shrinking for the phone release while retaining the generated baseline and startup profiles.
+- Preserve the Rokid JNI bridge, Gson field models, and Android component entry points across release optimization.
+
+### Added
+
+- Add an explicit local hardware-test signing switch so the exact minified release can be installed data-preservingly without embedding a publishing signer.
+
+## 1.3.60 (build 69)
+
 ### Changed
 
 - Generate baseline and startup profiles from isolated benchmark-only app variants so profiling cannot overwrite production Clawsses data or Keystore-backed settings.

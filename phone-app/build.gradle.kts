@@ -55,6 +55,10 @@ plugins {
 
 val clawssesVersionCode = providers.gradleProperty("clawsses.versionCode").get().toInt()
 val clawssesVersionName = providers.gradleProperty("clawsses.versionName").get()
+val useDebugSigningForHardwareTest = providers
+    .gradleProperty("clawsses.hardwareTestSigning")
+    .map(String::toBooleanStrict)
+    .orElse(false)
 
 // Load Rokid credentials from local.properties (needed for SN verification)
 val localProperties = Properties().apply {
@@ -107,7 +111,13 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (useDebugSigningForHardwareTest.get()) {
+                // Explicit opt-in for a local, data-preserving hardware gate. Public release
+                // builds remain unsigned unless the publishing environment supplies a signer.
+                signingConfig = signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -193,6 +203,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    compileOnly("com.google.errorprone:error_prone_annotations:2.30.0")
 
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
