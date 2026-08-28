@@ -30,6 +30,9 @@ import com.clawsses.shared.AgentProgressUpdate
 import com.clawsses.shared.ChatMessage
 import com.clawsses.shared.ConnectionUpdate
 import com.clawsses.shared.CxrPayloadLimits
+import com.clawsses.shared.GlassesCommand
+import com.clawsses.shared.GlassesCommandCodec
+import com.clawsses.shared.GlassesCommandDecodeResult
 import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
 import com.clawsses.shared.LiveCaptionUpdate
@@ -339,51 +342,49 @@ class PhoneGlassesBridgeController(
     }
 
     private fun handleGlassesMessage(raw: String) {
-        runCatching {
-            val json = JSONObject(raw)
-            when (json.optString("type")) {
-                "user_input" -> handleUserInput(json)
-                "start_voice" -> handleStartVoice()
-                "cancel_voice" -> handleCancelVoice()
-                "list_sessions" -> openClawClient.requestSessionPage(json.optInt("offset", 0))
-                "switch_session" -> json.optString("sessionKey").takeIf(String::isNotEmpty)
-                    ?.let(openClawClient::switchSession)
-                "create_session" -> openClawClient.createSession()
-                "list_agents" -> openClawClient.requestAgents()
-                "switch_agent" -> json.optString("agentId").takeIf(String::isNotEmpty)?.let { id ->
-                    openClawClient.switchAgent(id, json.optString("agentName").takeIf(String::isNotBlank))
-                }
-                "list_models" -> requestModelPage(json.optInt("offset", -1))
-                "select_model" -> selectModel(json)
-                "abort_run" -> {
+        when (val result = GlassesCommandCodec.decode(raw)) {
+            is GlassesCommandDecodeResult.Success -> when (val command = result.command) {
+                is GlassesCommand.UserInput -> handleUserInput(command)
+                GlassesCommand.StartVoice -> handleStartVoice()
+                GlassesCommand.CancelVoice -> handleCancelVoice()
+                is GlassesCommand.ListSessions -> openClawClient.requestSessionPage(command.offset)
+                is GlassesCommand.SwitchSession -> openClawClient.switchSession(command.sessionKey)
+                GlassesCommand.CreateSession -> openClawClient.createSession()
+                GlassesCommand.ListAgents -> openClawClient.requestAgents()
+                is GlassesCommand.SwitchAgent -> openClawClient.switchAgent(command.agentId, command.agentName)
+                is GlassesCommand.ListModels -> requestModelPage(command.offset)
+                is GlassesCommand.SelectModel -> selectModel(command)
+                GlassesCommand.AbortRun -> {
                     ttsPlaybackManager.stop()
                     openClawClient.abortActiveRun()
                 }
-                "slash_command" -> json.optString("command").takeIf(String::isNotEmpty)
-                    ?.let(openClawClient::sendSlashCommand)
-                "request_state" -> handleStateRequest(json)
-                "tts_toggle" -> handleTtsToggle(json.optBoolean("enabled", false))
-                "tts_control" -> handleTtsControl(json.optString("action"))
-                "talk_mode_toggle" -> handleTalkModeToggle(json.optBoolean("enabled", false))
-                "live_caption_toggle" -> setLiveCaptionsEnabled(json.optBoolean("enabled", false))
-                "hud_card_action" -> handleHudCardAction(json)
-                "take_photo" -> capturePhoto(
-                    json.optBoolean("sendAfterCapture", false),
-                    json.optString("visionPrompt").takeIf(String::isNotBlank),
+                is GlassesCommand.Slash -> openClawClient.sendSlashCommand(command.command)
+                is GlassesCommand.RequestState -> handleStateRequest(command)
+                is GlassesCommand.TtsToggle -> handleTtsToggle(command.enabled)
+                is GlassesCommand.TtsControl -> handleTtsControl(command.action)
+                is GlassesCommand.TalkModeToggle -> handleTalkModeToggle(command.enabled)
+                is GlassesCommand.LiveCaptionToggle -> setLiveCaptionsEnabled(command.enabled)
+                is GlassesCommand.HudCardAction -> handleHudCardAction(command)
+                is GlassesCommand.TakePhoto -> capturePhoto(
+                    command.sendAfterCapture,
+                    command.visionPrompt,
                 )
-                "remove_photo" -> removePhoto(json)
-                "request_more_history" -> sendHistoryToGlasses(
+                is GlassesCommand.RemovePhoto -> removePhoto(command)
+                GlassesCommand.RequestMoreHistory -> sendHistoryToGlasses(
                     openClawClient.chatMessages.value,
                     "legacy history request",
                 )
             }
-        }.onFailure { error -> Log.e(TAG, "Error parsing glasses message", error) }
+            is GlassesCommandDecodeResult.UnknownType ->
+                Log.w(TAG, "Ignoring unknown glasses message type=${result.type}")
+            is GlassesCommandDecodeResult.Malformed ->
+                Log.w(TAG, "Ignoring malformed glasses message type=${result.type}: ${result.reason}")
+        }
     }
 
-    private fun handleUserInput(json: JSONObject) {
-        val text = json.optString("text")
+    private fun handleUserInput(command: GlassesCommand.UserInput) {
         val images = pendingPhotos.value.ifEmpty { null }
-        if (text.isNotEmpty() || images != null) openClawClient.sendMessage(text, images)
+        if (command.text.isNotEmpty() || images != null) openClawClient.sendMessage(command.text, images)
         pendingPhotos.value = emptyList()
     }
 
@@ -424,13 +425,13 @@ class PhoneGlassesBridgeController(
         }
     }
 
-    private fun selectModel(json: JSONObject) {
+    private fun selectModel(command: GlassesCommand.SelectModel) {
         val models = openClawClient.modelList.value
-        val requestedSessionKey = json.optString("sessionKey")
+        val requestedSessionKey = command.sessionKey
         val selected = resolveGlassesModelSelection(
             models,
-            json.optString("catalog"),
-            json.optInt("index", -1),
+            command.catalog,
+            command.index,
         )
         val validationError = when {
             requestedSessionKey.isBlank() || requestedSessionKey != openClawClient.currentSessionKey.value ->
@@ -478,8 +479,8 @@ class PhoneGlassesBridgeController(
         }
     }
 
-    private fun handleStateRequest(json: JSONObject) {
-        glassesManager.updatePeerVersion(json.optInt("versionCode", -1).takeIf { it >= 0 })
+    private fun handleStateRequest(command: GlassesCommand.RequestState) {
+        glassesManager.updatePeerVersion(command.versionCode?.takeIf { it >= 0 })
         sendCompleteState()
         openClawClient.requestModels()
     }
@@ -536,25 +537,25 @@ class PhoneGlassesBridgeController(
         talkCoordinator.syncTalkModeStateToGlasses()
     }
 
-    private fun handleHudCardAction(json: JSONObject) {
-        val cardId = json.optString("cardId")
-        when (json.optString("actionId")) {
-            "summarize" -> hudCardBodies[cardId]?.let { body ->
+    private fun handleHudCardAction(command: GlassesCommand.HudCardAction) {
+        when (command.actionId) {
+            "summarize" -> hudCardBodies[command.cardId]?.let { body ->
                 openClawClient.sendMessage(
                     "Summarize this notification concisely and identify any action needed: $body",
                 )
             }
             "reply" -> stagedVoiceCoordinator.start()
         }
-        hudCardBodies.remove(cardId)
+        hudCardBodies.remove(command.cardId)
     }
 
-    private fun removePhoto(json: JSONObject) {
+    private fun removePhoto(command: GlassesCommand.RemovePhoto) {
         val current = pendingPhotos.value
+        val index = command.index
         pendingPhotos.value = when {
-            json.optBoolean("all", false) -> emptyList()
-            json.optInt("index", -1) in current.indices -> current.toMutableList().apply {
-                removeAt(json.optInt("index"))
+            command.all -> emptyList()
+            index != null && index in current.indices -> current.toMutableList().apply {
+                removeAt(index)
             }
             else -> current
         }

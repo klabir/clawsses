@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## 1.3.66 (build 75)
+
+### Changed
+
+- Decode every HUD-to-phone command through one typed shared protocol boundary while retaining the existing JSON wire format and legacy optional-field defaults.
+
+### Fixed
+
+- Reject malformed or incorrectly typed glasses commands explicitly instead of silently converting invalid fields to action-triggering default values.
+
+### Added
+
+- Add regression coverage for valid commands, legacy defaults, unknown future commands, malformed JSON, and missing or incorrectly typed required fields.
+
 ## 1.3.65 (build 74)
 
 ### Fixed
