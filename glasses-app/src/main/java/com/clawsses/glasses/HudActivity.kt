@@ -1845,7 +1845,7 @@ class HudActivity : ComponentActivity() {
                             agentProgress = emptyList(),
                         )
                         publishStreamingMessage()
-                    } else if (streamPublishJob == null) {
+                    } else if (streamPublishJob == null && streamingAccumulator.hasUnpublishedChanges()) {
                         streamPublishJob = lifecycleScope.launch {
                             delay(STREAM_PUBLISH_INTERVAL_MS)
                             publishStreamingMessage()
@@ -2370,7 +2370,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun publishStreamingMessage() {
-        streamingMessage.value = streamingAccumulator.snapshot()
+        streamingAccumulator.snapshotIfChanged()?.let { streamingMessage.value = it }
     }
 
     private fun clearStreamingMessage(id: String? = null) {

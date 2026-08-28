@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 1.3.67 (build 76)
+
+### Changed
+
+- Publish one immutable HUD streaming snapshot per coalesced display update instead of advancing the visible revision for every network chunk.
+- Keep the active streaming accumulator synchronized so callback-thread delivery and HUD publication cannot observe partially updated text.
+
+### Fixed
+
+- Ignore empty chunks and blank message IDs, and avoid rebuilding the complete growing response when no new characters have arrived.
+
 ## 1.3.66 (build 75)
 
 ### Changed

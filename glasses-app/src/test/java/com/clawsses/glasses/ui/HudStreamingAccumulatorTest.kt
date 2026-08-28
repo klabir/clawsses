@@ -15,8 +15,11 @@ class HudStreamingAccumulatorTest {
             accumulator.append("answer", "$index,")
         }
 
-        assertEquals((0 until 500).joinToString(separator = ",", postfix = ","), accumulator.snapshot()?.content)
-        assertEquals(500L, accumulator.snapshot()?.revision)
+        val snapshot = accumulator.snapshotIfChanged()
+        assertEquals((0 until 500).joinToString(separator = ",", postfix = ","), snapshot?.content)
+        assertEquals(1L, snapshot?.revision)
+        assertFalse(accumulator.hasUnpublishedChanges())
+        assertNull(accumulator.snapshotIfChanged())
     }
 
     @Test
@@ -27,8 +30,7 @@ class HudStreamingAccumulatorTest {
         assertFalse(accumulator.append("first", " answer"))
         assertTrue(accumulator.append("second", "new"))
 
-        assertEquals("second", accumulator.snapshot()?.id)
-        assertEquals("new", accumulator.snapshot()?.content)
+        assertEquals("second", accumulator.snapshotIfChanged()?.id)
     }
 
     @Test
@@ -37,6 +39,29 @@ class HudStreamingAccumulatorTest {
         accumulator.append("answer", "complete")
 
         assertEquals("complete", accumulator.finish("answer")?.content)
-        assertNull(accumulator.snapshot())
+        assertNull(accumulator.snapshotIfChanged())
+    }
+
+    @Test
+    fun `later chunks create only one additional published revision`() {
+        val accumulator = HudStreamingAccumulator()
+        accumulator.append("answer", "Hello")
+        assertEquals(1L, accumulator.snapshotIfChanged()?.revision)
+
+        accumulator.append("answer", " ")
+        accumulator.append("answer", "world")
+
+        val snapshot = accumulator.snapshotIfChanged()
+        assertEquals("Hello world", snapshot?.content)
+        assertEquals(2L, snapshot?.revision)
+    }
+
+    @Test
+    fun `empty chunks and blank ids do not mutate the stream`() {
+        val accumulator = HudStreamingAccumulator()
+
+        assertFalse(accumulator.append("", "ignored"))
+        assertFalse(accumulator.append("answer", ""))
+        assertNull(accumulator.snapshotIfChanged())
     }
 }
