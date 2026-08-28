@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 1.3.70 (build 79)
+
+### Changed
+
+- Move frequent Phone-to-HUD message, history, stream, connection, session, agent, run, talk, caption, and progress transitions into one pure state reducer.
+- Keep JSON decoding, bitmap handling, lifecycle timers, and transport acknowledgements as explicit Activity-side effects.
+
+### Fixed
+
+- Preserve the transport acknowledgment when a completed user message duplicates the HUD's optimistic local echo.
+- Restore history anchors, session selections, and agent identity through deterministic reducer transitions instead of scattered Activity mutations.
+
+### Added
+
+- Add regression coverage for message replacement, history prepend/end detection, stream completion, session/agent selection, and independent run/talk/caption state.
+
 ## 1.3.69 (build 78)
 
 ### Fixed
