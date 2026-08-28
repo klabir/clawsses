@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 1.3.68 (build 77)
+
+### Changed
+
+- Suspend OpenClaw WebSocket retries while Android has no default internet-capable network and reconnect immediately when connectivity returns.
+- Keep network transitions generation-safe by invalidating the old socket, cancelling its retry job, and allowing only one restored connection attempt.
+
+### Added
+
+- Add deterministic transition coverage for duplicate, lost, and restored network availability events.
+
 ## 1.3.67 (build 76)
 
 ### Changed

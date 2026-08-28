@@ -5,6 +5,7 @@ import android.util.Log
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.openclaw.DeviceIdentity
+import com.clawsses.phone.openclaw.AndroidNetworkMonitor
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.talk.TalkModeManager
 import com.clawsses.phone.tts.ElevenLabsClient
@@ -27,7 +28,10 @@ class ClawssesRuntime(context: Context) {
     private val appContext = context.applicationContext
 
     val glassesManager = GlassesConnectionManager(appContext)
-    val openClawClient = OpenClawClient(DeviceIdentity(appContext))
+    val openClawClient = OpenClawClient(
+        DeviceIdentity(appContext),
+        AndroidNetworkMonitor(appContext),
+    )
     val voiceHandler = VoiceCommandHandler(appContext)
     val voiceLanguageManager = VoiceLanguageManager(appContext)
     val voiceRecognitionManager = VoiceRecognitionManager(appContext)

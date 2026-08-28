@@ -26,7 +26,8 @@ import kotlin.random.Random
  * request/response correlation, event streaming, and auto-reconnect.
  */
 class OpenClawClient(
-    private val deviceIdentity: DeviceIdentity
+    private val deviceIdentity: DeviceIdentity,
+    private val networkMonitor: NetworkMonitor? = null,
 ) {
 
     companion object {
@@ -106,6 +107,7 @@ class OpenClawClient(
     private var token: String = ""
     private var shouldReconnect = false
     private var reconnectJob: Job? = null
+    private val networkAvailability = NetworkAvailabilityGate(networkMonitor?.isNetworkAvailable() ?: true)
 
     // Active agent run tracking
     @Volatile private var activeRunId: String? = null
@@ -154,6 +156,10 @@ class OpenClawClient(
     // Challenge nonce for auth handshake
     private var challengeNonce: String? = null
 
+    init {
+        networkMonitor?.start { available -> handleNetworkAvailability(available) }
+    }
+
     fun connect(host: String, port: Int, token: String) {
         val normalizedHost = host.trim().trimEnd('/')
         if (normalizedHost.startsWith("ws://") || normalizedHost.startsWith("http://")) {
@@ -180,6 +186,20 @@ class OpenClawClient(
         token: String,
         resetBackoff: Boolean,
     ) {
+        if (!networkAvailability.isAvailable()) {
+            synchronized(connectionLock) {
+                this.host = normalizedHost
+                this.port = port
+                this.token = token
+                shouldReconnect = true
+                reconnectJob?.cancel()
+                reconnectJob = null
+                if (resetBackoff) reconnectBackoff.reset()
+            }
+            _connectionState.value = ConnectionState.Disconnected
+            notifyConnectionUpdate(false)
+            return
+        }
         val previousSocket: WebSocket?
         val generation: Long
         synchronized(connectionLock) {
@@ -974,6 +994,7 @@ class OpenClawClient(
 
     fun cleanup() {
         disconnect()
+        networkMonitor?.stop()
         scope.cancel()
     }
 
@@ -1493,6 +1514,7 @@ class OpenClawClient(
     private fun scheduleReconnect(endedConnectionGeneration: Long) {
         synchronized(connectionLock) {
             if (!shouldReconnect ||
+                !networkAvailability.isAvailable() ||
                 !connectionEpoch.isCurrent(endedConnectionGeneration) ||
                 reconnectJob?.isActive == true
             ) {
@@ -1517,6 +1539,41 @@ class OpenClawClient(
                     resetBackoff = false,
                 )
             }
+        }
+    }
+
+    private fun handleNetworkAvailability(available: Boolean) {
+        if (networkAvailability.update(available) == NetworkAvailabilityChange.UNCHANGED) return
+        val socketToCancel: WebSocket?
+        val reconnectParams: Triple<String, Int, String>?
+        synchronized(connectionLock) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+            if (!available) {
+                connectionEpoch.invalidate()
+                socketToCancel = webSocket
+                webSocket = null
+                reconnectParams = null
+            } else {
+                socketToCancel = null
+                reconnectBackoff.reset()
+                reconnectParams = if (shouldReconnect && host.isNotBlank()) Triple(host, port, token) else null
+            }
+        }
+        if (!available) {
+            socketToCancel?.cancel()
+            failAllPending("Network unavailable")
+            _connectionState.value = ConnectionState.Disconnected
+            notifyConnectionUpdate(false)
+            return
+        }
+        reconnectParams?.let { params ->
+            startConnection(
+                normalizedHost = params.first,
+                port = params.second,
+                token = params.third,
+                resetBackoff = false,
+            )
         }
     }
 
@@ -1643,6 +1700,25 @@ internal class ConnectionEpoch {
         if (!isCurrent(generation) || isEnded(generation)) return false
         ended = generation
         return true
+    }
+}
+
+internal enum class NetworkAvailabilityChange {
+    UNCHANGED,
+    LOST,
+    RESTORED,
+}
+
+internal class NetworkAvailabilityGate(initiallyAvailable: Boolean) {
+    @Volatile private var available = initiallyAvailable
+
+    fun isAvailable(): Boolean = available
+
+    @Synchronized
+    fun update(newValue: Boolean): NetworkAvailabilityChange {
+        if (available == newValue) return NetworkAvailabilityChange.UNCHANGED
+        available = newValue
+        return if (newValue) NetworkAvailabilityChange.RESTORED else NetworkAvailabilityChange.LOST
     }
 }
 
