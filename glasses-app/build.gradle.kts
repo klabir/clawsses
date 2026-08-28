@@ -18,14 +18,21 @@ android {
     defaultConfig {
         applicationId = "com.clawsses.glasses"
         minSdk = 28  // Required for CXR-S SDK
-        targetSdk = 35
+        // Sprite firmware 1.24 returns immediately to its launcher when a
+        // custom HUD targets API 35. Keep compiling against API 35, but retain
+        // the hardware-verified API 34 runtime contract on the glasses.
+        targetSdk = 34
         versionCode = clawssesVersionCode
         versionName = clawssesVersionName
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true
+            // The Sprite 1.24 custom-app runtime returns the optimized HUD to
+            // its launcher immediately. Keep the phone optimized, but ship the
+            // glasses process unminified until the vendor/reflection boundary
+            // can be hardened with device-visible crash diagnostics.
+            isMinifyEnabled = false
             if (useDebugSigningForHardwareTest.get()) {
                 // Explicit local paired-device gate. Public release builds remain unsigned.
                 signingConfig = signingConfigs.getByName("debug")

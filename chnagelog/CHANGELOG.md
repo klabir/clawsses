@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## 1.3.65 (build 74)
+
+### Fixed
+
+- Restore the hardware-verified unminified HUD release contract after the first R8-minified glasses release reproducibly returned to the Sprite launcher immediately after every successful start request.
+
+### Changed
+
+- Keep Phone target API 35 with R8 optimization while isolating the firmware workaround to the HUD: target API 34 and no release minification.
+
+### Verified
+
+- Require the HUD to remain foreground and complete a fresh `1.3.65 / 74` version handshake; a successful CXR-L install or `openApp` callback alone is not accepted.
+
+## 1.3.64 (build 73, validation only)
+
+### Fixed
+
+- Restore the Rokid HUD runtime contract to target API 34 after Sprite firmware 1.24 reproducibly returned an API-35-targeted custom HUD to the system launcher immediately after every successful start request.
+
+### Changed
+
+- Keep the phone and benchmark applications on target API 35 while the glasses continue compiling against API 35 with their hardware-compatible target API 34.
+
+### Verified
+
+- Hardware validation disproved target API 35 as the sole cause: the target-34 HUD installed and opened successfully but still returned immediately to the Sprite launcher, isolating release minification as the remaining packaging change from the last stable HUD.
+
 ## 1.3.63 (build 72)
 
 ### Changed

@@ -282,7 +282,16 @@ val verifyReleaseExcludesDebugTransport =
         description = "Fails if the unauthenticated emulator transport is packaged in the phone release APK."
         dependsOn("assembleRelease")
         releaseApk.set(
-            layout.buildDirectory.file("outputs/apk/release/phone-app-release-unsigned.apk")
+            layout.buildDirectory.file(
+                useDebugSigningForHardwareTest.map { usesHardwareTestSigner ->
+                    val fileName = if (usesHardwareTestSigner) {
+                        "phone-app-release.apk"
+                    } else {
+                        "phone-app-release-unsigned.apk"
+                    }
+                    "outputs/apk/release/$fileName"
+                }
+            )
         )
     }
 
