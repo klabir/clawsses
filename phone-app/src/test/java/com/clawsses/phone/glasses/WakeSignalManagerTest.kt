@@ -3,6 +3,8 @@ package com.clawsses.phone.glasses
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,6 +79,27 @@ class WakeSignalManagerTest {
         harness.manager.cleanup()
     }
 
+    @Test
+    fun `disabling wake feature cancels pending standby transition`() = runBlocking {
+        val gates = mutableListOf<Boolean>()
+        val manager = WakeSignalManager(
+            enqueueToGlasses = { _, _ -> },
+            setDeliveryAllowed = { gates += it },
+            scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+            logger = { _, _ -> },
+            monotonicClock = { 42L },
+            standbyDetectionMs = 20L,
+        )
+
+        manager.handleGlassesConnected()
+        manager.setEnabled(false)
+        delay(60L)
+
+        assertTrue(manager.wakeState.value is WakeSignalManager.WakeState.Awake)
+        assertTrue(gates.last())
+        manager.cleanup()
+    }
+
     private class Harness {
         val enqueued = mutableListOf<Pair<String, Boolean>>()
         val gates = mutableListOf<Boolean>()
@@ -87,6 +110,7 @@ class WakeSignalManagerTest {
             wakeHardwareDisplay = { true },
             scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob()),
             logger = { _, _ -> },
+            monotonicClock = { 10_000L },
         )
     }
 

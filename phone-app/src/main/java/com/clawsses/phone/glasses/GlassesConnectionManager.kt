@@ -95,6 +95,7 @@ class GlassesConnectionManager(private val context: Context) {
     // automatically attempt to reconnect using saved BT credentials with exponential backoff.
     private val reconnectScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     @Volatile private var reconnectJob: Job? = null
+    private var scanTimeoutJob: Job? = null
     private var userInitiatedDisconnect = false
     private var reconnectAttempts = 0
     private var currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
@@ -293,6 +294,8 @@ class GlassesConnectionManager(private val context: Context) {
         }
 
         override fun onScanFailed(errorCode: Int) {
+            scanTimeoutJob?.cancel()
+            scanTimeoutJob = null
             Log.e(TAG, "BLE scan failed with error code: $errorCode")
             _connectionState.value = ConnectionState.Error("Scan failed: $errorCode")
         }
@@ -339,8 +342,17 @@ class GlassesConnectionManager(private val context: Context) {
 
         try {
             // Start scan (with filter for Rokid UUID)
+            scanTimeoutJob?.cancel()
+            runCatching { bleScanner?.stopScan(scanCallback) }
             bleScanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
             Log.d(TAG, "Started BLE scanning for Rokid devices")
+            scanTimeoutJob = reconnectScope.launch {
+                delay(SCAN_TIMEOUT_MS)
+                if (_connectionState.value is ConnectionState.Scanning) {
+                    Log.i(TAG, "BLE scan timed out after ${SCAN_TIMEOUT_MS}ms")
+                    stopScanning()
+                }
+            }
         } catch (e: SecurityException) {
             _connectionState.value = ConnectionState.Error("Missing Bluetooth permissions")
         }
@@ -350,6 +362,8 @@ class GlassesConnectionManager(private val context: Context) {
      * Stop scanning for devices
      */
     fun stopScanning() {
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = null
         try {
             bleScanner?.stopScan(scanCallback)
             if (_connectionState.value is ConnectionState.Scanning) {
@@ -642,6 +656,7 @@ class GlassesConnectionManager(private val context: Context) {
      * which may restart Bluetooth after a newer manager is already connected.
      */
     fun dispose() {
+        stopScanning()
         reconnectJob?.cancel()
         reconnectJob = null
         wakeSignalManager.dispose()

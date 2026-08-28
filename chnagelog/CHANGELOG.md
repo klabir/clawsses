@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 1.3.71 (build 80)
+
+### Fixed
+
+- Preserve the sole CXR outbound worker when Bluetooth disconnects while a reliable packet is awaiting its transport acknowledgment.
+- Keep wake delivery open after the wake feature is disabled by cancelling pending wake and standby timers and using monotonic elapsed time for rate limits.
+- Stop low-latency BLE discovery after its bounded 15-second attempt instead of scanning indefinitely.
+
+### Added
+
+- Add regression coverage for reliable delivery after an acknowledgment-time disconnect and for disabling wake gating while a standby timer is pending.
+
 ## 1.3.70 (build 79)
 
 ### Changed
