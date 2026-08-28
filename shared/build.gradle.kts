@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.clawsses.shared"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 28

@@ -9,7 +9,7 @@ val clawssesVersionName = providers.gradleProperty("clawsses.versionName").get()
 
 android {
     namespace = "com.clawsses.glasses"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.clawsses.glasses"

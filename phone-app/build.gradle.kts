@@ -86,7 +86,7 @@ tasks.register("verifyPublicReleaseHasNoRokidCredentials") {
 
 android {
     namespace = "com.clawsses.phone"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.clawsses.phone"

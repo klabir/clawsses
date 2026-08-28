@@ -76,10 +76,6 @@ object RokidSdkManager {
     private const val HUD_RECOVERY_DELAY_MS = 250L
     private const val HUD_RECOVERY_FALLBACK_DELAY_MS = 1_000L
     private const val CLASSIC_BLUETOOTH_ACTIVATION_DELAY_MS = 350L
-    // Added in API 35, while the project deliberately still compiles against API 34.
-    // Android 15+ classifies the glasses hotspot as a local network; omitting this
-    // capability registers the request as `Forbidden: LOCAL_NETWORK` on newer Pixels.
-    private const val NET_CAPABILITY_LOCAL_NETWORK_COMPAT = 36
     private const val APK_UPLOAD_PORT = 8848
     private const val HOTSPOT_PROBE_ATTEMPTS = 6
     private const val HOTSPOT_PROBE_CONNECT_TIMEOUT_MS = 500
@@ -417,8 +413,8 @@ object RokidSdkManager {
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .setNetworkSpecifier(specifier)
-        if (android.os.Build.VERSION.SDK_INT >= 35) {
-            requestBuilder.addCapability(NET_CAPABILITY_LOCAL_NETWORK_COMPAT)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            requestBuilder.addCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK)
         }
         val request = requestBuilder.build()
 

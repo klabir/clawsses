@@ -11,6 +11,14 @@
 ### Fixed
 
 
+## 1.3.59 (build 68)
+
+### Changed
+
+- Compile all Android modules against API 35 while retaining target API 34, avoiding a runtime behavior or permission-model change in this release.
+- Replace the numeric Android 15 local-network capability compatibility value with the official `NET_CAPABILITY_LOCAL_NETWORK` platform constant.
+
+
 ## 1.3.58 (build 67)
 
 ### Changed
