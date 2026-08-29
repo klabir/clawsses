@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.80 (build 89)
+
+### Changed
+
+- Move OpenClaw history JSON parsing, embedded-image filtering, stable identity generation, and prepend merging out of the network client.
+- Keep `OpenClawClient` responsible for transport and operation epochs while pure history components own content interpretation.
+
+### Fixed
+
+- Use one parser for initial and expanded history so supported roles, IDs, timestamps, text blocks, and attachment limits cannot drift between paths.
+
+### Added
+
+- Add regression coverage for embedded/remote images, malformed history entries, supported roles, and stable prepend merging.
+
 ## 1.3.79 (build 88)
 
 ### Changed
