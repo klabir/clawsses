@@ -53,6 +53,7 @@ internal fun paginateHudMessages(
     thumbnailHeightPx: Int,
     historyMarkerHeightPx: Int,
     showHistoryStart: Boolean,
+    firstMessageStartOffset: Int = 0,
 ): List<HudPage> {
     if (messages.isEmpty()) return emptyList()
 
@@ -70,8 +71,14 @@ internal fun paginateHudMessages(
         currentPageShowsHistory = false
     }
 
-    messages.forEach { message ->
-        val measuredText = message.content.ifEmpty { " " }
+    messages.forEachIndexed { messageIndex, message ->
+        val baseOffset = if (messageIndex == 0) {
+            firstMessageStartOffset.coerceIn(0, message.content.length)
+        } else {
+            0
+        }
+        val measuredContent = message.content.substring(baseOffset)
+        val measuredText = measuredContent.ifEmpty { " " }
         val outerPadding = if (message.role == "user") userOuterPaddingPx else assistantOuterPaddingPx
         val textWidth = (pageWidthPx - outerPadding - horizontalInnerPaddingPx).coerceAtLeast(1)
         val layout = textMeasurer.measure(
@@ -83,7 +90,7 @@ internal fun paginateHudMessages(
         var startLine = 0
 
         while (startLine < lineCount) {
-            val firstFragment = startLine == 0
+            val firstFragment = startLine == 0 && baseOffset == 0
             val thumbnailSpace = if (firstFragment && message.thumbnails.isNotEmpty()) thumbnailHeightPx else 0
             val spacing = if (pageFragments.isNotEmpty()) messageSpacingPx else 0
             val fixedHeight = spacing + verticalInnerPaddingPx + thumbnailSpace
@@ -103,11 +110,14 @@ internal fun paginateHudMessages(
             }
             if (endLine == startLine) endLine = startLine + 1
 
-            val startOffset = if (message.content.isEmpty()) 0 else layout.getLineStart(startLine)
-            val endOffset = if (message.content.isEmpty()) {
-                0
+            val startOffset = if (measuredContent.isEmpty()) baseOffset else {
+                baseOffset + layout.getLineStart(startLine)
+            }
+            val endOffset = if (measuredContent.isEmpty()) {
+                baseOffset
             } else {
-                layout.getLineEnd(endLine - 1, visibleEnd = false).coerceIn(startOffset, message.content.length)
+                (baseOffset + layout.getLineEnd(endLine - 1, visibleEnd = false))
+                    .coerceIn(startOffset, message.content.length)
             }
             val content = if (message.content.isEmpty()) "" else message.content.substring(startOffset, endOffset)
             val textHeight = (layout.getLineBottom(endLine - 1) - layout.getLineTop(startLine)).toInt()

@@ -2,6 +2,161 @@
 
 ## [Unreleased]
 
+## 1.3.76 (build 85)
+
+### Changed
+
+- Move the HUD emulator WebSocket client and its network permission into the debug source set while keeping the production CXR-S transport unchanged.
+- Route debug transport construction through a build-variant provider so release builds expose only a no-op provider.
+
+### Fixed
+
+- Prevent the unminified glasses release from shipping the unauthenticated emulator socket client or declaring an unused internet capability.
+
+### Added
+
+- Add a release artifact gate that fails the build if the HUD debug client or `android.permission.INTERNET` reappears in the production APK.
+
+## 1.3.75 (build 84)
+
+### Changed
+
+- Rebuild only the final two measured HUD pages when text is appended to a long streaming response, preserving older page layouts by character anchor.
+- Keep a two-page reflow window so a growing final word can still wrap safely across the preceding page boundary.
+
+### Fixed
+
+- Make streaming pagination cost proportional to the live tail instead of repeatedly measuring every page of a long single response.
+
+### Added
+
+- Add regression scenarios for 100-page append-only responses with and without a preceding completed message.
+
+## 1.3.74 (build 83)
+
+### Changed
+
+- Decode chat, history, streaming, agent, connection, and run updates through one strict typed Phone-to-HUD protocol boundary before mutating HUD state.
+- Preserve the legacy compatibility handler only for unknown future message types.
+
+### Fixed
+
+- Reject missing IDs and incorrectly typed booleans or arrays instead of silently turning malformed Phone messages into actionable HUD defaults.
+- Acknowledge malformed reliable packets after rejecting them so one invalid payload cannot remain in an infinite transport retry loop.
+
+### Added
+
+- Add decoder regression coverage for compact history, transport envelopes, malformed actionable fields, unknown future messages, and missing streaming identity.
+
+## 1.3.73 (build 82)
+
+### Changed
+
+- Start the text and OpenClaw application shell even when optional Bluetooth, Wi-Fi, location, or microphone capabilities are denied.
+- Store queued camera photos in a bounded four-item, 16 MiB file-backed repository instead of retaining unbounded Base64 payloads in Compose state.
+
+### Fixed
+
+- Allow only one active glasses photo request, reject overlapping captures, ignore stale callbacks, and fail a capture after a bounded 20-second timeout.
+- Consume queued photo files atomically when sending so rapid repeated actions cannot attach the same image twice.
+
+### Added
+
+- Add regression coverage for photo queue count/byte budgets and generation-safe camera capture attempts.
+
+## 1.3.72 (build 81)
+
+### Fixed
+
+- Discard delayed history responses after a session switch so one session can no longer overwrite another session's chat.
+- Preserve gateway message IDs and derive deterministic fallback IDs that remain stable when older history is prepended.
+- Deduplicate the HUD's optimistic user echo by client message ID instead of dropping legitimate repeated text.
+- Load real three-message history pages on the HUD with a stable oldest-message cursor and an accurate `hasMore` state.
+
+### Added
+
+- Add regression coverage for stable history identity, session-operation invalidation, cursor-based pages, prepend anchoring, and repeated user messages.
+
+## 1.3.71 (build 80)
+
+### Fixed
+
+- Preserve the sole CXR outbound worker when Bluetooth disconnects while a reliable packet is awaiting its transport acknowledgment.
+- Keep wake delivery open after the wake feature is disabled by cancelling pending wake and standby timers and using monotonic elapsed time for rate limits.
+- Stop low-latency BLE discovery after its bounded 15-second attempt instead of scanning indefinitely.
+
+### Added
+
+- Add regression coverage for reliable delivery after an acknowledgment-time disconnect and for disabling wake gating while a standby timer is pending.
+
+## 1.3.70 (build 79)
+
+### Changed
+
+- Move frequent Phone-to-HUD message, history, stream, connection, session, agent, run, talk, caption, and progress transitions into one pure state reducer.
+- Keep JSON decoding, bitmap handling, lifecycle timers, and transport acknowledgements as explicit Activity-side effects.
+
+### Fixed
+
+- Preserve the transport acknowledgment when a completed user message duplicates the HUD's optimistic local echo.
+- Restore history anchors, session selections, and agent identity through deterministic reducer transitions instead of scattered Activity mutations.
+- Keep the Phone foreground service alive during Hi Rokid installation handoff, separate external handoff from user disconnect, and prevent runtime callbacks from attempting forbidden background foreground-service restarts.
+
+### Added
+
+- Add regression coverage for message replacement, history prepend/end detection, stream completion, session/agent selection, and independent run/talk/caption state.
+
+## 1.3.69 (build 78)
+
+### Fixed
+
+- Close the active camera session, camera device, image reader, and handler thread through one idempotent terminal cleanup path.
+- Recycle the previous captured thumbnail before starting another photo capture.
+
+### Changed
+
+- Select and decode camera images through tested bounded sizing math while retaining the existing output dimensions, JPEG quality, and thumbnail format.
+
+### Added
+
+- Add regression coverage for capture-size selection, power-of-two decode sampling, aspect-ratio preservation, and no-upscale behavior.
+
+## 1.3.68 (build 77)
+
+### Changed
+
+- Suspend OpenClaw WebSocket retries while Android has no default internet-capable network and reconnect immediately when connectivity returns.
+- Keep network transitions generation-safe by invalidating the old socket, cancelling its retry job, and allowing only one restored connection attempt.
+
+### Added
+
+- Add deterministic transition coverage for duplicate, lost, and restored network availability events.
+
+## 1.3.67 (build 76)
+
+### Changed
+
+- Publish one immutable HUD streaming snapshot per coalesced display update instead of advancing the visible revision for every network chunk.
+- Keep the active streaming accumulator synchronized so callback-thread delivery and HUD publication cannot observe partially updated text.
+
+### Fixed
+
+- Ignore empty chunks and blank message IDs, and avoid rebuilding the complete growing response when no new characters have arrived.
+
+## 1.3.66 (build 75)
+
+### Changed
+
+- Decode every HUD-to-phone command through one typed shared protocol boundary while retaining the existing JSON wire format and legacy optional-field defaults.
+
+### Fixed
+
+- Reject malformed or incorrectly typed glasses commands explicitly instead of silently converting invalid fields to action-triggering default values.
+
+### Added
+
+- Add regression coverage for valid commands, legacy defaults, unknown future commands, malformed JSON, and missing or incorrectly typed required fields.
+
 ## 1.3.65 (build 74)
 
 ### Fixed

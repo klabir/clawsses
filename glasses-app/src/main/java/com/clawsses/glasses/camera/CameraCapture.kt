@@ -44,9 +44,14 @@ class CameraCapture(private val context: Context) {
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
+    private var cameraDevice: CameraDevice? = null
+    private var captureSession: CameraCaptureSession? = null
+    private var imageReader: ImageReader? = null
 
     fun capture() {
         if (_state.value is PhotoCaptureState.Capturing) return
+
+        (_state.value as? PhotoCaptureState.Captured)?.thumbnail?.recycle()
 
         _state.value = PhotoCaptureState.Capturing
         Log.d(TAG, "Starting photo capture")
@@ -62,7 +67,7 @@ class CameraCapture(private val context: Context) {
         if (cameraId == null) {
             Log.e(TAG, "No back camera found")
             _state.value = PhotoCaptureState.Error("No camera found")
-            cleanupThread()
+            cleanupResources()
             return
         }
 
@@ -71,9 +76,11 @@ class CameraCapture(private val context: Context) {
         val jpegSizes = map?.getOutputSizes(ImageFormat.JPEG)
 
         // Pick a size close to MAX_WIDTH x MAX_HEIGHT
-        val captureSize = jpegSizes?.filter { it.width <= MAX_WIDTH && it.height <= MAX_HEIGHT }
-            ?.maxByOrNull { it.width * it.height }
-            ?: jpegSizes?.minByOrNull { it.width * it.height }
+        val captureSize = ImageSizing.selectCaptureSize(
+            jpegSizes.orEmpty().map { ImageDimensions(it.width, it.height) },
+            MAX_WIDTH,
+            MAX_HEIGHT,
+        )
 
         val width = captureSize?.width ?: MAX_WIDTH
         val height = captureSize?.height ?: MAX_HEIGHT
@@ -81,6 +88,7 @@ class CameraCapture(private val context: Context) {
         Log.d(TAG, "Capture size: ${width}x${height}")
 
         val imageReader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 1)
+        this.imageReader = imageReader
         imageReader.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage()
             if (image != null) {
@@ -88,14 +96,13 @@ class CameraCapture(private val context: Context) {
                     val buffer = image.planes[0].buffer
                     val bytes = ByteArray(buffer.remaining())
                     buffer.get(bytes)
-                    image.close()
-
                     processCapture(bytes)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error reading image", e)
                     _state.value = PhotoCaptureState.Error("Failed to read image")
                 } finally {
-                    cleanupThread()
+                    image.close()
+                    cleanupResources()
                 }
             }
         }, handler)
@@ -104,6 +111,7 @@ class CameraCapture(private val context: Context) {
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     Log.d(TAG, "Camera opened")
+                    cameraDevice = camera
                     try {
                         val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                         captureBuilder.addTarget(imageReader.surface)
@@ -112,6 +120,7 @@ class CameraCapture(private val context: Context) {
 
                         val sessionCallback = object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: CameraCaptureSession) {
+                                    captureSession = session
                                     try {
                                         session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
                                             override fun onCaptureCompleted(
@@ -120,7 +129,6 @@ class CameraCapture(private val context: Context) {
                                                 result: android.hardware.camera2.TotalCaptureResult
                                             ) {
                                                 Log.d(TAG, "Capture completed")
-                                                camera.close()
                                             }
 
                                             override fun onCaptureFailed(
@@ -129,24 +137,21 @@ class CameraCapture(private val context: Context) {
                                                 failure: android.hardware.camera2.CaptureFailure
                                             ) {
                                                 Log.e(TAG, "Capture failed: reason=${failure.reason}")
-                                                camera.close()
                                                 _state.value = PhotoCaptureState.Error("Capture failed")
-                                                cleanupThread()
+                                                cleanupResources()
                                             }
                                         }, handler)
                                     } catch (e: Exception) {
                                         Log.e(TAG, "Error capturing", e)
-                                        camera.close()
                                         _state.value = PhotoCaptureState.Error("Capture error")
-                                        cleanupThread()
+                                        cleanupResources()
                                     }
                                 }
 
                                 override fun onConfigureFailed(session: CameraCaptureSession) {
                                     Log.e(TAG, "Session configure failed")
-                                    camera.close()
                                     _state.value = PhotoCaptureState.Error("Camera configure failed")
-                                    cleanupThread()
+                                    cleanupResources()
                                 }
                             }
                         camera.createCaptureSession(
@@ -159,36 +164,33 @@ class CameraCapture(private val context: Context) {
                         )
                     } catch (e: Exception) {
                         Log.e(TAG, "Error setting up capture", e)
-                        camera.close()
                         _state.value = PhotoCaptureState.Error("Setup error")
-                        cleanupThread()
+                        cleanupResources()
                     }
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
                     Log.d(TAG, "Camera disconnected")
-                    camera.close()
                     if (_state.value is PhotoCaptureState.Capturing) {
                         _state.value = PhotoCaptureState.Error("Camera disconnected")
                     }
-                    cleanupThread()
+                    cleanupResources()
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     Log.e(TAG, "Camera error: $error")
-                    camera.close()
                     _state.value = PhotoCaptureState.Error("Camera error: $error")
-                    cleanupThread()
+                    cleanupResources()
                 }
             }, handler)
         } catch (e: SecurityException) {
             Log.e(TAG, "Camera permission denied", e)
             _state.value = PhotoCaptureState.Error("Camera permission denied")
-            cleanupThread()
+            cleanupResources()
         } catch (e: Exception) {
             Log.e(TAG, "Error opening camera", e)
             _state.value = PhotoCaptureState.Error("Failed to open camera")
-            cleanupThread()
+            cleanupResources()
         }
     }
 
@@ -200,13 +202,12 @@ class CameraCapture(private val context: Context) {
                 throw IllegalArgumentException("Invalid JPEG dimensions")
             }
 
-            var sampleSize = 1
-            while (
-                options.outWidth / sampleSize > MAX_WIDTH * 2 ||
-                options.outHeight / sampleSize > MAX_HEIGHT * 2
-            ) {
-                sampleSize *= 2
-            }
+            val sampleSize = ImageSizing.decodeSampleSize(
+                options.outWidth,
+                options.outHeight,
+                MAX_WIDTH,
+                MAX_HEIGHT,
+            )
             val decoded = BitmapFactory.decodeByteArray(
                 jpegBytes,
                 0,
@@ -214,15 +215,12 @@ class CameraCapture(private val context: Context) {
                 BitmapFactory.Options().apply { inSampleSize = sampleSize },
             ) ?: throw IllegalStateException("Failed to decode image")
 
-            val scale = minOf(
-                MAX_WIDTH.toFloat() / decoded.width,
-                MAX_HEIGHT.toFloat() / decoded.height,
-            ).coerceAtMost(1f)
-            val processed = if (scale < 1f) {
+            val target = ImageSizing.fitInside(decoded.width, decoded.height, MAX_WIDTH, MAX_HEIGHT)
+            val processed = if (target.width != decoded.width || target.height != decoded.height) {
                 Bitmap.createScaledBitmap(
                     decoded,
-                    (decoded.width * scale).toInt().coerceAtLeast(1),
-                    (decoded.height * scale).toInt().coerceAtLeast(1),
+                    target.width,
+                    target.height,
                     true,
                 ).also { decoded.recycle() }
             } else {
@@ -263,13 +261,23 @@ class CameraCapture(private val context: Context) {
 
     fun cleanup() {
         clearPhoto()
-        cleanupThread()
+        cleanupResources()
     }
 
-    private fun cleanupThread() {
-        cameraThread?.quitSafely()
-        cameraThread = null
-        cameraHandler = null
+    private fun cleanupResources() {
+        val resources = synchronized(this) {
+            val current = Resources(captureSession, cameraDevice, imageReader, cameraThread)
+            captureSession = null
+            cameraDevice = null
+            imageReader = null
+            cameraThread = null
+            cameraHandler = null
+            current
+        }
+        runCatching { resources.session?.close() }
+        runCatching { resources.camera?.close() }
+        runCatching { resources.reader?.close() }
+        resources.thread?.quitSafely()
     }
 
     private fun findBackCamera(cameraManager: CameraManager): String? {
@@ -283,4 +291,11 @@ class CameraCapture(private val context: Context) {
         // Fallback: use first available camera
         return cameraManager.cameraIdList.firstOrNull()
     }
+
+    private data class Resources(
+        val session: CameraCaptureSession?,
+        val camera: CameraDevice?,
+        val reader: ImageReader?,
+        val thread: HandlerThread?,
+    )
 }

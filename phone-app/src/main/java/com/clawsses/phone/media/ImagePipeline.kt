@@ -79,6 +79,9 @@ object ImagePipeline {
         return decodeSampled(bytes, maxWidth, maxHeight)
     }
 
+    fun decodeImageBytes(bytes: ByteArray, maxWidth: Int, maxHeight: Int): Bitmap? =
+        decodeSampled(bytes, maxWidth, maxHeight)
+
     fun createHudThumbnail(imageBytes: ByteArray): HudThumbnail? {
         if (imageBytes.isEmpty()) return null
         val key = thumbnailKey(imageBytes, HUD_MAX_WIDTH, HUD_MAX_HEIGHT)

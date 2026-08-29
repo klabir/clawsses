@@ -1,6 +1,7 @@
 package com.clawsses.phone.glasses
 
 import android.util.Log
+import android.os.SystemClock
 import com.clawsses.shared.WakeSignal
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +37,9 @@ class WakeSignalManager(
     private val wakeHardwareDisplay: () -> Boolean = { false },
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
     private val logger: (WakeLogLevel, String) -> Unit = ::logWakeSignal,
+    private val monotonicClock: () -> Long = { SystemClock.elapsedRealtime() },
+    private val wakeAckTimeoutMs: Long = WAKE_ACK_TIMEOUT_MS,
+    private val standbyDetectionMs: Long = STANDBY_DETECTION_MS,
 ) {
     companion object {
         // Timeout waiting for wake acknowledgment
@@ -100,7 +104,14 @@ class WakeSignalManager(
      */
     fun setEnabled(enabled: Boolean) {
         _enabled.value = enabled
-        setDeliveryAllowed(!enabled || _wakeState.value is WakeState.Awake)
+        if (!enabled) {
+            wakeTimeoutJob?.cancel()
+            standbyTimerJob?.cancel()
+            setDeliveryAllowed(true)
+        } else {
+            setDeliveryAllowed(_wakeState.value is WakeState.Awake)
+            if (_wakeState.value is WakeState.Awake) resetStandbyTimer()
+        }
         logger(WakeLogLevel.INFO, "Wake signal feature ${if (enabled) "enabled" else "disabled"}")
     }
 
@@ -123,7 +134,7 @@ class WakeSignalManager(
             return true
         }
 
-        val now = System.currentTimeMillis()
+        val now = monotonicClock()
 
         // Update streaming state
         if (isStreamContent) {
@@ -191,7 +202,7 @@ class WakeSignalManager(
             initiateWake(WakeSignal.REASON_STREAM_CONTENT, messageId)
         } else if (_wakeState.value is WakeState.Awake && _enabled.value) {
             // Even if awake, wake the hardware as keep-alive for stream start
-            val now = System.currentTimeMillis()
+            val now = monotonicClock()
             if (now - lastHardwareWakeTime > WAKE_KEEPALIVE_INTERVAL_MS) {
                 wakeHardwareDisplay()
                 lastHardwareWakeTime = now
@@ -214,7 +225,7 @@ class WakeSignalManager(
         logger(WakeLogLevel.INFO, "Received wake acknowledgment: ready=$ready")
 
         wakeTimeoutJob?.cancel()
-        lastConfirmedActivityTime = System.currentTimeMillis()
+        lastConfirmedActivityTime = monotonicClock()
 
         if (ready) {
             _wakeState.value = WakeState.Awake
@@ -239,7 +250,7 @@ class WakeSignalManager(
      * This indicates glasses is awake and responsive.
      */
     fun handleGlassesActivity() {
-        lastConfirmedActivityTime = System.currentTimeMillis()
+        lastConfirmedActivityTime = monotonicClock()
 
         // If we were in unknown or waking state, mark as awake
         when (_wakeState.value) {
@@ -277,8 +288,8 @@ class WakeSignalManager(
     fun handleGlassesConnected() {
         _wakeState.value = WakeState.Awake
         setDeliveryAllowed(true)
-        lastConfirmedActivityTime = System.currentTimeMillis()
-        lastHardwareWakeTime = System.currentTimeMillis()
+        lastConfirmedActivityTime = monotonicClock()
+        lastHardwareWakeTime = monotonicClock()
         wakeTimeoutJob?.cancel()
         resetStandbyTimer()
 
@@ -292,7 +303,7 @@ class WakeSignalManager(
     }
 
     private fun initiateWake(reason: String, messageId: String? = null) {
-        val now = System.currentTimeMillis()
+        val now = monotonicClock()
 
         // Rate limit wake signals
         if (now - lastWakeSignalTime < MIN_WAKE_INTERVAL_MS) {
@@ -329,7 +340,7 @@ class WakeSignalManager(
         // Set timeout for wake acknowledgment
         wakeTimeoutJob?.cancel()
         wakeTimeoutJob = scope.launch {
-            delay(WAKE_ACK_TIMEOUT_MS)
+            delay(wakeAckTimeoutMs)
 
             // If still waiting, assume glasses didn't receive the wake signal
             // or is offline. Deliver messages anyway — CXR bridge delivers even
@@ -349,12 +360,13 @@ class WakeSignalManager(
      */
     private fun resetStandbyTimer() {
         standbyTimerJob?.cancel()
+        if (!_enabled.value) return
         standbyTimerJob = scope.launch {
-            delay(STANDBY_DETECTION_MS)
-            if (_wakeState.value is WakeState.Awake) {
+            delay(standbyDetectionMs)
+            if (_enabled.value && _wakeState.value is WakeState.Awake) {
                 logger(
                     WakeLogLevel.DEBUG,
-                    "Standby detection: no activity for ${STANDBY_DETECTION_MS}ms, marking Unknown",
+                    "Standby detection: no activity for ${standbyDetectionMs}ms, marking Unknown",
                 )
                 _wakeState.value = WakeState.Unknown
                 setDeliveryAllowed(false)

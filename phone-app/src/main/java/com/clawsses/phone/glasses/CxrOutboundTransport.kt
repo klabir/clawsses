@@ -53,6 +53,11 @@ internal data class CxrQueuedMessage(
     val bypassWakeGate: Boolean = false,
 )
 
+private enum class CxrAckResult {
+    ACKNOWLEDGED,
+    DISCONNECTED,
+}
+
 /**
  * Pure bounded priority queue used by [CxrOutboundTransport].
  *
@@ -170,7 +175,7 @@ class CxrOutboundTransport(
     private val queue = CxrOutboundQueue()
     private val wakeWorker = Channel<Unit>(Channel.CONFLATED)
     private val nextTransaction = AtomicLong()
-    private val pendingAcks = mutableMapOf<String, CompletableDeferred<Unit>>()
+    private val pendingAcks = mutableMapOf<String, CompletableDeferred<CxrAckResult>>()
     private val _metrics = MutableStateFlow(CxrTransportMetrics())
     val metrics: StateFlow<CxrTransportMetrics> = _metrics.asStateFlow()
 
@@ -192,7 +197,7 @@ class CxrOutboundTransport(
         } else {
             val dropped = synchronized(lock) { queue.clearTransient() }
             synchronized(lock) {
-                pendingAcks.values.forEach { it.cancel() }
+                pendingAcks.values.forEach { it.complete(CxrAckResult.DISCONNECTED) }
                 pendingAcks.clear()
             }
             updateMetrics(dropped = dropped.toLong())
@@ -223,14 +228,14 @@ class CxrOutboundTransport(
 
     fun handleAck(transactionId: String) {
         val deferred = synchronized(lock) { pendingAcks.remove(transactionId) } ?: return
-        deferred.complete(Unit)
+        deferred.complete(CxrAckResult.ACKNOWLEDGED)
     }
 
     fun cleanup() {
         worker.cancel()
         wakeWorker.close()
         synchronized(lock) {
-            pendingAcks.values.forEach { it.cancel() }
+            pendingAcks.values.forEach { it.complete(CxrAckResult.DISCONNECTED) }
             pendingAcks.clear()
         }
     }
@@ -285,21 +290,28 @@ class CxrOutboundTransport(
                 requeueAfterDisconnect(message)
                 return
             }
-            val ack = transactionId?.let { CompletableDeferred<Unit>() }
+            val ack = transactionId?.let { CompletableDeferred<CxrAckResult>() }
             if (transactionId != null && ack != null) {
                 synchronized(lock) { pendingAcks[transactionId] = ack }
             }
 
             if (!sendDirect(wirePayload)) {
-                synchronized(lock) { pendingAcks.remove(transactionId)?.cancel() }
+                synchronized(lock) { pendingAcks.remove(transactionId) }
             } else if (ack == null) {
                 updateMetrics(sent = 1)
                 return
-            } else if (withTimeoutOrNull(ackTimeoutMs) { ack.await(); true } == true) {
-                updateMetrics(sent = 1, acknowledged = 1)
-                return
             } else {
-                synchronized(lock) { pendingAcks.remove(transactionId)?.cancel() }
+                when (withTimeoutOrNull(ackTimeoutMs) { ack.await() }) {
+                    CxrAckResult.ACKNOWLEDGED -> {
+                        updateMetrics(sent = 1, acknowledged = 1)
+                        return
+                    }
+                    CxrAckResult.DISCONNECTED -> {
+                        requeueAfterDisconnect(message)
+                        return
+                    }
+                    null -> synchronized(lock) { pendingAcks.remove(transactionId) }
+                }
             }
 
             if (attempt + 1 < maxAttempts) {

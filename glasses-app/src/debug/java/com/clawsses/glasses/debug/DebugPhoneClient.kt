@@ -20,7 +20,7 @@ import kotlin.random.Random
  * - Use `adb forward tcp:8081 tcp:8081` to expose it
  * - Glasses app connects to 10.0.2.2:8081 (host machine from emulator)
  */
-class DebugPhoneClient {
+class DebugPhoneClient : DebugPhoneTransport {
 
     companion object {
         private const val TAG = "DebugPhoneClient"
@@ -37,9 +37,9 @@ class DebugPhoneClient {
     val connectionState: StateFlow<ConnectionState> = _connectionState
 
     // Callback for messages from phone
-    var onMessageFromPhone: ((String) -> Unit)? = null
-    var onConnected: (() -> Unit)? = null
-    var onDisconnected: (() -> Unit)? = null
+    override var onMessageFromPhone: ((String) -> Unit)? = null
+    override var onConnected: (() -> Unit)? = null
+    override var onDisconnected: (() -> Unit)? = null
 
     sealed class ConnectionState {
         object Disconnected : ConnectionState()
@@ -48,7 +48,7 @@ class DebugPhoneClient {
         data class Error(val message: String) : ConnectionState()
     }
 
-    fun connect(host: String = DEFAULT_HOST, port: Int = DEFAULT_PORT) {
+    override fun connect(host: String, port: Int) {
         if (_connectionState.value is ConnectionState.Connected ||
             _connectionState.value is ConnectionState.Connecting) {
             Log.d(TAG, "Already connected or connecting")
@@ -238,7 +238,7 @@ class DebugPhoneClient {
         }
     }
 
-    fun sendToPhone(message: String): Boolean {
+    override fun sendToPhone(message: String): Boolean {
         val output = outputStream ?: return false
 
         // Run on IO thread to avoid NetworkOnMainThreadException
@@ -306,7 +306,7 @@ class DebugPhoneClient {
         return frame
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         scope?.cancel()
         scope = null
 

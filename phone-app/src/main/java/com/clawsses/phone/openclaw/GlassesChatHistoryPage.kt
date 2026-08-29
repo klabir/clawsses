@@ -12,22 +12,45 @@ object GlassesChatHistoryPage {
 
     private val nextSnapshotId = AtomicLong()
 
+    data class Page(val messages: List<ChatMessage>, val hasMore: Boolean)
+
+    fun latest(messages: List<ChatMessage>, gatewayHasMore: Boolean): Page = Page(
+        messages = messages.takeLast(MAX_MESSAGES),
+        hasMore = gatewayHasMore || messages.size > MAX_MESSAGES,
+    )
+
+    fun before(
+        messages: List<ChatMessage>,
+        beforeMessageId: String,
+        gatewayHasMore: Boolean,
+    ): Page? {
+        val end = messages.indexOfFirst { it.id == beforeMessageId }
+        if (end < 0) return null
+        val start = (end - MAX_MESSAGES).coerceAtLeast(0)
+        return Page(
+            messages = messages.subList(start, end),
+            hasMore = gatewayHasMore || start > 0,
+        )
+    }
+
     fun buildPackets(
         messages: List<ChatMessage>,
         maxBytes: Int = MAX_CXR_BYTES,
+        isLoadMore: Boolean = false,
+        hasMore: Boolean = false,
     ): List<String> {
         require(maxBytes > 0)
         val snapshotId = nextSnapshotId.incrementAndGet().toString(36)
-        val selected = messages.takeLast(MAX_MESSAGES)
         val packets = mutableListOf(
             JsonObject().apply {
                 addProperty("type", "chat_history_begin")
                 addProperty("s", snapshotId)
-                addProperty("hasMore", false)
+                addProperty("hasMore", hasMore)
+                addProperty("isLoadMore", isLoadMore)
             }.toString()
         )
 
-        selected.forEach { message ->
+        messages.forEach { message ->
             packets += buildMessagePackets(snapshotId, message, maxBytes)
         }
         packets += JsonObject().apply {

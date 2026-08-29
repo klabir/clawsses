@@ -77,3 +77,17 @@ class ConnectionEpochTest {
         assertTrue(!epoch.markEnded(generation))
     }
 }
+
+class NetworkAvailabilityGateTest {
+    @Test
+    fun `reports each actual network transition exactly once`() {
+        val gate = NetworkAvailabilityGate(initiallyAvailable = true)
+
+        assertEquals(NetworkAvailabilityChange.UNCHANGED, gate.update(true))
+        assertEquals(NetworkAvailabilityChange.LOST, gate.update(false))
+        assertTrue(!gate.isAvailable())
+        assertEquals(NetworkAvailabilityChange.UNCHANGED, gate.update(false))
+        assertEquals(NetworkAvailabilityChange.RESTORED, gate.update(true))
+        assertTrue(gate.isAvailable())
+    }
+}

@@ -2,7 +2,9 @@ package com.clawsses.glasses.service
 
 import android.util.Log
 import com.clawsses.glasses.BuildConfig
-import com.clawsses.glasses.debug.DebugPhoneClient
+import com.clawsses.glasses.debug.DebugPhoneTransport
+import com.clawsses.glasses.debug.DebugPhoneTransportDefaults
+import com.clawsses.glasses.debug.createDebugPhoneTransport
 import com.clawsses.shared.GlassesStateRequest
 import com.rokid.cxr.Caps
 import com.rokid.cxr.CXRServiceBridge
@@ -19,8 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
  */
 class PhoneConnectionService(
     private val debugMode: Boolean = false,
-    private val debugHost: String = DebugPhoneClient.DEFAULT_HOST,
-    private val debugPort: Int = DebugPhoneClient.DEFAULT_PORT
+    private val debugHost: String = DebugPhoneTransportDefaults.HOST,
+    private val debugPort: Int = DebugPhoneTransportDefaults.PORT
 ) {
     companion object {
         private const val TAG = "PhoneConnection"
@@ -30,7 +32,7 @@ class PhoneConnectionService(
     }
 
     private var cxrBridge: CXRServiceBridge? = null
-    private var debugClient: DebugPhoneClient? = null
+    private var debugClient: DebugPhoneTransport? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val incomingMessages = PhoneMessageMailbox()
     val messages: Flow<String> = incomingMessages.messages
@@ -74,7 +76,13 @@ class PhoneConnectionService(
     private fun startDebugConnection() {
         _connectionState.value = ConnectionState.Connecting
 
-        debugClient = DebugPhoneClient().apply {
+        val client = createDebugPhoneTransport()
+        if (client == null) {
+            Log.e(TAG, "Debug transport is unavailable in this build")
+            _connectionState.value = ConnectionState.Error("Debug transport unavailable")
+            return
+        }
+        debugClient = client.apply {
             onMessageFromPhone = { message ->
                 Log.d(TAG, "Debug: received from phone (${message.length} chars)")
                 publishMessage(message)

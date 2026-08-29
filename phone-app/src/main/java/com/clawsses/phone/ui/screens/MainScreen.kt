@@ -68,6 +68,7 @@ import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.media.ImagePipeline
+import com.clawsses.phone.media.PendingPhoto
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.talk.TalkInteractionMode
 import com.clawsses.phone.talk.TalkModeSource
@@ -81,8 +82,10 @@ import com.clawsses.shared.ChatScrollCoordinator
 import com.clawsses.shared.ModelInfo
 import com.clawsses.shared.SessionInfo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -143,6 +146,7 @@ fun MainScreen() {
     var inputText by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
     val pendingPhotos by runtime.pendingPhotos.collectAsStateWithLifecycle()
+    val uiScope = rememberCoroutineScope()
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     fun stopTalkMode(disable: Boolean) {
@@ -183,6 +187,19 @@ fun MainScreen() {
     fun startTalkListening(source: TalkModeSource, interruptCurrent: Boolean) =
         runtime.talkCoordinator.startListening(source, interruptCurrent)
 
+    fun sendQueuedMessage(rawText: String) {
+        uiScope.launch {
+            val images = runtime.pendingPhotoRepository.consumeEncoded().ifEmpty { null }
+            val text = rawText.trim()
+            if (text.isNotEmpty() || images != null) {
+                openClawClient.sendMessage(text, images)
+            }
+            if (images != null) {
+                glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
+            }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
         topBar = {
@@ -208,8 +225,8 @@ fun MainScreen() {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        pendingPhotos.forEachIndexed { index, base64 ->
-                            val thumbnail = rememberDecodedImage(base64, 320, 240)
+                        pendingPhotos.forEachIndexed { index, photo ->
+                            val thumbnail = rememberDecodedPhoto(photo, 320, 240)
                             if (thumbnail != null) {
                                 Box {
                                     Image(
@@ -232,10 +249,12 @@ fun MainScreen() {
                                                 RoundedCornerShape(9.dp)
                                             )
                                             .clickable {
-                                                runtime.removePendingPhoto(index)
-                                                glassesManager.sendRawMessage(
-                                                    """{"type":"remove_photo","index":$index}"""
-                                                )
+                                                uiScope.launch {
+                                                    runtime.pendingPhotoRepository.removeAt(index)
+                                                    glassesManager.sendRawMessage(
+                                                        """{"type":"remove_photo","index":$index}"""
+                                                    )
+                                                }
                                             }
                                             .padding(2.dp),
                                         tint = Color.White
@@ -259,13 +278,8 @@ fun MainScreen() {
                         onSend = {
                             if (runState in setOf(OpenClawClient.RunState.IDLE, OpenClawClient.RunState.ERROR) &&
                                 (inputText.isNotBlank() || pendingPhotos.isNotEmpty())) {
-                                val hadPhotos = pendingPhotos.isNotEmpty()
-                                openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
+                                sendQueuedMessage(inputText)
                                 inputText = ""
-                                runtime.replacePendingPhotos(emptyList())
-                                if (hadPhotos) {
-                                    glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
-                                }
                             }
                         }
                     ),
@@ -350,13 +364,8 @@ fun MainScreen() {
                 IconButton(
                     onClick = {
                         if (inputText.isNotBlank() || pendingPhotos.isNotEmpty()) {
-                            val hadPhotos = pendingPhotos.isNotEmpty()
-                            openClawClient.sendMessage(inputText.trim(), pendingPhotos.ifEmpty { null })
+                            sendQueuedMessage(inputText)
                             inputText = ""
-                            runtime.replacePendingPhotos(emptyList())
-                            if (hadPhotos) {
-                                glassesManager.sendRawMessage("""{"type":"remove_photo","all":true}""")
-                            }
                         }
                     },
                     enabled = runState in setOf(OpenClawClient.RunState.IDLE, OpenClawClient.RunState.ERROR)
@@ -1148,6 +1157,27 @@ private fun rememberDecodedImage(
     ) {
         value = withContext(Dispatchers.Default) {
             ImagePipeline.decodeBase64Image(encoded, maxWidth, maxHeight)?.asImageBitmap()
+        }
+    }
+    return decoded
+}
+
+@Composable
+private fun rememberDecodedPhoto(
+    photo: PendingPhoto,
+    maxWidth: Int,
+    maxHeight: Int,
+): ImageBitmap? {
+    val decoded by produceState<ImageBitmap?>(
+        initialValue = null,
+        key1 = photo.id,
+        key2 = maxWidth,
+        key3 = maxHeight,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { File(photo.path).readBytes() }.getOrNull()?.let { bytes ->
+                ImagePipeline.decodeImageBytes(bytes, maxWidth, maxHeight)?.asImageBitmap()
+            }
         }
     }
     return decoded

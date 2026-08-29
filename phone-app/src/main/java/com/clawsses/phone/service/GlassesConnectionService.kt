@@ -36,9 +36,12 @@ class GlassesConnectionService : Service() {
         private const val ACTION_RELEASE_WAKE_LOCK = "com.clawsses.phone.action.RELEASE_WAKE_LOCK"
         private const val EXTRA_WAKE_LOCK_REASON = "wake_lock_reason"
         private const val EXTRA_WAKE_LOCK_TIMEOUT_MS = "wake_lock_timeout_ms"
+        @Volatile
+        private var activeInstance: GlassesConnectionService? = null
 
         fun start(context: Context) {
             if (BenchmarkIsolation.isActive(context)) return
+            if (activeInstance != null) return
             val intent = Intent(context, GlassesConnectionService::class.java)
             context.startForegroundService(intent)
         }
@@ -51,21 +54,22 @@ class GlassesConnectionService : Service() {
 
         fun holdWakeLock(context: Context, reason: WakeLockReason, timeoutMs: Long) {
             if (BenchmarkIsolation.isActive(context)) return
-            context.startForegroundService(
-                Intent(context, GlassesConnectionService::class.java)
-                    .setAction(ACTION_HOLD_WAKE_LOCK)
-                    .putExtra(EXTRA_WAKE_LOCK_REASON, reason.name)
-                    .putExtra(EXTRA_WAKE_LOCK_TIMEOUT_MS, timeoutMs),
-            )
+            activeInstance?.let { service ->
+                service.postHoldWakeLock(reason, timeoutMs)
+                return
+            }
+            // Runtime callbacks can arrive while another app owns the foreground.
+            // Android 12+ forbids creating an FGS from that state. MainActivity is
+            // the sole service-start owner; a missing service cannot hold a lease.
+            Log.w(TAG, "Ignoring $reason wake-lock lease because service is inactive")
         }
 
         fun releaseWakeLock(context: Context, reason: WakeLockReason) {
             if (BenchmarkIsolation.isActive(context)) return
-            context.startForegroundService(
-                Intent(context, GlassesConnectionService::class.java)
-                    .setAction(ACTION_RELEASE_WAKE_LOCK)
-                    .putExtra(EXTRA_WAKE_LOCK_REASON, reason.name),
-            )
+            // Releasing a lease must never create a foreground service. Android rejects that
+            // transition while another app owns the foreground during the Hi Rokid handoff.
+            // A stopped service has already released its platform WakeLock in onDestroy().
+            activeInstance?.postReleaseWakeLock(reason)
         }
     }
 
@@ -76,6 +80,7 @@ class GlassesConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         (application as ClawssesApp).runtime.start()
         Log.i(TAG, "Service created")
         createNotificationChannel()
@@ -86,16 +91,13 @@ class GlassesConnectionService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         when (intent?.action) {
             ACTION_HOLD_WAKE_LOCK -> intent.wakeLockReason()?.let { reason ->
-                wakeLockLeases.acquire(
-                    reason = reason,
-                    nowMs = android.os.SystemClock.elapsedRealtime(),
-                    durationMs = intent.getLongExtra(EXTRA_WAKE_LOCK_TIMEOUT_MS, 1L).coerceAtLeast(1L),
+                holdWakeLockLease(
+                    reason,
+                    intent.getLongExtra(EXTRA_WAKE_LOCK_TIMEOUT_MS, 1L),
                 )
-                applyWakeLockLeases()
             }
             ACTION_RELEASE_WAKE_LOCK -> intent.wakeLockReason()?.let { reason ->
-                wakeLockLeases.release(reason, android.os.SystemClock.elapsedRealtime())
-                applyWakeLockLeases()
+                releaseWakeLockLease(reason)
             }
         }
         return START_STICKY
@@ -105,10 +107,33 @@ class GlassesConnectionService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "Service destroyed")
+        if (activeInstance === this) activeInstance = null
         mainHandler.removeCallbacks(leaseExpiry)
         wakeLockLeases.clear()
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    private fun postHoldWakeLock(reason: WakeLockReason, timeoutMs: Long) {
+        mainHandler.post { holdWakeLockLease(reason, timeoutMs) }
+    }
+
+    private fun postReleaseWakeLock(reason: WakeLockReason) {
+        mainHandler.post { releaseWakeLockLease(reason) }
+    }
+
+    private fun holdWakeLockLease(reason: WakeLockReason, timeoutMs: Long) {
+        wakeLockLeases.acquire(
+            reason = reason,
+            nowMs = android.os.SystemClock.elapsedRealtime(),
+            durationMs = timeoutMs.coerceAtLeast(1L),
+        )
+        applyWakeLockLeases()
+    }
+
+    private fun releaseWakeLockLease(reason: WakeLockReason) {
+        wakeLockLeases.release(reason, android.os.SystemClock.elapsedRealtime())
+        applyWakeLockLeases()
     }
 
     private fun createNotificationChannel() {
