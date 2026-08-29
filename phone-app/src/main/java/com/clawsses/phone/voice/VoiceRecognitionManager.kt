@@ -2,7 +2,8 @@ package com.clawsses.phone.voice
 
 import android.content.Context
 import android.util.Log
-import com.clawsses.phone.glasses.RokidSdkManager
+import com.clawsses.phone.glasses.RokidDeviceFacade
+import com.clawsses.phone.glasses.ProductionRokidDeviceFacade
 import com.clawsses.phone.util.SecurePreferences
 import com.clawsses.shared.TtsVoiceCommands
 import com.clawsses.shared.VisionCommands
@@ -26,7 +27,10 @@ internal class RecognitionAttemptGate {
  * Provides a unified interface for voice recognition with automatic fallback when OpenAI is
  * unavailable (no API key, network error, etc.).
  */
-class VoiceRecognitionManager(private val context: Context) {
+class VoiceRecognitionManager(
+    private val context: Context,
+    private val rokidDevice: RokidDeviceFacade = ProductionRokidDeviceFacade,
+) {
 
     companion object {
         private const val TAG = "VoiceRecognitionMgr"
@@ -163,23 +167,23 @@ class VoiceRecognitionManager(private val context: Context) {
         _activeMode.value = RecognitionMode.OPENAI
         _fallbackReason.value = FallbackReason.NONE
 
-        val useDirectGlassesAudio = RokidSdkManager.isConnected()
+        val useDirectGlassesAudio = rokidDevice.isConnected()
         if (useDirectGlassesAudio) {
-            RokidSdkManager.onAudioStreamStarted = { codec, originCodec, channels, _ ->
+            rokidDevice.onAudioStreamStarted = { codec, originCodec, channels, _ ->
                 Log.i(
                     TAG,
                     "Direct glasses audio format: codec=$codec, originCodec=$originCodec, channels=$channels",
                 )
             }
-            RokidSdkManager.onAudioStreamData = { data, offset, length ->
+            rokidDevice.onAudioStreamData = { data, offset, length ->
                 openAIClient.appendExternalAudio(data, offset, length)
             }
-            RokidSdkManager.onAudioStreamFinished = {
+            rokidDevice.onAudioStreamFinished = {
                 Log.d(TAG, "Direct glasses audio source finished")
             }
-            directGlassesAudioActive = RokidSdkManager.startMicrophoneStream()
+            directGlassesAudioActive = rokidDevice.startMicrophoneStream()
             if (!directGlassesAudioActive) {
-                RokidSdkManager.clearMicrophoneStreamCallbacks()
+                rokidDevice.clearMicrophoneStreamCallbacks()
                 Log.w(TAG, "Direct glasses audio request failed; using Android capture")
             }
         }
@@ -364,8 +368,8 @@ class VoiceRecognitionManager(private val context: Context) {
     private fun stopDirectGlassesAudio() {
         if (directGlassesAudioActive) {
             directGlassesAudioActive = false
-            RokidSdkManager.stopMicrophoneStream()
+            rokidDevice.stopMicrophoneStream()
         }
-        RokidSdkManager.clearMicrophoneStreamCallbacks()
+        rokidDevice.clearMicrophoneStreamCallbacks()
     }
 }

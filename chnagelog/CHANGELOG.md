@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## 1.3.87 (build 96)
+
+### Added
+
+- Add dependency locks for every Gradle module and paired public-release evidence containing source state, Phone/HUD hashes, versions, and embedded-HUD identity.
+- Add typed HUD command encoding with round-trip coverage and a narrow application-facing Rokid device facade around the unchanged vendor adapter.
+
+### Changed
+
+- Split the HUD Compose state into stable chat, input, picker, and status slices and replace retained raw bitmaps with bounded thumbnail handles.
+- Split OpenClaw frame decoding, chat-event parsing, and authentication payload construction out of the WebSocket client.
+- Make attachment storage content-addressed from decoded bytes and defer original-file reads until a thumbnail-cache miss.
+- Retain immutable gateway streaming text directly instead of copying the full response into a mutable buffer for every delta.
+
+### Fixed
+
+- Prevent unrelated HUD state changes from invalidating broad chat and picker state.
+- Prevent repeated HUD synchronization of the same attachment from reopening and decoding its original file.
+
+### Security
+
+- Make CI run the paired public-release artifact gate and record whether evidence was produced from a clean or dirty source tree.
+
 ## 1.3.86 (build 95)
 
 ### Changed

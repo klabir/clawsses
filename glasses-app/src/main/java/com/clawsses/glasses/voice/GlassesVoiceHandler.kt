@@ -1,6 +1,7 @@
 package com.clawsses.glasses.voice
 
 import android.util.Log
+import com.clawsses.shared.GlassesCommand
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,7 +60,7 @@ class GlassesVoiceHandler {
     private var onResult: ((VoiceResult) -> Unit)? = null
 
     // Callback to send messages to phone
-    var sendToPhone: ((String) -> Unit)? = null
+    var sendCommand: ((GlassesCommand) -> Unit)? = null
 
     /**
      * Initialize the voice handler. Always returns true since recognition
@@ -84,7 +85,7 @@ class GlassesVoiceHandler {
         _voiceState.value = VoiceState.Listening(currentMode)
 
         Log.d(TAG, "Requesting phone to start voice recognition")
-        sendToPhone?.invoke("""{"type":"start_voice"}""")
+        sendCommand?.invoke(GlassesCommand.StartVoice)
     }
 
     /**
@@ -92,7 +93,7 @@ class GlassesVoiceHandler {
      */
     fun cancel() {
         Log.d(TAG, "Cancelling voice recognition")
-        sendToPhone?.invoke("""{"type":"cancel_voice"}""")
+        sendCommand?.invoke(GlassesCommand.CancelVoice)
         _voiceState.value = VoiceState.Idle
         onResult = null
     }
@@ -205,7 +206,7 @@ class GlassesVoiceHandler {
     fun cleanup() {
         _voiceState.value = VoiceState.Idle
         onResult = null
-        sendToPhone = null
+        sendCommand = null
         Log.d(TAG, "Voice handler cleaned up")
     }
 }

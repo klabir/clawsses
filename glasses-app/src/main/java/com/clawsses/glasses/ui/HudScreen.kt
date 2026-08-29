@@ -42,8 +42,9 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.graphics.Bitmap
 import androidx.compose.foundation.Image
+import com.clawsses.glasses.media.ThumbnailBitmapCache
+import com.clawsses.glasses.media.ThumbnailHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -144,7 +145,7 @@ data class DisplayMessage(
     val role: String,  // "user" or "assistant"
     val content: String,
     val isStreaming: Boolean = false,
-    val thumbnails: List<Bitmap> = emptyList()
+    val thumbnails: List<ThumbnailHandle> = emptyList()
 )
 
 /**
@@ -254,7 +255,7 @@ data class ChatHudState(
     val pageNavigationHold: Boolean = false,
     val pageNavigationTrigger: Int = 0,
     val inputText: String = "",
-    val photoThumbnails: List<Bitmap> = emptyList(),
+    val photoThumbnails: List<ThumbnailHandle> = emptyList(),
     val isConnected: Boolean = false,
     val agentState: AgentState = AgentState.IDLE,
     val agentProgress: List<AgentProgressDisplay> = emptyList(),
@@ -387,7 +388,7 @@ private val HudBottomSafeInset = 32.dp
  */
 @Composable
 fun HudScreen(
-    state: ChatHudState,
+    state: HudUiState,
     telemetry: StateFlow<HudTelemetry>,
     streamingMessage: StateFlow<HudStreamingSnapshot?>,
     onTap: () -> Unit = {},
@@ -1234,14 +1235,16 @@ private val greenColorMatrix = ColorFilter.colorMatrix(androidx.compose.ui.graph
 
 @Composable
 private fun PhotoThumbnailRow(
-    thumbnails: List<Bitmap>,
+    thumbnails: List<ThumbnailHandle>,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier.padding(bottom = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-        thumbnails.forEach { bitmap ->
+        thumbnails.forEach { thumbnail ->
+            val bitmap = remember(thumbnail) { ThumbnailBitmapCache.resolve(thumbnail) }
+                ?: return@forEach
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = null,
@@ -1273,7 +1276,7 @@ private fun PhotoThumbnailRow(
 private fun InputStagingArea(
     text: String,
     showText: Boolean,
-    photos: List<Bitmap>,
+    photos: List<ThumbnailHandle>,
     selectedIndex: Int,
     isFocused: Boolean,
     isProcessing: Boolean,
@@ -1368,7 +1371,9 @@ private fun InputStagingArea(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Photo thumbnails — left-aligned
-            photos.forEachIndexed { index, bitmap ->
+            photos.forEachIndexed { index, thumbnail ->
+                val bitmap = remember(thumbnail) { ThumbnailBitmapCache.resolve(thumbnail) }
+                    ?: return@forEachIndexed
                 val isSelected = index == selectedIndex && isFocused
                 Box(modifier = Modifier.padding(end = 4.dp)) {
                     Image(

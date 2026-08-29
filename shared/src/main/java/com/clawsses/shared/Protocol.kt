@@ -137,6 +137,40 @@ data class ChatAttachment(
     @Transient val sizeBytes: Long? = null,
 )
 
+/** Compact chat payload sent across the size-constrained CXR channel. */
+data class HudChatMessage(
+    @SerializedName("type") val type: String = "chat_message",
+    @SerializedName("id") val id: String,
+    @SerializedName("role") val role: String,
+    @SerializedName("content") val content: String,
+    @SerializedName("timestamp") val timestamp: Long,
+    @SerializedName("attachments") val attachments: List<HudThumbnailAttachment> = emptyList(),
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+data class HudThumbnailAttachment(
+    @SerializedName("type") val type: String = "image",
+    @SerializedName("mimeType") val mimeType: String = "application/x-clawsses-mono1",
+    @SerializedName("fileName") val fileName: String,
+    @SerializedName("thumbnail") val thumbnail: String,
+    @SerializedName("thumbnailFormat") val thumbnailFormat: String,
+    @SerializedName("thumbnailWidth") val thumbnailWidth: Int,
+    @SerializedName("thumbnailHeight") val thumbnailHeight: Int,
+)
+
+data class PhotoResult(
+    @SerializedName("type") val type: String = "photo_result",
+    @SerializedName("status") val status: String,
+    @SerializedName("reason") val reason: String? = null,
+    @SerializedName("thumbnail") val thumbnail: String? = null,
+    @SerializedName("thumbnailFormat") val thumbnailFormat: String? = null,
+    @SerializedName("thumbnailWidth") val thumbnailWidth: Int? = null,
+    @SerializedName("thumbnailHeight") val thumbnailHeight: Int? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
 /**
  * Agent has acknowledged the request but no content yet.
  * Glasses should show a thinking/processing indicator.

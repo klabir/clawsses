@@ -6,6 +6,47 @@ import org.junit.Test
 
 class GlassesCommandCodecTest {
     @Test
+    fun roundTripsEveryOutboundCommand() {
+        val commands = listOf(
+            GlassesCommand.UserInput("hello", "local-1"),
+            GlassesCommand.StartVoice,
+            GlassesCommand.CancelVoice,
+            GlassesCommand.ListSessions(10),
+            GlassesCommand.SwitchSession("agent:main:main"),
+            GlassesCommand.CreateSession,
+            GlassesCommand.ListAgents,
+            GlassesCommand.SwitchAgent("main", "Main"),
+            GlassesCommand.ListModels(25),
+            GlassesCommand.SelectModel("agent:main:main", "openai", 3),
+            GlassesCommand.AbortRun,
+            GlassesCommand.Slash("/status"),
+            GlassesCommand.RequestState(
+                versionCode = 95,
+                versionName = "1.3.86",
+                protocolVersion = 1,
+                capabilities = setOf("model_paging", "transport_ack"),
+            ),
+            GlassesCommand.TtsToggle(true),
+            GlassesCommand.TtsControl("stop"),
+            GlassesCommand.TalkModeToggle(true),
+            GlassesCommand.LiveCaptionToggle(false),
+            GlassesCommand.HudCardAction("card-1", "dismiss"),
+            GlassesCommand.TakePhoto(true, "read this"),
+            GlassesCommand.RemovePhoto(all = false, index = 2),
+            GlassesCommand.RequestMoreHistory("oldest"),
+            GlassesCommand.TransportAck("tx-1"),
+            GlassesCommand.WakeAck(ready = true, timestamp = 1234L),
+        )
+
+        commands.forEach { command ->
+            assertEquals(
+                GlassesCommandDecodeResult.Success(command),
+                GlassesCommandCodec.decode(GlassesCommandCodec.encode(command)),
+            )
+        }
+    }
+
+    @Test
     fun decodesTypedCommands() {
         assertEquals(
             GlassesCommandDecodeResult.Success(GlassesCommand.SwitchSession("agent:main:main")),

@@ -5,6 +5,7 @@ import com.clawsses.shared.ChatAttachment
 import com.clawsses.shared.ChatMessage
 import java.io.File
 import java.io.InputStream
+import java.security.DigestOutputStream
 import java.security.MessageDigest
 import java.util.Base64
 
@@ -29,28 +30,34 @@ class ChatAttachmentFileStore internal constructor(
         if (attachments == message.attachments) message else message.copy(attachments = attachments)
     }
 
+    @Synchronized
     fun materialize(attachment: ChatAttachment): ChatAttachment? {
         val localPath = attachment.localPath
         if (localPath != null) return attachment.takeIf { safeFile(localPath)?.isFile == true }
         val rawBase64 = attachment.base64
         val encoded = rawBase64?.substringAfter(',', rawBase64)?.takeIf(String::isNotBlank)
             ?: return null
+        val temporary = runCatching { File.createTempFile("attachment-", ".tmp", directory) }
+            .getOrNull() ?: return null
         val digestBuilder = MessageDigest.getInstance("SHA-256")
-        encoded.forEach { digestBuilder.update(it.code.toByte()) }
-        val digest = digestBuilder.digest()
-            .joinToString("") { "%02x".format(it) }
-        val target = File(directory, "$digest.${extension(attachment.mimeType)}")
-        if (!target.exists()) {
-            val temporary = File(directory, "$digest.tmp")
-            val written = runCatching {
+        val written = runCatching {
+            DigestOutputStream(temporary.outputStream(), digestBuilder).use { output ->
                 Base64.getMimeDecoder().wrap(AsciiStringInputStream(encoded)).use { input ->
-                    temporary.outputStream().use { output -> copyBounded(input, output, maxAttachmentBytes) }
+                    copyBounded(input, output, maxAttachmentBytes)
                 }
-            }.getOrNull()
-            if (written == null || written <= 0L || !temporary.renameTo(target)) {
-                temporary.delete()
-                return null
             }
+        }.getOrNull()
+        if (written == null || written <= 0L) {
+            temporary.delete()
+            return null
+        }
+        val digest = digestBuilder.digest().joinToString("") { "%02x".format(it) }
+        val target = File(directory, "$digest.${extension(attachment.mimeType)}")
+        if (target.exists()) {
+            temporary.delete()
+        } else if (!temporary.renameTo(target)) {
+            temporary.delete()
+            return null
         }
         val size = target.length()
         if (size !in 1..maxAttachmentBytes) {
@@ -69,6 +76,12 @@ class ChatAttachmentFileStore internal constructor(
         val encoded = rawBase64.substringAfter(',', rawBase64)
         return runCatching { Base64.getMimeDecoder().decode(encoded) }
             .getOrNull()?.takeIf { it.size.toLong() <= maxAttachmentBytes }
+    }
+
+    /** Stable content identity used to avoid opening the file on thumbnail-cache hits. */
+    fun thumbnailCacheIdentity(attachment: ChatAttachment): String? {
+        val file = attachment.localPath?.let(::safeFile) ?: return null
+        return file.takeIf(File::isFile)?.nameWithoutExtension?.takeIf(String::isNotBlank)
     }
 
     @Synchronized

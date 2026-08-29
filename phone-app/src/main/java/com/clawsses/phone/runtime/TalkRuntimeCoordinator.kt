@@ -5,7 +5,8 @@ import android.util.Log
 import com.clawsses.phone.audio.AudioSessionCoordinator
 import com.clawsses.phone.audio.AudioSessionLease
 import com.clawsses.phone.glasses.GlassesConnectionManager
-import com.clawsses.phone.glasses.RokidSdkManager
+import com.clawsses.phone.glasses.RokidDeviceFacade
+import com.clawsses.phone.glasses.ProductionRokidDeviceFacade
 import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.PendingPhotoRepository
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -52,6 +53,7 @@ class TalkRuntimeCoordinator(
     private val ttsPlaybackManager: TtsPlaybackManager,
     private val audioSessionCoordinator: AudioSessionCoordinator,
     private val pendingPhotoRepository: PendingPhotoRepository,
+    private val rokidDevice: RokidDeviceFacade = ProductionRokidDeviceFacade,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = AtomicBoolean(false)
@@ -104,7 +106,7 @@ class TalkRuntimeCoordinator(
         ) {
             voiceRecognitionManager.cancelListening()
             releaseCaptureLease()
-            RokidSdkManager.clearCommunicationDevice()
+            rokidDevice.clearCommunicationDevice()
             talkModeManager.pauseForStandby()
             return
         }
@@ -135,8 +137,8 @@ class TalkRuntimeCoordinator(
         }
         val mode = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
         if (source == TalkModeSource.GLASSES) {
-            RokidSdkManager.setCommunicationDevice()
-            RokidSdkManager.sendAsrContent("...")
+            rokidDevice.setCommunicationDevice()
+            rokidDevice.sendAsrContent("...")
             sendVoiceState("listening", mode)
         }
 
@@ -169,7 +171,7 @@ class TalkRuntimeCoordinator(
                         WakeLockReason.VOICE_RECOGNITION,
                     )
                     voiceRecognitionManager.onSpeechStopped = null
-                    RokidSdkManager.clearCommunicationDevice()
+                    rokidDevice.clearCommunicationDevice()
                     talkModeManager.endConversation()
                     sendVoiceState("idle")
                     syncTalkModeStateToGlasses()
@@ -205,7 +207,7 @@ class TalkRuntimeCoordinator(
                     context,
                     WakeLockReason.VOICE_RECOGNITION,
                 )
-                RokidSdkManager.clearCommunicationDevice()
+                rokidDevice.clearCommunicationDevice()
                 talkModeManager.pauseForStandby()
                 return@launch
             }
@@ -222,7 +224,7 @@ class TalkRuntimeCoordinator(
         voiceRecognitionManager.onSpeechStopped = null
         ttsPlaybackManager.stop()
         openClawClient.abortActiveRun()
-        RokidSdkManager.clearCommunicationDevice()
+        rokidDevice.clearCommunicationDevice()
         if (disable) talkModeManager.setEnabled(false) else talkModeManager.resetToIdle()
         sendVoiceState("idle")
         syncTalkModeStateToGlasses()
@@ -234,7 +236,7 @@ class TalkRuntimeCoordinator(
         voiceRecognitionManager.cancelListening()
         releaseCaptureLease()
         voiceRecognitionManager.onSpeechStopped = null
-        RokidSdkManager.clearCommunicationDevice()
+        rokidDevice.clearCommunicationDevice()
         talkModeManager.setInteractionMode(mode)
         if (talkModeManager.state.value.enabled && mode == TalkInteractionMode.ALWAYS_LISTENING) {
             scheduleRestart(0L, TalkRestartReason.CONNECTION_READY)
@@ -255,10 +257,10 @@ class TalkRuntimeCoordinator(
         )
         ttsPlaybackManager.prepareOutput(requireBluetoothOutput = requireGlassesOutput)
         if (requireGlassesOutput) {
-            RokidSdkManager.setCommunicationDevice()
+            rokidDevice.setCommunicationDevice()
             Log.i(TAG, "Keeping Rokid SCO communication route for TTS output")
         } else {
-            RokidSdkManager.clearCommunicationDevice()
+            rokidDevice.clearCommunicationDevice()
         }
     }
 
@@ -276,7 +278,7 @@ class TalkRuntimeCoordinator(
         voiceRecognitionManager.onSpeechStopped = null
         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         ttsPlaybackManager.stop()
-        RokidSdkManager.clearCommunicationDevice()
+        rokidDevice.clearCommunicationDevice()
         val talk = talkModeManager.state.value
         if (talk.enabled && talk.source == TalkModeSource.GLASSES) {
             talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
@@ -318,13 +320,13 @@ class TalkRuntimeCoordinator(
         val latest = talkModeManager.state.value
         if (!latest.enabled || latest.cycleId != cycleId) return
         releaseCaptureLease()
-        if (source == TalkModeSource.GLASSES) RokidSdkManager.clearCommunicationDevice()
+        if (source == TalkModeSource.GLASSES) rokidDevice.clearCommunicationDevice()
         when (result) {
             is VoiceCommandHandler.VoiceResult.Text -> handleRecognizedText(source, cycleId, result.text)
             is VoiceCommandHandler.VoiceResult.Command -> handleRecognizedCommand(result.command)
             is VoiceCommandHandler.VoiceResult.Error -> {
                 if (source == TalkModeSource.GLASSES) {
-                    RokidSdkManager.notifyAsrError()
+                    rokidDevice.notifyAsrError()
                     sendVoiceState("error")
                 }
                 talkModeManager.setPhase(TalkModePhase.ERROR, cycleId, result.message)
@@ -338,7 +340,7 @@ class TalkRuntimeCoordinator(
         val text = rawText.trim()
         if (text.isEmpty()) {
             if (source == TalkModeSource.GLASSES) {
-                RokidSdkManager.notifyAsrNone()
+                rokidDevice.notifyAsrNone()
                 sendVoiceState("idle")
             }
             talkModeManager.resetToIdle()
@@ -346,8 +348,8 @@ class TalkRuntimeCoordinator(
             return
         }
         if (source == TalkModeSource.GLASSES) {
-            RokidSdkManager.sendAsrContent(text)
-            RokidSdkManager.notifyAsrEnd()
+            rokidDevice.sendAsrContent(text)
+            rokidDevice.notifyAsrEnd()
             glassesManager.sendRawMessage(
                 JSONObject().apply {
                     put("type", "voice_result")
@@ -358,7 +360,7 @@ class TalkRuntimeCoordinator(
             )
             scope.launch {
                 delay(500L)
-                RokidSdkManager.sendExitEvent()
+                rokidDevice.sendExitEvent()
             }
         }
         talkModeManager.setPhase(TalkModePhase.SENDING, cycleId)
@@ -424,7 +426,7 @@ class TalkRuntimeCoordinator(
     private fun configurePartialResults() {
         val forward: (String) -> Unit = { partialText ->
             if (partialText.isNotBlank()) cancelFollowUpTimeout()
-            RokidSdkManager.sendAsrContent(partialText)
+            rokidDevice.sendAsrContent(partialText)
             sendVoiceState("recognizing", text = partialText)
         }
         voiceHandler.onPartialResult = forward
@@ -461,7 +463,7 @@ class TalkRuntimeCoordinator(
                         voiceRecognitionManager.cancelListening()
                         releaseCaptureLease()
                         voiceRecognitionManager.onSpeechStopped = null
-                        RokidSdkManager.clearCommunicationDevice()
+                        rokidDevice.clearCommunicationDevice()
                     }
                     TalkModeTransitions.shouldResumeFromStandby(state, awake) -> {
                         delay(700L)
@@ -581,10 +583,10 @@ class TalkRuntimeCoordinator(
                             cancelRestart()
                             voiceRecognitionManager.stopListening()
                             releaseCaptureLease()
-                            RokidSdkManager.clearCommunicationDevice()
+                            rokidDevice.clearCommunicationDevice()
                             talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
                         }
-                        if (!RokidSdkManager.hasSavedConnectionInfo()) {
+                        if (!rokidDevice.hasSavedConnectionInfo()) {
                             GlassesConnectionService.stop(context)
                         }
                     }

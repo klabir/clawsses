@@ -42,6 +42,19 @@ class ChatAttachmentFileStoreTest {
         assertEquals(bytes.size.toLong(), first.sizeBytes)
         assertArrayEquals(bytes, store.readBytes(first))
         assertEquals(1, directory.listFiles().orEmpty().size)
+        assertEquals(java.io.File(requireNotNull(first.localPath)).nameWithoutExtension, store.thumbnailCacheIdentity(first))
+    }
+
+    @Test
+    fun `deduplication hashes decoded bytes instead of base64 formatting`() {
+        val compact = ChatAttachment(mimeType = "image/png", base64 = "aW1hZ2U=")
+        val wrapped = ChatAttachment(mimeType = "image/png", base64 = "aW1h\nZ2U=")
+
+        val first = requireNotNull(store.materialize(compact))
+        val second = requireNotNull(store.materialize(wrapped))
+
+        assertEquals(first.localPath, second.localPath)
+        assertEquals(1, directory.listFiles().orEmpty().size)
     }
 
     @Test

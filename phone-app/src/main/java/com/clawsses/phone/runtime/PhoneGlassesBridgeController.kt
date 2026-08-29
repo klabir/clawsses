@@ -7,7 +7,8 @@ import com.rokid.cxr.client.utils.ValueUtil
 import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.glasses.CxrOutboundTransport
 import com.clawsses.phone.glasses.GlassesConnectionManager
-import com.clawsses.phone.glasses.RokidSdkManager
+import com.clawsses.phone.glasses.RokidDeviceFacade
+import com.clawsses.phone.glasses.ProductionRokidDeviceFacade
 import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.ImagePipeline
 import com.clawsses.phone.media.MediaStoreSaver
@@ -39,11 +40,14 @@ import com.clawsses.shared.GlassesCommandCodec
 import com.clawsses.shared.GlassesCommandDecodeResult
 import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
+import com.clawsses.shared.HudChatMessage
+import com.clawsses.shared.HudThumbnailAttachment
 import com.clawsses.shared.LiveCaptionUpdate
 import com.clawsses.shared.ModelOperationUpdate
 import com.clawsses.shared.PeerDescriptor
 import com.clawsses.shared.PeerProtocol
 import com.clawsses.shared.PhonePeerState
+import com.clawsses.shared.PhotoResult
 import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.SessionOperationUpdate
 import com.clawsses.shared.TtsState
@@ -58,8 +62,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -83,6 +85,7 @@ class PhoneGlassesBridgeController(
     private val chatAttachmentFileStore: ChatAttachmentFileStore,
     private val talkCoordinator: TalkRuntimeCoordinator,
     private val stagedVoiceCoordinator: StagedVoiceCoordinator,
+    private val rokidDevice: RokidDeviceFacade = ProductionRokidDeviceFacade,
 ) {
     private val appContext = context.applicationContext
     private val prefs = SecurePreferences.create(appContext, PREFS_NAME)
@@ -106,7 +109,7 @@ class PhoneGlassesBridgeController(
         if (enabled) {
             if (talkModeManager.state.value.enabled) talkCoordinator.stopTalkMode(disable = true)
             stagedVoiceCoordinator.cancel(sendIdle = false)
-            RokidSdkManager.setCommunicationDevice()
+            rokidDevice.setCommunicationDevice()
             liveCaptionManager.start(
                 sourceLanguage = voiceLanguageManager.getActiveLanguageTag(),
                 targetLanguage = prefs.getString(KEY_CAPTION_TARGET_LANGUAGE, "English") ?: "English",
@@ -114,7 +117,7 @@ class PhoneGlassesBridgeController(
             )
         } else {
             liveCaptionManager.stop()
-            RokidSdkManager.clearCommunicationDevice()
+            rokidDevice.clearCommunicationDevice()
         }
     }
 
@@ -134,7 +137,7 @@ class PhoneGlassesBridgeController(
 
     fun cleanup() {
         photoCaptureTimeoutJob?.cancel()
-        RokidSdkManager.onPhotoResult = null
+        rokidDevice.onPhotoResult = null
         stagedVoiceCoordinator.cancel(sendIdle = false)
         clearCallbacks()
         scope.cancel()
@@ -370,6 +373,8 @@ class PhoneGlassesBridgeController(
                 )
                 is GlassesCommand.RemovePhoto -> removePhoto(command)
                 is GlassesCommand.RequestMoreHistory -> requestMoreHistory(command.beforeMessageId)
+                is GlassesCommand.TransportAck,
+                is GlassesCommand.WakeAck -> Unit // Consumed by GlassesConnectionManager.
             }
             is GlassesCommandDecodeResult.UnknownType ->
                 Log.w(TAG, "Ignoring unknown glasses message type=${result.type}")
@@ -704,11 +709,7 @@ class PhoneGlassesBridgeController(
 
     private fun sendPhotoError(reason: String? = null) {
         glassesManager.sendRawMessage(
-            JSONObject().apply {
-                put("type", "photo_result")
-                put("status", "error")
-                if (reason != null) put("reason", reason)
-            }.toString(),
+            PhotoResult(status = "error", reason = reason).toJson(),
         )
     }
 
@@ -717,22 +718,22 @@ class PhoneGlassesBridgeController(
         sendAfterCapture: Boolean,
         visionPrompt: String?,
     ) {
-        RokidSdkManager.onPhotoResult = { status, photoBytes ->
+        rokidDevice.onPhotoResult = { status, photoBytes ->
             scope.launch { completePhotoCapture(attemptId, status, photoBytes, sendAfterCapture, visionPrompt) }
         }
         photoCaptureTimeoutJob?.cancel()
         photoCaptureTimeoutJob = scope.launch {
             delay(PHOTO_CAPTURE_TIMEOUT_MS)
             if (photoCaptureGate.complete(attemptId)) {
-                RokidSdkManager.onPhotoResult = null
+                rokidDevice.onPhotoResult = null
                 Log.e(TAG, "Photo capture timed out (attempt=$attemptId)")
                 sendPhotoError("timeout")
             }
         }
-        val status = RokidSdkManager.takeGlassPhotoGlobal(1280, 720, 80)
+        val status = rokidDevice.takePhoto(1280, 720, 80)
         if (status != ValueUtil.CxrStatus.REQUEST_SUCCEED && photoCaptureGate.complete(attemptId)) {
             photoCaptureTimeoutJob?.cancel()
-            RokidSdkManager.onPhotoResult = null
+            rokidDevice.onPhotoResult = null
             Log.e(TAG, "Photo capture request failed (attempt=$attemptId, status=$status)")
             sendPhotoError("request_failed")
         }
@@ -750,7 +751,7 @@ class PhoneGlassesBridgeController(
             return
         }
         photoCaptureTimeoutJob?.cancel()
-        RokidSdkManager.onPhotoResult = null
+        rokidDevice.onPhotoResult = null
         if (photoBytes == null || photoBytes.isEmpty()) {
             Log.e(TAG, "Photo capture failed (attempt=$attemptId, status=$status)")
             sendPhotoError("empty")
@@ -775,16 +776,13 @@ class PhoneGlassesBridgeController(
             ImagePipeline.createHudThumbnail(photoBytes)
         }
         glassesManager.sendRawMessage(
-            JSONObject().apply {
-                put("type", "photo_result")
-                put("status", "captured")
-                if (thumbnail != null) {
-                    put("thumbnail", thumbnail.encoded)
-                    put("thumbnailFormat", thumbnail.format)
-                    put("thumbnailWidth", thumbnail.width)
-                    put("thumbnailHeight", thumbnail.height)
-                }
-            }.toString(),
+            PhotoResult(
+                status = "captured",
+                thumbnail = thumbnail?.encoded,
+                thumbnailFormat = thumbnail?.format,
+                thumbnailWidth = thumbnail?.width,
+                thumbnailHeight = thumbnail?.height,
+            ).toJson(),
         )
     }
 
@@ -808,32 +806,26 @@ class PhoneGlassesBridgeController(
         glassesManager.onMessageFromGlasses = null
     }
 
-    private fun buildGlassesChatMessageJson(message: ChatMessage): String = JSONObject().apply {
-        put("type", "chat_message")
-        put("id", message.id)
-        put("role", message.role)
-        put("content", message.content.take(2_000))
-        put("timestamp", message.timestamp)
-        putThumbnailAttachments(this, message)
-    }.toString()
-
-    private fun putThumbnailAttachments(target: JSONObject, message: ChatMessage) {
-        val attachments = JSONArray()
-        message.attachments.take(4).forEach { attachment ->
-            val bytes = chatAttachmentFileStore.readBytes(attachment) ?: return@forEach
-            val thumbnail = ImagePipeline.createHudThumbnail(bytes) ?: return@forEach
-            attachments.put(JSONObject().apply {
-                put("type", "image")
-                put("mimeType", "application/x-clawsses-mono1")
-                put("fileName", attachment.fileName ?: "photo")
-                put("thumbnail", thumbnail.encoded)
-                put("thumbnailFormat", thumbnail.format)
-                put("thumbnailWidth", thumbnail.width)
-                put("thumbnailHeight", thumbnail.height)
-            })
-        }
-        if (attachments.length() > 0) target.put("attachments", attachments)
-    }
+    private fun buildGlassesChatMessageJson(message: ChatMessage): String = HudChatMessage(
+        id = message.id,
+        role = message.role,
+        content = message.content.take(2_000),
+        timestamp = message.timestamp,
+        attachments = message.attachments.take(4).mapNotNull { attachment ->
+            val cacheIdentity = chatAttachmentFileStore.thumbnailCacheIdentity(attachment)
+                ?: return@mapNotNull null
+            val thumbnail = ImagePipeline.createHudThumbnail(cacheIdentity) {
+                chatAttachmentFileStore.readBytes(attachment)
+            } ?: return@mapNotNull null
+            HudThumbnailAttachment(
+                fileName = attachment.fileName ?: "photo",
+                thumbnail = thumbnail.encoded,
+                thumbnailFormat = thumbnail.format,
+                thumbnailWidth = thumbnail.width,
+                thumbnailHeight = thumbnail.height,
+            )
+        },
+    ).toJson()
 
     private fun LiveCaptionState.toProtocol() = LiveCaptionUpdate(
         enabled = enabled,

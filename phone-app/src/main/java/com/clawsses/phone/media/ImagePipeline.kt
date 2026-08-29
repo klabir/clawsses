@@ -84,7 +84,12 @@ object ImagePipeline {
 
     fun createHudThumbnail(imageBytes: ByteArray): HudThumbnail? {
         if (imageBytes.isEmpty()) return null
-        val key = thumbnailKey(imageBytes, HUD_MAX_WIDTH, HUD_MAX_HEIGHT)
+        return createHudThumbnail(contentHash(imageBytes)) { imageBytes }
+    }
+
+    /** Defers loading original bytes until a bounded thumbnail-cache miss occurs. */
+    fun createHudThumbnail(cacheIdentity: String, loadImageBytes: () -> ByteArray?): HudThumbnail? {
+        val key = "$cacheIdentity:$HUD_MAX_WIDTH:$HUD_MAX_HEIGHT:$HUD_ENCODING_VERSION"
         thumbnailCache.get(key)?.let { cached ->
             thumbnailCacheHits.incrementAndGet()
             val width = cached[0].toInt() and 0xff
@@ -97,6 +102,8 @@ object ImagePipeline {
             )
         }
         thumbnailCacheMisses.incrementAndGet()
+
+        val imageBytes = loadImageBytes()?.takeIf(ByteArray::isNotEmpty) ?: return null
 
         val bitmap = decodeSampled(imageBytes, HUD_MAX_WIDTH, HUD_MAX_HEIGHT) ?: return null
         val scale = minOf(
@@ -173,10 +180,9 @@ object ImagePipeline {
         return bitmap
     }
 
-    private fun thumbnailKey(imageBytes: ByteArray, maxWidth: Int, maxHeight: Int): String {
+    private fun contentHash(imageBytes: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(imageBytes)
-        val hash = digest.joinToString(separator = "") { byte -> "%02x".format(byte) }
-        return "$hash:$maxWidth:$maxHeight:$HUD_ENCODING_VERSION"
+        return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }
     }
 
 }
