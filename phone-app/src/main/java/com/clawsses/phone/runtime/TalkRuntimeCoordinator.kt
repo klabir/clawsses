@@ -2,6 +2,8 @@ package com.clawsses.phone.runtime
 
 import android.content.Context
 import android.util.Log
+import com.clawsses.phone.audio.AudioSessionCoordinator
+import com.clawsses.phone.audio.AudioSessionLease
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.glasses.WakeSignalManager
@@ -48,12 +50,14 @@ class TalkRuntimeCoordinator(
     private val voiceRecognitionManager: VoiceRecognitionManager,
     private val talkModeManager: TalkModeManager,
     private val ttsPlaybackManager: TtsPlaybackManager,
+    private val audioSessionCoordinator: AudioSessionCoordinator,
     private val pendingPhotoRepository: PendingPhotoRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = AtomicBoolean(false)
     private var restartJob: Job? = null
     private var followUpTimeoutJob: Job? = null
+    private var captureLease: AudioSessionLease? = null
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -99,6 +103,7 @@ class TalkRuntimeCoordinator(
             glassesManager.wakeSignalManager.wakeState.value !is WakeSignalManager.WakeState.Awake
         ) {
             voiceRecognitionManager.cancelListening()
+            releaseCaptureLease()
             RokidSdkManager.clearCommunicationDevice()
             talkModeManager.pauseForStandby()
             return
@@ -111,13 +116,23 @@ class TalkRuntimeCoordinator(
         }
 
         voiceRecognitionManager.stopListening()
+        releaseCaptureLease()
+        val lease = audioSessionCoordinator.beginCapture()
+        if (lease == null) {
+            Log.i(TAG, "Voice capture blocked by active speech playback")
+            return
+        }
+        captureLease = lease
         GlassesConnectionService.holdWakeLock(
             context,
             WakeLockReason.VOICE_RECOGNITION,
             VOICE_WAKE_LOCK_TIMEOUT_MS,
         )
         val cycleId = talkModeManager.beginListening(source, activation)
-        if (talkModeManager.state.value.phase != TalkModePhase.LISTENING) return
+        if (talkModeManager.state.value.phase != TalkModePhase.LISTENING) {
+            releaseCaptureLease()
+            return
+        }
         val mode = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
         if (source == TalkModeSource.GLASSES) {
             RokidSdkManager.setCommunicationDevice()
@@ -148,6 +163,7 @@ class TalkRuntimeCoordinator(
                     state.phase == TalkModePhase.LISTENING
                 ) {
                     voiceRecognitionManager.cancelListening()
+                    releaseCaptureLease()
                     GlassesConnectionService.releaseWakeLock(
                         context,
                         WakeLockReason.VOICE_RECOGNITION,
@@ -184,6 +200,7 @@ class TalkRuntimeCoordinator(
                 glassesManager.wakeSignalManager.wakeState.value !is WakeSignalManager.WakeState.Awake
             ) {
                 voiceRecognitionManager.cancelListening()
+                releaseCaptureLease()
                 GlassesConnectionService.releaseWakeLock(
                     context,
                     WakeLockReason.VOICE_RECOGNITION,
@@ -200,6 +217,7 @@ class TalkRuntimeCoordinator(
         cancelRestart()
         cancelFollowUpTimeout()
         voiceRecognitionManager.stopListening()
+        releaseCaptureLease()
         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         voiceRecognitionManager.onSpeechStopped = null
         ttsPlaybackManager.stop()
@@ -214,6 +232,7 @@ class TalkRuntimeCoordinator(
         cancelRestart()
         cancelFollowUpTimeout()
         voiceRecognitionManager.cancelListening()
+        releaseCaptureLease()
         voiceRecognitionManager.onSpeechStopped = null
         RokidSdkManager.clearCommunicationDevice()
         talkModeManager.setInteractionMode(mode)
@@ -228,6 +247,7 @@ class TalkRuntimeCoordinator(
     fun prepareTtsPlayback() {
         cancelRestart()
         voiceRecognitionManager.stopListening()
+        releaseCaptureLease()
         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         talkModeManager.beginSpeaking()
         val requireGlassesOutput = shouldRequireGlassesMediaOutput(
@@ -252,6 +272,7 @@ class TalkRuntimeCoordinator(
         cancelRestart()
         cancelFollowUpTimeout()
         voiceRecognitionManager.cancelListening()
+        releaseCaptureLease()
         voiceRecognitionManager.onSpeechStopped = null
         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.VOICE_RECOGNITION)
         ttsPlaybackManager.stop()
@@ -284,6 +305,7 @@ class TalkRuntimeCoordinator(
         cancelRestart()
         cancelFollowUpTimeout()
         scope.cancel()
+        releaseCaptureLease()
     }
 
     private fun handleRecognitionResult(
@@ -295,6 +317,7 @@ class TalkRuntimeCoordinator(
         cancelFollowUpTimeout()
         val latest = talkModeManager.state.value
         if (!latest.enabled || latest.cycleId != cycleId) return
+        releaseCaptureLease()
         if (source == TalkModeSource.GLASSES) RokidSdkManager.clearCommunicationDevice()
         when (result) {
             is VoiceCommandHandler.VoiceResult.Text -> handleRecognizedText(source, cycleId, result.text)
@@ -416,6 +439,8 @@ class TalkRuntimeCoordinator(
                     openClawClient.requestAgents()
                     openClawClient.requestModels()
                 } else if (talkModeManager.state.value.enabled) {
+                    voiceRecognitionManager.cancelListening()
+                    releaseCaptureLease()
                     talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
                 }
             }
@@ -434,6 +459,7 @@ class TalkRuntimeCoordinator(
                         cancelRestart()
                         talkModeManager.pauseForStandby()
                         voiceRecognitionManager.cancelListening()
+                        releaseCaptureLease()
                         voiceRecognitionManager.onSpeechStopped = null
                         RokidSdkManager.clearCommunicationDevice()
                     }
@@ -554,6 +580,7 @@ class TalkRuntimeCoordinator(
                         if (talk.enabled && talk.source == TalkModeSource.GLASSES) {
                             cancelRestart()
                             voiceRecognitionManager.stopListening()
+                            releaseCaptureLease()
                             RokidSdkManager.clearCommunicationDevice()
                             talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
                         }
@@ -606,6 +633,11 @@ class TalkRuntimeCoordinator(
     private fun cancelFollowUpTimeout() {
         followUpTimeoutJob?.cancel()
         followUpTimeoutJob = null
+    }
+
+    private fun releaseCaptureLease() {
+        captureLease?.let(audioSessionCoordinator::release)
+        captureLease = null
     }
 
     companion object {

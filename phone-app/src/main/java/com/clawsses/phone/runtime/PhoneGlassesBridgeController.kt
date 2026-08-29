@@ -558,6 +558,7 @@ class PhoneGlassesBridgeController(
         if (state == "final" && fullText != null) {
             if (talk.enabled) {
                 if (ttsSettingsManager.isEnabled.value && ttsSettingsManager.isConfigured() && fullText.isNotBlank()) {
+                    if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                     talkCoordinator.prepareTtsPlayback()
                     talkModeManager.setPhase(TalkModePhase.SPEAKING)
                     ttsPlaybackManager.onMessageComplete(fullText)
@@ -567,6 +568,7 @@ class PhoneGlassesBridgeController(
                 }
             } else {
                 if (ttsSettingsManager.isEnabled.value && ttsSettingsManager.isConfigured() && fullText.isNotBlank()) {
+                    if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                     talkCoordinator.prepareTtsPlayback()
                 }
                 ttsPlaybackManager.onMessageComplete(fullText)

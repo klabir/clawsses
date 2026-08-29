@@ -533,7 +533,11 @@ fun MainScreen() {
             ttsPlaybackState = ttsPlaybackState,
             ttsCanReplay = ttsCanReplay,
             onTtsStop = { ttsPlaybackManager.stop() },
-            onTtsReplay = { ttsPlaybackManager.replay() },
+            onTtsReplay = {
+                if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
+                runtime.talkCoordinator.prepareTtsPlayback()
+                ttsPlaybackManager.replay()
+            },
             // Developer
             onDebugModeChange = { enabled ->
                 if (enabled) glassesManager.enableDebugMode()

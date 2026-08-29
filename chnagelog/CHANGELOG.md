@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## 1.3.83 (build 92)
+
+### Added
+
+- Add one process-scoped audio-session coordinator with generation-safe capture/playback leases and transient Android speech-output focus.
+- Add regression coverage for exclusive ownership, delayed lease release, denied focus, focus loss, and capture-to-playback exclusion.
+
+### Changed
+
+- Route Talk Mode, staged glasses voice, Live Captions, TTS, replay, and lifecycle cleanup through one explicit audio owner.
+- Stop Live Captions before automatic or replayed TTS instead of allowing recognition and playback to overlap.
+
+### Fixed
+
+- Stop and release TTS deterministically when Android revokes audio focus.
+- Prevent a delayed capture callback or second recognition path from releasing or replacing the current audio session.
+
 ## 1.3.82 (build 91)
 
 ### Added
