@@ -32,6 +32,14 @@ import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.input.ModelPageSelection
 import com.clawsses.glasses.input.ModelPickerMove
 import com.clawsses.glasses.input.ModelPickerNavigation
+import com.clawsses.glasses.orchestration.HudCommandDispatcher
+import com.clawsses.glasses.orchestration.HudGestureContext
+import com.clawsses.glasses.orchestration.HudGestureRouter
+import com.clawsses.glasses.orchestration.HudGestureTarget
+import com.clawsses.glasses.orchestration.HudKeyRouter
+import com.clawsses.glasses.orchestration.HudLifecycleRouter
+import com.clawsses.glasses.orchestration.HudRuntimeMetrics
+import com.clawsses.glasses.orchestration.HudTransportTransactionTracker
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.state.HudStateEvent
 import com.clawsses.glasses.state.HudHistorySnapshotAssembler
@@ -65,7 +73,6 @@ import com.clawsses.glasses.ui.visibleMoreMenuItems
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesCommand
-import com.clawsses.shared.GlassesCommandCodec
 import com.clawsses.shared.PeerProtocol
 import com.clawsses.shared.VisionCommands
 import com.clawsses.shared.TtsVoiceCommands
@@ -79,7 +86,6 @@ import org.json.JSONObject
 import android.os.BatteryManager
 import com.clawsses.glasses.BuildConfig
 import java.text.SimpleDateFormat
-import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import com.clawsses.shared.TechnicalJankMonitor
@@ -108,6 +114,9 @@ class HudActivity : ComponentActivity() {
     private lateinit var gestureHandler: GestureHandler
     private val phoneConnection: PhoneConnectionService
         get() = (application as GlassesApp).phoneConnection
+    private val commandDispatcher by lazy {
+        HudCommandDispatcher(phoneConnection::sendToPhone)
+    }
     private lateinit var voiceHandler: GlassesVoiceHandler
     private lateinit var cameraCapture: CameraCapture
     private var aiStartReceiverRegistered = false
@@ -141,7 +150,8 @@ class HudActivity : ComponentActivity() {
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
     // from visible HUD state and swap it in only after the matching end marker arrives.
     private val historySnapshotAssembler = HudHistorySnapshotAssembler()
-    private val processedTransportTransactions = ArrayDeque<String>()
+    private val processedTransportTransactions = HudTransportTransactionTracker()
+    private val runtimeMetrics = HudRuntimeMetrics()
 
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
@@ -320,11 +330,16 @@ class HudActivity : ComponentActivity() {
             phoneConnection.connectionState.collect { state ->
                 val isConnected = state is PhoneConnectionService.ConnectionState.Connected
                 val current = hudState.value
-                if (current.isConnected != isConnected) {
-                    hudState.value = current.copy(isConnected = isConnected)
-                    if (isConnected) {
-                        requestCurrentPhoneState()
-                    }
+                val transition = HudLifecycleRouter.connectionTransition(
+                    currentlyConnected = current.isConnected,
+                    bridgeConnected = isConnected,
+                )
+                if (transition.stateChanged) {
+                    hudState.value = current.copy(isConnected = transition.connected)
+                }
+                if (transition.requestPhoneState) {
+                    runtimeMetrics.recordReconnectStateRequest()
+                    requestCurrentPhoneState()
                 }
             }
         }
@@ -390,7 +405,8 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun sendCommand(command: GlassesCommand) {
-        phoneConnection.sendToPhone(GlassesCommandCodec.encode(command))
+        runtimeMetrics.recordCommand()
+        commandDispatcher.send(command)
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
@@ -413,37 +429,15 @@ class HudActivity : ComponentActivity() {
             return handleKeyboardCapture(keyCode, event)
         }
 
-        if (event?.repeatCount ?: 0 > 0) return true
+        val decision = HudKeyRouter.route(keyCode, event?.repeatCount ?: 0)
+        decision.gesture?.let(::handleGesture)
+        if (decision.consumed) return true
 
-        when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_VOLUME_UP -> {
-                handleGesture(Gesture.SWIPE_FORWARD)
+        if (DEBUG_MODE) {
+            val char = event?.unicodeChar?.toChar()
+            if (char != null && char.code > 0 && !char.isISOControl()) {
+                startKeyboardCapture(char)
                 return true
-            }
-            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                handleGesture(Gesture.SWIPE_BACKWARD)
-                return true
-            }
-            KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_CENTER -> {
-                handleGesture(Gesture.TAP)
-                return true
-            }
-            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
-                handleGesture(Gesture.DOUBLE_TAP)
-                return true
-            }
-            KeyEvent.KEYCODE_M, KeyEvent.KEYCODE_DEL -> {
-                handleGesture(Gesture.DOUBLE_TAP)
-                return true
-            }
-            else -> {
-                if (DEBUG_MODE) {
-                    val char = event?.unicodeChar?.toChar()
-                    if (char != null && char.code > 0 && !char.isISOControl()) {
-                        startKeyboardCapture(char)
-                        return true
-                    }
-                }
             }
         }
         return super.onKeyDown(keyCode, event)
@@ -523,57 +517,43 @@ class HudActivity : ComponentActivity() {
     // ============== Simplified 3-Area Gesture Handling ==============
 
     private fun handleGesture(gesture: Gesture) {
+        runtimeMetrics.recordGesture()
         val current = hudState.value
         val isVoiceActive = voiceHandler.isListening()
 
         Log.d(GlassesApp.TAG, "Gesture: $gesture, Area: ${current.focusedArea}")
 
-        // If overlays are open, handle gestures for them
-        if (current.hudCards.isNotEmpty()) {
-            handleHudCardGesture(gesture)
-            return
-        }
-        if (current.liveCaptionEnabled && gesture == Gesture.DOUBLE_TAP) {
-            sendCommand(GlassesCommand.LiveCaptionToggle(false))
-            hudState.value = current.copy(liveCaptionEnabled = false, liveCaption = null)
-            return
-        }
-        if (current.showExitConfirm) {
-            handleExitConfirmGesture(gesture)
-            return
-        }
-        if (current.showSlashMenu) {
-            handleSlashMenuGesture(gesture)
-            return
-        }
-        if (current.showMoreMenu) {
-            handleMoreMenuGesture(gesture)
-            return
-        }
-        if (current.showSessionPicker) {
-            handleSessionPickerGesture(gesture)
-            return
-        }
-        if (current.showAgentPicker) {
-            handleAgentPickerGesture(gesture)
-            return
-        }
-        if (current.showModelPicker) {
-            handleModelPickerGesture(gesture)
-            return
-        }
-
-        // If voice is active, TAP cancels
-        if (isVoiceActive && gesture == Gesture.TAP) {
-            voiceHandler.cancel()
-            return
-        }
-
-        // Route by focused area
-        when (current.focusedArea) {
-            ChatFocusArea.CONTENT -> handleContentGesture(gesture)
-            ChatFocusArea.INPUT -> handleInputGesture(gesture)
-            ChatFocusArea.MENU -> handleMenuGesture(gesture)
+        val target = HudGestureRouter.route(
+            HudGestureContext(
+                hasHudCards = current.hudCards.isNotEmpty(),
+                liveCaptionEnabled = current.liveCaptionEnabled,
+                showExitConfirm = current.showExitConfirm,
+                showSlashMenu = current.showSlashMenu,
+                showMoreMenu = current.showMoreMenu,
+                showSessionPicker = current.showSessionPicker,
+                showAgentPicker = current.showAgentPicker,
+                showModelPicker = current.showModelPicker,
+                voiceActive = isVoiceActive,
+                focusedArea = current.focusedArea,
+            ),
+            gesture,
+        )
+        when (target) {
+            HudGestureTarget.HUD_CARD -> handleHudCardGesture(gesture)
+            HudGestureTarget.DISMISS_LIVE_CAPTION -> {
+                sendCommand(GlassesCommand.LiveCaptionToggle(false))
+                hudState.value = current.copy(liveCaptionEnabled = false, liveCaption = null)
+            }
+            HudGestureTarget.EXIT_CONFIRM -> handleExitConfirmGesture(gesture)
+            HudGestureTarget.SLASH_MENU -> handleSlashMenuGesture(gesture)
+            HudGestureTarget.MORE_MENU -> handleMoreMenuGesture(gesture)
+            HudGestureTarget.SESSION_PICKER -> handleSessionPickerGesture(gesture)
+            HudGestureTarget.AGENT_PICKER -> handleAgentPickerGesture(gesture)
+            HudGestureTarget.MODEL_PICKER -> handleModelPickerGesture(gesture)
+            HudGestureTarget.CANCEL_VOICE -> voiceHandler.cancel()
+            HudGestureTarget.CONTENT -> handleContentGesture(gesture)
+            HudGestureTarget.INPUT -> handleInputGesture(gesture)
+            HudGestureTarget.MENU -> handleMenuGesture(gesture)
         }
     }
 
@@ -1532,12 +1512,14 @@ class HudActivity : ComponentActivity() {
     // ============== Phone Message Handling ==============
 
     private fun handlePhoneMessage(json: String) {
+        runtimeMetrics.recordPhoneMessage()
         try {
             Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
             when (val decoded = PhoneHudMessageCodec.decode(json)) {
                 is PhoneHudDecodeResult.Success -> {
                     val transactionId = decoded.envelope.transactionId
                     if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
+                        runtimeMetrics.recordDuplicateTransaction()
                         acknowledgeTransport(transactionId)
                         return
                     }
@@ -1546,6 +1528,7 @@ class HudActivity : ComponentActivity() {
                     return
                 }
                 is PhoneHudDecodeResult.Malformed -> {
+                    runtimeMetrics.recordMalformedMessage()
                     Log.w(
                         GlassesApp.TAG,
                         "Rejected malformed phone message type=${decoded.type}: ${decoded.reason}",
@@ -1559,6 +1542,7 @@ class HudActivity : ComponentActivity() {
             val type = msg.optString("type", "")
             val transactionId = msg.optString("_tx").takeIf { it.isNotBlank() }
             if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
+                runtimeMetrics.recordDuplicateTransaction()
                 acknowledgeTransport(transactionId)
                 return
             }
@@ -2361,8 +2345,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun recordAndAcknowledgeTransport(transactionId: String) {
-        processedTransportTransactions.addLast(transactionId)
-        while (processedTransportTransactions.size > 64) processedTransportTransactions.removeFirst()
+        processedTransportTransactions.record(transactionId)
         acknowledgeTransport(transactionId)
     }
 
@@ -2386,7 +2369,10 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun publishStreamingMessage() {
-        streamingAccumulator.snapshotIfChanged()?.let { streamingMessage.value = it }
+        streamingAccumulator.snapshotIfChanged()?.let {
+            runtimeMetrics.recordStreamPublication()
+            streamingMessage.value = it
+        }
     }
 
     private fun clearStreamingMessage(id: String? = null) {
@@ -2449,6 +2435,7 @@ class HudActivity : ComponentActivity() {
             aiStartReceiverRegistered = false
         }
         streamPublishJob?.cancel()
+        Log.i(GlassesApp.TAG, runtimeMetrics.snapshot().toLogLine())
         jankMonitor.close()
         super.onDestroy()
         saveHudPreferences()

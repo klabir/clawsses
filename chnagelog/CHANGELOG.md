@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## 1.3.96 (build 105)
+
+### Added
+
+- Add privacy-safe HUD runtime counters for commands, gestures, inbound packets, malformed packets, duplicate transactions, reconnect syncs, and stream publications.
+- Add a 10,000-event soak regression that verifies exact counters and the bounded 64-entry transport acknowledgment window.
+
+### Changed
+
+- Isolate transaction replay retention behind a synchronized bounded tracker instead of Activity-owned deque mutation.
+
+## 1.3.95 (build 104)
+
+### Changed
+
+- Split ambient cards, live captions, utility menus, exit confirmation, and the HUD color palette into focused Compose surface files.
+- Keep the primary chat surface isolated from transient status overlays so each area can evolve and compile independently.
+
+## 1.3.94 (build 103)
+
+### Changed
+
+- Move typed HUD command encoding behind a dedicated transport dispatcher.
+- Move gesture precedence, hardware-key normalization, and reconnect state-sync decisions out of `HudActivity` into tested orchestration components.
+
 ## 1.3.93 (build 102)
 
 ### Added
