@@ -53,7 +53,7 @@ The companion app mirrors the glasses conversation, with a text input field, cam
 Configure your OpenClaw Gateway connection, glasses pairing, OpenAI voice recognition, ElevenLabs TTS, and developer options.
 
 <p align="center">
-  <img src="images/phone-settings-top-redacted.png" width="300" alt="Settings - server, glasses, and voice">
+  <img src="images/phone-settings-top.png" width="300" alt="Settings - server, glasses, and voice">
   &nbsp;&nbsp;&nbsp;&nbsp;
   <img src="images/phone-settings-bottom.png" width="300" alt="Settings - TTS, developer options">
 </p>
