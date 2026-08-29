@@ -666,7 +666,7 @@ fun ChatMessageRow(msg: ChatMessage) {
                 .fillMaxWidth(0.85f)
         ) {
             msg.attachments.forEachIndexed { index, attachment ->
-                val image = rememberDecodedImage(attachment.base64, 960, 720)
+                val image = rememberDecodedImage(attachment, 960, 720)
                 if (image != null) {
                     Image(
                         bitmap = image,
@@ -1150,18 +1150,25 @@ fun ModelSelector(
 
 @Composable
 private fun rememberDecodedImage(
-    encoded: String?,
+    attachment: com.clawsses.shared.ChatAttachment,
     maxWidth: Int,
     maxHeight: Int,
 ): ImageBitmap? {
     val decoded by produceState<ImageBitmap?>(
         initialValue = null,
-        key1 = encoded,
+        key1 = attachment.localPath ?: attachment.base64,
         key2 = maxWidth,
         key3 = maxHeight,
     ) {
-        value = withContext(Dispatchers.Default) {
-            ImagePipeline.decodeBase64Image(encoded, maxWidth, maxHeight)?.asImageBitmap()
+        value = withContext(Dispatchers.IO) {
+            val bytes = attachment.localPath?.let { path ->
+                runCatching { File(path).readBytes() }.getOrNull()
+            }
+            if (bytes != null) {
+                ImagePipeline.decodeImageBytes(bytes, maxWidth, maxHeight)?.asImageBitmap()
+            } else {
+                ImagePipeline.decodeBase64Image(attachment.base64, maxWidth, maxHeight)?.asImageBitmap()
+            }
         }
     }
     return decoded

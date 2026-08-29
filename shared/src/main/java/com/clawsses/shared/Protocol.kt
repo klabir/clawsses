@@ -132,7 +132,9 @@ data class ChatAttachment(
     @SerializedName("type") val type: String = "image",
     @SerializedName("mimeType") val mimeType: String? = null,
     @SerializedName("fileName") val fileName: String? = null,
-    @SerializedName("base64") val base64: String? = null
+    @SerializedName("base64") val base64: String? = null,
+    @Transient val localPath: String? = null,
+    @Transient val sizeBytes: Long? = null,
 )
 
 /**

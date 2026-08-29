@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## 1.3.85 (build 94)
+
+### Added
+
+- Add a bounded app-owned chat-attachment file store with content deduplication, path containment, age/size pruning, and eviction cleanup.
+- Add regression tests for file-backed decoding, oversized/external input rejection, eviction, and wire-format isolation.
+
+### Changed
+
+- Materialize gateway and locally sent image attachments at the transport boundary instead of retaining full Base64 strings in long-lived chat state.
+- Render Phone images and derive HUD thumbnails from bounded local files, while retaining legacy Base64 fallback compatibility.
+
+### Fixed
+
+- Prevent large embedded chat images from multiplying retained heap usage across history, Compose state, and HUD synchronization.
+- Ensure local attachment paths and byte metadata never enter the Phone/HUD or OpenClaw JSON protocol.
+
 ## 1.3.84 (build 93)
 
 ### Added

@@ -11,6 +11,7 @@ internal class BoundedChatStore(
     private val maxMessages: Int = DEFAULT_MAX_MESSAGES,
     private val maxAttachmentBytes: Long = DEFAULT_MAX_ATTACHMENT_BYTES,
     private val maxAttachmentsPerMessage: Int = DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE,
+    private val onMessagesChanged: (List<ChatMessage>) -> Unit = {},
 ) {
     init {
         require(maxMessages > 0)
@@ -82,7 +83,9 @@ internal class BoundedChatStore(
         for (message in bounded.asReversed()) {
             val retained = ArrayList<ChatAttachment>()
             for (attachment in message.attachments.take(maxAttachmentsPerMessage)) {
-                val bytes = attachment.base64?.let(::estimatedDecodedBytes) ?: 0L
+                val bytes = attachment.sizeBytes
+                    ?: attachment.base64?.let(::estimatedDecodedBytes)
+                    ?: 0L
                 if (bytes <= remainingBytes) {
                     retained += attachment
                     remainingBytes -= bytes
@@ -97,6 +100,7 @@ internal class BoundedChatStore(
 
     private fun publish() {
         _messages.value = streamingTail?.let { completed + it } ?: completed
+        onMessagesChanged(_messages.value)
     }
 
     private fun estimatedDecodedBytes(base64: String): Long =

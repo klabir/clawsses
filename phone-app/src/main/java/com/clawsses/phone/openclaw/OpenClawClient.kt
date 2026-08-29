@@ -1,6 +1,7 @@
 package com.clawsses.phone.openclaw
 
 import android.util.Log
+import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.shared.*
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -28,6 +29,7 @@ import kotlin.random.Random
 class OpenClawClient(
     private val deviceIdentity: DeviceIdentity,
     private val networkMonitor: NetworkMonitor? = null,
+    private val attachmentFileStore: ChatAttachmentFileStore,
 ) {
 
     companion object {
@@ -59,7 +61,7 @@ class OpenClawClient(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val chatStore = BoundedChatStore()
+    private val chatStore = BoundedChatStore(onMessagesChanged = attachmentFileStore::retainOnly)
     val chatMessages: StateFlow<List<ChatMessage>> = chatStore.messages
 
     private val _events = MutableSharedFlow<OpenClawEvent>(extraBufferCapacity = 64)
@@ -333,11 +335,11 @@ class OpenClawClient(
                 // Add user message to local chat
                 val userMsgId = clientMessageId?.takeIf { it.isNotBlank() }
                     ?: UUID.randomUUID().toString()
-                val localAttachments = images.orEmpty().map { base64 ->
+                val localAttachments = images.orEmpty().mapNotNull { base64 ->
                     ChatAttachment(
                         mimeType = detectImageMimeType(base64),
                         base64 = base64
-                    )
+                    ).let(attachmentFileStore::materialize)
                 }
                 val userMsg = ChatMessage(
                     id = userMsgId,
@@ -835,7 +837,9 @@ class OpenClawClient(
                     }
                     val hasMore = parsedHistory.rawCount >= 50
                     Log.d(TAG, "Loaded ${parsedHistory.messages.size} history messages for session $key")
-                    val boundedHistory = chatStore.replace(parsedHistory.messages)
+                    val boundedHistory = chatStore.replace(
+                        attachmentFileStore.materialize(parsedHistory.messages),
+                    )
                     _hasMoreHistory.value = hasMore
                     onChatHistory?.invoke(boundedHistory)
                 } else {
@@ -893,7 +897,10 @@ class OpenClawClient(
                 if (response.ok) {
                     val messagesArray = response.payload?.getAsJsonArray("messages")
                     val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
-                    val merge = HistoryPrependMerge.merge(parsedHistory.messages, existingMessages)
+                    val merge = HistoryPrependMerge.merge(
+                        attachmentFileStore.materialize(parsedHistory.messages),
+                        existingMessages,
+                    )
                     val boundedCombined = chatStore.replace(merge.combined)
 
                     // Did we get everything the gateway has?

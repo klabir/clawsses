@@ -12,6 +12,7 @@ import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.ImagePipeline
 import com.clawsses.phone.media.MediaStoreSaver
 import com.clawsses.phone.media.PendingPhotoRepository
+import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.GlassesChatHistoryPage
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -79,6 +80,7 @@ class PhoneGlassesBridgeController(
     private val ttsSettingsManager: TtsSettingsManager,
     private val ttsPlaybackManager: TtsPlaybackManager,
     private val pendingPhotoRepository: PendingPhotoRepository,
+    private val chatAttachmentFileStore: ChatAttachmentFileStore,
     private val talkCoordinator: TalkRuntimeCoordinator,
     private val stagedVoiceCoordinator: StagedVoiceCoordinator,
 ) {
@@ -818,7 +820,7 @@ class PhoneGlassesBridgeController(
     private fun putThumbnailAttachments(target: JSONObject, message: ChatMessage) {
         val attachments = JSONArray()
         message.attachments.take(4).forEach { attachment ->
-            val bytes = decodeBase64Bytes(attachment.base64) ?: return@forEach
+            val bytes = chatAttachmentFileStore.readBytes(attachment) ?: return@forEach
             val thumbnail = ImagePipeline.createHudThumbnail(bytes) ?: return@forEach
             attachments.put(JSONObject().apply {
                 put("type", "image")
@@ -831,11 +833,6 @@ class PhoneGlassesBridgeController(
             })
         }
         if (attachments.length() > 0) target.put("attachments", attachments)
-    }
-
-    private fun decodeBase64Bytes(encoded: String?): ByteArray? {
-        if (encoded.isNullOrBlank()) return null
-        return runCatching { Base64.decode(encoded.substringAfter(',', encoded), Base64.DEFAULT) }.getOrNull()
     }
 
     private fun LiveCaptionState.toProtocol() = LiveCaptionUpdate(

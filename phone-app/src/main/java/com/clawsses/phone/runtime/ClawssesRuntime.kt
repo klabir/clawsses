@@ -7,6 +7,7 @@ import com.clawsses.phone.audio.AudioSessionCoordinator
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.media.PendingPhotoRepository
+import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.AndroidNetworkMonitor
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -28,9 +29,11 @@ class ClawssesRuntime(context: Context) {
     private val appContext = context.applicationContext
 
     val glassesManager = GlassesConnectionManager(appContext)
+    val chatAttachmentFileStore = ChatAttachmentFileStore(appContext)
     val openClawClient = OpenClawClient(
         DeviceIdentity(appContext),
         AndroidNetworkMonitor(appContext),
+        chatAttachmentFileStore,
     )
     val voiceHandler = VoiceCommandHandler(appContext)
     val voiceLanguageManager = VoiceLanguageManager(appContext)
@@ -88,6 +91,7 @@ class ClawssesRuntime(context: Context) {
         ttsSettingsManager = ttsSettingsManager,
         ttsPlaybackManager = ttsPlaybackManager,
         pendingPhotoRepository = pendingPhotoRepository,
+        chatAttachmentFileStore = chatAttachmentFileStore,
         talkCoordinator = talkCoordinator,
         stagedVoiceCoordinator = stagedVoiceCoordinator,
     )

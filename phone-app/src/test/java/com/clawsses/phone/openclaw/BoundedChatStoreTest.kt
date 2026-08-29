@@ -41,6 +41,19 @@ class BoundedChatStoreTest {
     }
 
     @Test
+    fun `file backed attachment uses stored byte size`() {
+        val store = BoundedChatStore(maxAttachmentBytes = 3)
+        store.add(
+            message(
+                "file",
+                attachments = listOf(ChatAttachment(localPath = "/owned", sizeBytes = 4)),
+            ),
+        )
+
+        assertTrue(store.value().single().attachments.isEmpty())
+    }
+
+    @Test
     fun `history replacement discards stale streaming tail`() {
         val store = BoundedChatStore()
         store.updateStreaming("stale", "partial")
