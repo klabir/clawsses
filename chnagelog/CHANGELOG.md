@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 1.3.94 (build 103)
+
+### Changed
+
+- Move typed HUD command encoding behind a dedicated transport dispatcher.
+- Move gesture precedence, hardware-key normalization, and reconnect state-sync decisions out of `HudActivity` into tested orchestration components.
+
 ## 1.3.93 (build 102)
 
 ### Added
