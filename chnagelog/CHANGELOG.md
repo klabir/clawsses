@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.81 (build 90)
+
+### Added
+
+- Add an isolated benchmark-only chat workload with 500 retained messages and 1,000 streaming-tail updates measured by Android `FrameTimingMetric`.
+- Add a deterministic integration budget covering gateway-history parsing, bounded retention, streaming replacement, and finalization.
+
+### Changed
+
+- Extend release artifact verification so benchmark workload code cannot leak into production Phone APKs.
+
+### Performance
+
+- Enforce a generous two-second CI ceiling for the pure 500-message/1,000-update integration workload while preserving the 500-message store limit.
+
 ## 1.3.80 (build 89)
 
 ### Changed

@@ -33,18 +33,21 @@ abstract class VerifyReleaseExcludesDebugTransportTask : DefaultTask() {
 
     @TaskAction
     fun verify() {
-        val forbiddenClassPath = "com/clawsses/phone/debug/DebugGlassesServer"
+        val forbiddenClassPaths = listOf(
+            "com/clawsses/phone/debug/DebugGlassesServer",
+            "com/clawsses/phone/benchmark/ChatBenchmarkActivity",
+        )
         ZipFile(releaseApk.get().asFile).use { apk ->
-            val leakedFrom = apk.entries().asSequence()
+            val leaked = apk.entries().asSequence()
                 .filter { it.name.matches(Regex("classes\\d*\\.dex")) }
-                .firstOrNull { entry ->
+                .mapNotNull { entry ->
                     apk.getInputStream(entry).use { input ->
-                        input.readBytes().toString(Charsets.ISO_8859_1)
-                            .contains(forbiddenClassPath)
+                        val dex = input.readBytes().toString(Charsets.ISO_8859_1)
+                        forbiddenClassPaths.firstOrNull(dex::contains)?.let { entry.name to it }
                     }
-                }
-            check(leakedFrom == null) {
-                "Release APK contains emulator-only debug transport in ${leakedFrom?.name}"
+                }.firstOrNull()
+            check(leaked == null) {
+                "Release APK contains non-production class ${leaked?.second} in ${leaked?.first}"
             }
         }
     }
@@ -204,6 +207,9 @@ androidComponents {
                 applicationIdSuffix = ".benchmark"
             }
         }
+        extension.sourceSets.maybeCreate("benchmarkRelease").manifest.srcFile(
+            "src/benchmarkRelease/AndroidManifest.xml",
+        )
     }
 
     onVariants(selector().all()) { variant ->
