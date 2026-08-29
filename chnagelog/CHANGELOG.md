@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 1.3.95 (build 104)
+
+### Changed
+
+- Split ambient cards, live captions, utility menus, exit confirmation, and the HUD color palette into focused Compose surface files.
+- Keep the primary chat surface isolated from transient status overlays so each area can evolve and compile independently.
+
 ## 1.3.94 (build 103)
 
 ### Changed
