@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.89 (build 98)
+
+### Changed
+
+- Reconnect to bonded glasses through full BLE/CXR rediscovery instead of alternating with a persisted session-UUID fast path.
+- Persist only the bonded glasses address; retain rotating socket identifiers and the Rokid account only for the active process handshake.
+
+### Fixed
+
+- Reject connection-info, connected, disconnected, adopted-link, and failure callbacks from superseded CXR attempts.
+- Scope pending connection and SN-recovery state to the attempt that created it.
+- Keep the immediate reconnect coroutine under the same single-job ownership as background retries.
+
 ## 1.3.88 (build 97)
 
 ### Changed
