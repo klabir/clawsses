@@ -59,8 +59,8 @@ class OpenClawClient(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
+    private val chatStore = BoundedChatStore()
+    val chatMessages: StateFlow<List<ChatMessage>> = chatStore.messages
 
     private val _events = MutableSharedFlow<OpenClawEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<OpenClawEvent> = _events.asSharedFlow()
@@ -888,14 +888,14 @@ class OpenClawClient(
                     }
                     val hasMore = (messagesArray?.size() ?: 0) >= 50
                     Log.d(TAG, "Loaded ${chatMessages.size} history messages for session $key")
-                    _chatMessages.value = chatMessages
+                    val boundedHistory = chatStore.replace(chatMessages)
                     _hasMoreHistory.value = hasMore
-                    onChatHistory?.invoke(chatMessages)
+                    onChatHistory?.invoke(boundedHistory)
                 } else {
                     if (!isCurrentSessionOperation(key, operation)) return@launch
                     Log.e(TAG, "Chat history request failed: ${response.error}")
                     // Still notify with empty list so glasses clear stale messages
-                    _chatMessages.value = emptyList()
+                    chatStore.clear()
                     _hasMoreHistory.value = false
                     onChatHistory?.invoke(emptyList())
                 }
@@ -903,7 +903,7 @@ class OpenClawClient(
                 if (!isCurrentSessionOperation(key, operation)) return@launch
                 Log.e(TAG, "Error loading session history for $key", e)
                 // Still notify with empty list so glasses clear stale messages
-                _chatMessages.value = emptyList()
+                chatStore.clear()
                 _hasMoreHistory.value = false
                 onChatHistory?.invoke(emptyList())
             }
@@ -925,7 +925,7 @@ class OpenClawClient(
         scope.launch {
             val key = _currentSessionKey.value ?: "main"
             val operation = sessionOperationEpoch.current()
-            val existingMessages = _chatMessages.value
+            val existingMessages = chatStore.value()
             val oldCount = existingMessages.size
 
             try {
@@ -1012,7 +1012,7 @@ class OpenClawClient(
 
                     // Combined: new older messages + existing (with stable IDs)
                     val combined = olderMessages + existingMessages
-                    _chatMessages.value = combined
+                    val boundedCombined = chatStore.replace(combined)
 
                     // Did we get everything the gateway has?
                     // Use the raw count (including system messages) vs the limit we sent,
@@ -1020,7 +1020,7 @@ class OpenClawClient(
                     val hasMore = totalReturnedByGateway >= requestedLimit
                     _hasMoreHistory.value = hasMore
 
-                    Log.d(TAG, "Prepended $newOlderCount older messages (total=${combined.size}, hasMore=$hasMore)")
+                    Log.d(TAG, "Prepended $newOlderCount older messages (total=${boundedCombined.size}, hasMore=$hasMore)")
                     _isLoadingMoreHistory.value = false
                     onMoreHistoryLoaded?.invoke(newOlderCount, hasMore)
                 } else {
@@ -1480,7 +1480,7 @@ class OpenClawClient(
     private fun activateSession(sessionKey: String): Long {
         val operation = sessionOperationEpoch.begin()
         _currentSessionKey.value = sessionKey
-        _chatMessages.value = emptyList()
+        chatStore.clear()
         currentHistoryLimit = 50
         _hasMoreHistory.value = true
         _isLoadingMoreHistory.value = false
@@ -1503,34 +1503,17 @@ class OpenClawClient(
     }
 
     private fun addChatMessage(message: ChatMessage) {
-        val current = _chatMessages.value.toMutableList()
-        current.add(message)
-        _chatMessages.value = current
+        chatStore.add(message)
     }
 
     /** Update existing message by id or add if not found */
     private fun updateOrAddChatMessage(message: ChatMessage) {
-        val current = _chatMessages.value.toMutableList()
-        val index = current.indexOfFirst { it.id == message.id }
-        if (index >= 0) {
-            current[index] = message
-        } else {
-            current.add(message)
-        }
-        _chatMessages.value = current
+        chatStore.upsertCompleted(message)
     }
 
     /** Update or insert a streaming assistant message in the chat list */
     private fun updateStreamingMessage(msgId: String, fullText: String) {
-        val current = _chatMessages.value.toMutableList()
-        val index = current.indexOfFirst { it.id == msgId }
-        val msg = ChatMessage(id = msgId, role = "assistant", content = fullText)
-        if (index >= 0) {
-            current[index] = msg
-        } else {
-            current.add(msg)
-        }
-        _chatMessages.value = current
+        chatStore.updateStreaming(msgId, fullText)
     }
 
     private fun notifyConnectionUpdate(connected: Boolean, sessionId: String? = null) {

@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 1.3.79 (build 88)
+
+### Changed
+
+- Route Phone chat history, local echoes, and completed assistant messages through one synchronized bounded store.
+- Keep the active assistant stream as a single replaceable tail until finalization instead of repeatedly searching and mutating durable history.
+
+### Fixed
+
+- Bound retained chat state to 500 messages, four attachments per message, and 16 MiB of decoded attachment data.
+- Discard stale streaming tails atomically when a session or history snapshot is replaced.
+
+### Added
+
+- Add regression coverage for message eviction, attachment budgets, streaming finalization, and history replacement.
+
 ## 1.3.78 (build 87)
 
 ### Changed
