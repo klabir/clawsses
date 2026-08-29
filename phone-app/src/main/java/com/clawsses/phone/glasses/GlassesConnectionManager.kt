@@ -264,6 +264,9 @@ class GlassesConnectionManager(private val context: Context) {
             wakeSignalManager.handleGlassesActivity()
             onAiExit?.invoke()
         }
+        RokidSdkManager.onAudioTransportActivity = {
+            wakeSignalManager.handleGlassesAudioActivity()
+        }
     }
 
     private val scanCallback = object : ScanCallback() {

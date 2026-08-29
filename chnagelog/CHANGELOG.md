@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## 1.3.92 (build 101)
+
+### Changed
+
+- Keep the Rokid display and CXR input path awake with a 20-second hardware timeout refresh while glasses Talk Mode is explicitly enabled.
+- Preserve normal battery-saving standby whenever glasses Talk Mode is disabled or the glasses disconnect.
+
+### Fixed
+
+- Prevent firmware 1.24 from entering a 30-second sleep state in Talk Mode where neither the AI key nor wake word can revive Clawsses without pairing mode.
+
+## 1.3.91 (build 100)
+
+### Changed
+
+- Treat direct CXR microphone packets as rate-limited proof that the glasses are awake.
+- Refresh Rokid's hardware display timeout during active direct-audio capture without issuing a wake call for every packet.
+
+### Fixed
+
+- Prevent the 25-second inactivity detector from pausing Talk Mode while microphone audio is still arriving from the glasses.
+- Prevent active AI capture from falling into a false standby state that previously required renewed Rokid discoverability to recover.
+
+## 1.3.90 (build 99)
+
+### Changed
+
+- Route HUD `start_voice` commands and Rokid AI callbacks through one process-scoped activation gate before either path can acquire the audio session.
+- Keep HUD recovery armed across the vendor's intermediate foreground callback while an AI scene is active.
+
+### Fixed
+
+- Prevent one physical wake/AI gesture from closing and immediately reopening the direct glasses microphone stream.
+- Recover the Clawsses HUD once after a matching AI scene exits, while ignoring unrelated launcher visits and stray exit callbacks.
+
 ## 1.3.89 (build 98)
 
 ### Changed

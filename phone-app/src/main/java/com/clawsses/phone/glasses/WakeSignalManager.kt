@@ -40,6 +40,7 @@ class WakeSignalManager(
     private val monotonicClock: () -> Long = { SystemClock.elapsedRealtime() },
     private val wakeAckTimeoutMs: Long = WAKE_ACK_TIMEOUT_MS,
     private val standbyDetectionMs: Long = STANDBY_DETECTION_MS,
+    private val persistentWakeIntervalMs: Long = PERSISTENT_WAKE_INTERVAL_MS,
 ) {
     companion object {
         // Timeout waiting for wake acknowledgment
@@ -55,6 +56,15 @@ class WakeSignalManager(
         // Minimum interval between hardware wake keep-alive calls during streaming.
         // Each call resets the glasses' 30s screen-off timeout via CXR SDK.
         private const val WAKE_KEEPALIVE_INTERVAL_MS = 5_000L
+
+        // Direct CXR audio arrives in many small packets. Treat it as confirmed glasses activity,
+        // but do not restart the standby timer or touch the vendor wake API for every packet.
+        private const val AUDIO_ACTIVITY_INTERVAL_MS = 5_000L
+
+        // Firmware 1.24 can enter a display/radio sleep state that does not forward the AI key or
+        // wake word. While the user explicitly enables glasses Talk Mode, refresh the vendor
+        // display timeout before it expires. Normal idle operation still uses standby.
+        private const val PERSISTENT_WAKE_INTERVAL_MS = 20_000L
     }
 
     /**
@@ -85,6 +95,9 @@ class WakeSignalManager(
     // Track last wake signal time to avoid spam
     private var lastWakeSignalTime = 0L
 
+    // Track the last direct-audio activity pulse separately from ordinary HUD traffic.
+    private var lastAudioActivityTime = 0L
+
     // Track streaming state - if actively streaming, glasses should be awake
     private var isStreaming = false
 
@@ -93,6 +106,11 @@ class WakeSignalManager(
 
     // Standby detection timer — fires STANDBY_DETECTION_MS after last confirmed activity
     private var standbyTimerJob: Job? = null
+
+    // Explicit Talk Mode keep-awake policy. It is active only while requested and connected.
+    private var persistentWakeRequested = false
+    private var glassesConnected = false
+    private var persistentWakeJob: Job? = null
 
     // Feature toggle
     private var _enabled = MutableStateFlow(true)
@@ -268,15 +286,41 @@ class WakeSignalManager(
     }
 
     /**
+     * Handle proof-of-life from the direct CXR microphone stream.
+     *
+     * Audio packets prove that the glasses are awake even when no custom HUD command is sent.
+     * Rate-limiting keeps this high-frequency path from creating a coroutine/job per packet while
+     * still resetting both Clawsses' 25s standby detector and Rokid's 30s display timeout.
+     */
+    fun handleGlassesAudioActivity() {
+        val now = monotonicClock()
+        if (lastAudioActivityTime != 0L &&
+            now - lastAudioActivityTime < AUDIO_ACTIVITY_INTERVAL_MS
+        ) return
+
+        lastAudioActivityTime = now
+        handleGlassesActivity()
+        if (_enabled.value && now - lastHardwareWakeTime >= WAKE_KEEPALIVE_INTERVAL_MS) {
+            val woke = wakeHardwareDisplay()
+            lastHardwareWakeTime = now
+            logger(WakeLogLevel.DEBUG, "Audio keep-alive: hardware wake=$woke")
+        }
+    }
+
+    /**
      * Notify that glasses has disconnected.
      * Reset state to unknown.
      */
     fun handleGlassesDisconnected() {
+        glassesConnected = false
+        persistentWakeJob?.cancel()
+        persistentWakeJob = null
         _wakeState.value = WakeState.Unknown
         setDeliveryAllowed(false)
         wakeTimeoutJob?.cancel()
         standbyTimerJob?.cancel()
         lastConfirmedActivityTime = 0
+        lastAudioActivityTime = 0L
         // The process transport retains non-transient messages for reconnect.
         logger(WakeLogLevel.DEBUG, "Glasses disconnected, state reset to Unknown")
     }
@@ -286,19 +330,70 @@ class WakeSignalManager(
      * Reset to awake state and flush buffer.
      */
     fun handleGlassesConnected() {
+        glassesConnected = true
         _wakeState.value = WakeState.Awake
         setDeliveryAllowed(true)
         lastConfirmedActivityTime = monotonicClock()
         lastHardwareWakeTime = monotonicClock()
+        lastAudioActivityTime = 0L
         wakeTimeoutJob?.cancel()
-        resetStandbyTimer()
+        if (persistentWakeRequested) {
+            startPersistentWakeLoop()
+        } else {
+            resetStandbyTimer()
+        }
 
+    }
+
+    /**
+     * Keep the Rokid display/CXR input path awake while glasses Talk Mode is explicitly enabled.
+     * Firmware 1.24 otherwise stops forwarding AI-key and wake-word events after its 30s timeout.
+     */
+    fun setPersistentWakeEnabled(enabled: Boolean) {
+        if (persistentWakeRequested == enabled) {
+            if (enabled && glassesConnected) startPersistentWakeLoop()
+            return
+        }
+
+        persistentWakeRequested = enabled
+        if (enabled) {
+            standbyTimerJob?.cancel()
+            if (glassesConnected) {
+                _wakeState.value = WakeState.Awake
+                setDeliveryAllowed(true)
+                startPersistentWakeLoop()
+            }
+        } else {
+            persistentWakeJob?.cancel()
+            persistentWakeJob = null
+            if (glassesConnected && _wakeState.value is WakeState.Awake) resetStandbyTimer()
+        }
+        logger(WakeLogLevel.INFO, "Persistent glasses wake ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    private fun startPersistentWakeLoop() {
+        if (!persistentWakeRequested || !glassesConnected || persistentWakeJob?.isActive == true) return
+        persistentWakeJob = scope.launch {
+            while (isActive && persistentWakeRequested && glassesConnected) {
+                delay(persistentWakeIntervalMs)
+                if (!persistentWakeRequested || !glassesConnected) break
+                val woke = wakeHardwareDisplay()
+                lastHardwareWakeTime = monotonicClock()
+                logger(WakeLogLevel.DEBUG, "Talk Mode keep-alive: hardware wake=$woke")
+                if (woke) {
+                    lastConfirmedActivityTime = lastHardwareWakeTime
+                    _wakeState.value = WakeState.Awake
+                    setDeliveryAllowed(true)
+                }
+            }
+        }
     }
 
     /** Stop timers and buffered work owned by a disposed UI connection manager. */
     fun dispose() {
         wakeTimeoutJob?.cancel()
         standbyTimerJob?.cancel()
+        persistentWakeJob?.cancel()
         scope.cancel()
     }
 
@@ -361,6 +456,7 @@ class WakeSignalManager(
     private fun resetStandbyTimer() {
         standbyTimerJob?.cancel()
         if (!_enabled.value) return
+        if (persistentWakeRequested && glassesConnected) return
         standbyTimerJob = scope.launch {
             delay(standbyDetectionMs)
             if (_enabled.value && _wakeState.value is WakeState.Awake) {
@@ -381,5 +477,6 @@ class WakeSignalManager(
         scope.cancel()
         wakeTimeoutJob?.cancel()
         standbyTimerJob?.cancel()
+        persistentWakeJob?.cancel()
     }
 }

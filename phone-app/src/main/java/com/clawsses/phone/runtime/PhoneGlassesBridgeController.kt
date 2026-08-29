@@ -1,6 +1,7 @@
 package com.clawsses.phone.runtime
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import com.rokid.cxr.client.utils.ValueUtil
@@ -92,6 +93,7 @@ class PhoneGlassesBridgeController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val started = AtomicBoolean(false)
     private val activationPending = AtomicBoolean(false)
+    private val glassesVoiceActivationGate = GlassesVoiceActivationGate()
     private val photoCaptureGate = PhotoCaptureAttemptGate()
     private val hudCardBodies = LinkedHashMap<String, String>()
     private var pendingHistoryBeforeMessageId: String? = null
@@ -295,7 +297,7 @@ class PhoneGlassesBridgeController(
     }
 
     private fun wireGlassesCallbacks() {
-        glassesManager.onAiKeyDown = ::activateGlassesVoice
+        glassesManager.onAiKeyDown = { activateGlassesVoice("vendor") }
         glassesManager.onAiExit = {
             Log.d(TAG, "Glasses AI scene exited; waiting for an explicit or scheduled activation")
         }
@@ -304,7 +306,11 @@ class PhoneGlassesBridgeController(
         }
     }
 
-    private fun activateGlassesVoice() {
+    private fun activateGlassesVoice(source: String) {
+        if (!glassesVoiceActivationGate.tryAccept(SystemClock.elapsedRealtime())) {
+            Log.i(TAG, "Ignoring duplicate glasses voice activation source=$source")
+            return
+        }
         if (!activationPending.compareAndSet(false, true)) return
         scope.launch {
             try {
@@ -382,17 +388,7 @@ class PhoneGlassesBridgeController(
     }
 
     private fun handleStartVoice() {
-        if (TtsPlaybackManager.isPlaybackActive() || ttsPlaybackManager.state.value.blocksVoiceCapture()) return
-        if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
-        val talk = talkModeManager.state.value
-        if (talk.enabled) {
-            talkCoordinator.startListening(
-                TalkModeSource.GLASSES,
-                talk.interruptible || ttsPlaybackManager.state.value.blocksVoiceCapture(),
-            )
-        } else {
-            stagedVoiceCoordinator.start()
-        }
+        activateGlassesVoice("hud")
     }
 
     private fun handleCancelVoice() {

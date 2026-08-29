@@ -70,12 +70,23 @@ class TalkRuntimeCoordinator(
         glassesManager.tryAutoReconnectOnStartup()
         restoreGatewayConnection()
         observeConnectionCatalog()
+        observeTalkWakePolicy()
         observeStandbyAndResume()
         observeGatewayReadiness()
         observeTtsPlayback()
         observeRunState()
         observeGlassesServiceLifetime()
         observeTalkStateSync()
+    }
+
+    private fun observeTalkWakePolicy() {
+        scope.launch {
+            talkModeManager.state.collect { state ->
+                glassesManager.wakeSignalManager.setPersistentWakeEnabled(
+                    state.enabled && state.source == TalkModeSource.GLASSES,
+                )
+            }
+        }
     }
 
     fun startListening(

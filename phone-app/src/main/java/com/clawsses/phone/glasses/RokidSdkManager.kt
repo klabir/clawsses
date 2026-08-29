@@ -193,6 +193,7 @@ object RokidSdkManager {
     var onAudioStreamStarted: ((codec: Int, originCodec: Int, channels: Int, streamType: String) -> Unit)? = null
     var onAudioStreamData: ((data: ByteArray, offset: Int, length: Int) -> Unit)? = null
     var onAudioStreamFinished: (() -> Unit)? = null
+    var onAudioTransportActivity: (() -> Unit)? = null
 
     // Photo capture callback
     var onPhotoResult: ((status: ValueUtil.CxrStatus?, photoBytes: ByteArray?) -> Unit)? = null
@@ -672,6 +673,7 @@ object RokidSdkManager {
                 override fun onAiExit() {
                     aiSceneRunning = false
                     Log.d(TAG, "AI scene exited on glasses")
+                    scheduleHudRecoveryAfterAiExit("event")
                     onAiExit?.invoke()
                 }
             })
@@ -684,13 +686,16 @@ object RokidSdkManager {
                     val running = sceneStatusInfo?.let {
                         it.isAiAssistRunning || it.isAiChatRunning
                     } ?: false
-                    val started = running && !aiSceneRunning
+                    val wasRunning = aiSceneRunning
+                    val started = running && !wasRunning
+                    val stopped = !running && wasRunning
                     aiSceneRunning = running
                     Log.d(TAG, "AI scene status updated: running=$running")
                     if (started) {
                         Log.i(TAG, "AI activation detected from scene status")
                         dispatchAiActivation("scene")
                     }
+                    if (stopped) scheduleHudRecoveryAfterAiExit("scene")
                 }
             })
 
@@ -701,6 +706,7 @@ object RokidSdkManager {
                     channels: Int,
                     streamType: String?,
                 ) {
+                    onAudioTransportActivity?.invoke()
                     Log.i(
                         TAG,
                         "Glasses microphone stream started: codec=$codecType, originCodec=$originCodec, channels=$channels",
@@ -720,11 +726,13 @@ object RokidSdkManager {
                     length: Int,
                 ) {
                     if (data != null && length > 0 && offset >= 0 && offset + length <= data.size) {
+                        onAudioTransportActivity?.invoke()
                         onAudioStreamData?.invoke(data, offset, length)
                     }
                 }
 
                 override fun onAudioStreamFinish(streamId: Int) {
+                    onAudioTransportActivity?.invoke()
                     Log.i(TAG, "Glasses microphone stream finished")
                     onAudioStreamFinished?.invoke()
                 }
@@ -755,7 +763,16 @@ object RokidSdkManager {
             Log.i(TAG, "Ignoring duplicate AI activation source=$source")
             return
         }
+        hudForegroundRecovery.armForAiExit(nowMs)
         onAiKeyDown?.invoke()
+    }
+
+    private fun scheduleHudRecoveryAfterAiExit(source: String) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!hudForegroundRecovery.scheduleIfArmedForAiExit(nowMs)) return
+        Log.i(TAG, "Scheduling HUD recovery after AI exit source=$source")
+        mainHandler.removeCallbacks(reopenHudRunnable)
+        mainHandler.postDelayed(reopenHudRunnable, HUD_RECOVERY_FALLBACK_DELAY_MS)
     }
 
     /**
