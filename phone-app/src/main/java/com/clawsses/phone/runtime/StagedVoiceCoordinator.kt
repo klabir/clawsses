@@ -3,6 +3,8 @@ package com.clawsses.phone.runtime
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.clawsses.phone.audio.AudioSessionCoordinator
+import com.clawsses.phone.audio.AudioSessionLease
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.voice.VoiceCommandHandler
@@ -23,12 +25,21 @@ class StagedVoiceCoordinator(
     private val voiceHandler: VoiceCommandHandler,
     private val voiceLanguageManager: VoiceLanguageManager,
     private val voiceRecognitionManager: VoiceRecognitionManager,
+    private val audioSessionCoordinator: AudioSessionCoordinator,
     private val stopCurrentTtsOutput: () -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val attemptGate = RecognitionAttemptGate()
+    private var captureLease: AudioSessionLease? = null
 
     fun start() {
+        cancel(sendIdle = false)
+        val lease = audioSessionCoordinator.beginCapture()
+        if (lease == null) {
+            sendVoiceState("error")
+            return
+        }
+        captureLease = lease
         val attemptId = attemptGate.begin()
         val languageTag = voiceLanguageManager.getActiveLanguageTag()
         val mode = if (voiceRecognitionManager.isOpenAIAvailable()) "openai" else "device"
@@ -56,6 +67,7 @@ class StagedVoiceCoordinator(
         voiceRecognitionManager.cancelListening()
         voiceRecognitionManager.onSpeechStopped = null
         voiceHandler.cancelListening()
+        releaseCaptureLease()
         RokidSdkManager.clearCommunicationDevice()
         if (sendIdle) sendVoiceState("idle")
     }
@@ -73,6 +85,7 @@ class StagedVoiceCoordinator(
 
     private fun complete(attemptId: Long, result: VoiceCommandHandler.VoiceResult) {
         if (!attemptGate.complete(attemptId)) return
+        releaseCaptureLease()
         voiceRecognitionManager.onSpeechStopped = null
         RokidSdkManager.clearCommunicationDevice()
         when (result) {
@@ -118,6 +131,11 @@ class StagedVoiceCoordinator(
                 if (mode != null) put("mode", mode)
             }.toString(),
         )
+    }
+
+    private fun releaseCaptureLease() {
+        captureLease?.let(audioSessionCoordinator::release)
+        captureLease = null
     }
 
     private fun sendVoiceResult(type: String, text: String) {

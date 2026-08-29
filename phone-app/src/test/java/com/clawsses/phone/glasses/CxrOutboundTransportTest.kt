@@ -1,6 +1,7 @@
 package com.clawsses.phone.glasses
 
 import com.google.gson.JsonParser
+import com.clawsses.shared.PeerProtocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -9,10 +10,53 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import java.util.Collections
 
 class CxrOutboundTransportTest {
+    @Test
+    fun `explicit peer contract disables inferred acknowledgments`() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val sent = Collections.synchronizedList(mutableListOf<String>())
+        val transport = CxrOutboundTransport(scope, { payload -> sent += payload; true })
+        transport.setPeerContract(
+            versionCode = 93,
+            protocolVersion = PeerProtocol.CURRENT_VERSION,
+            capabilities = emptySet(),
+        )
+        transport.setConnected(true)
+
+        transport.enqueue("""{"type":"chat_stream_end","id":"explicit"}""", true)
+        withTimeout(1_000L) { while (sent.isEmpty()) delay(5L) }
+
+        assertFalse(JsonParser.parseString(sent.single()).asJsonObject.has("_tx"))
+        transport.cleanup()
+        scope.cancel()
+    }
+
+    @Test
+    fun `legacy peer keeps build based acknowledgment compatibility`() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val sent = Collections.synchronizedList(mutableListOf<String>())
+        val transport = CxrOutboundTransport(scope, { payload -> sent += payload; true })
+        transport.setPeerContract(
+            versionCode = CxrOutboundTransport.ACK_PROTOCOL_BUILD,
+            protocolVersion = null,
+            capabilities = emptySet(),
+        )
+        transport.setConnected(true)
+
+        transport.enqueue("""{"type":"chat_stream_end","id":"legacy"}""", true)
+        withTimeout(1_000L) { while (sent.isEmpty()) delay(5L) }
+        val transactionId = JsonParser.parseString(sent.first()).asJsonObject.get("_tx").asString
+        transport.handleAck(transactionId)
+
+        assertTrue(transactionId.isNotBlank())
+        transport.cleanup()
+        scope.cancel()
+    }
+
     @Test
     fun `disconnect while awaiting ack does not terminate worker`() = runBlocking {
         val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -22,7 +66,11 @@ class CxrOutboundTransportTest {
             sendDirect = { payload -> sent += payload; true },
             ackTimeoutMs = 2_000L,
         )
-        transport.setPeerBuild(CxrOutboundTransport.ACK_PROTOCOL_BUILD)
+        transport.setPeerContract(
+            CxrOutboundTransport.ACK_PROTOCOL_BUILD,
+            PeerProtocol.CURRENT_VERSION,
+            setOf(PeerProtocol.TRANSPORT_ACK),
+        )
         transport.setConnected(true)
 
         transport.enqueue("""{"type":"chat_stream_end","id":"first"}""", bypassWakeGate = true)

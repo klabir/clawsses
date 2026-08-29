@@ -34,6 +34,7 @@ import com.clawsses.glasses.input.ModelPickerMove
 import com.clawsses.glasses.input.ModelPickerNavigation
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.state.HudStateEvent
+import com.clawsses.glasses.state.HudHistorySnapshotAssembler
 import com.clawsses.glasses.state.HudStateReducer
 import com.clawsses.glasses.ui.AgentState
 import com.clawsses.glasses.ui.AgentProgressDisplay
@@ -63,6 +64,7 @@ import com.clawsses.glasses.ui.visibleMoreMenuItems
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesStateRequest
+import com.clawsses.shared.PeerProtocol
 import com.clawsses.shared.VisionCommands
 import com.clawsses.shared.TtsVoiceCommands
 import kotlinx.coroutines.Job
@@ -136,10 +138,7 @@ class HudActivity : ComponentActivity() {
 
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
     // from visible HUD state and swap it in only after the matching end marker arrives.
-    private var pendingHistorySnapshotId: String? = null
-    private var pendingHistoryHasMore = false
-    private var pendingHistoryIsLoadMore = false
-    private val pendingHistoryMessages = linkedMapOf<String, PendingHistoryMessage>()
+    private val historySnapshotAssembler = HudHistorySnapshotAssembler()
     private val processedTransportTransactions = ArrayDeque<String>()
 
     // Coroutine to clear newPrependCount after fade-in animations complete
@@ -152,11 +151,6 @@ class HudActivity : ComponentActivity() {
     // Wake signal handling
     private var clearWakeNotificationJob: Job? = null
     private var cardExpiryJob: Job? = null
-
-    private data class PendingHistoryMessage(
-        val role: String,
-        val content: StringBuilder = StringBuilder(),
-    )
 
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -385,6 +379,8 @@ class HudActivity : ComponentActivity() {
             GlassesStateRequest(
                 versionName = BuildConfig.VERSION_NAME,
                 versionCode = BuildConfig.VERSION_CODE,
+                protocolVersion = PeerProtocol.CURRENT_VERSION,
+                capabilities = PeerProtocol.HUD_CAPABILITIES,
             ).toJson()
         )
     }
@@ -1710,41 +1706,41 @@ class HudActivity : ComponentActivity() {
 
                 "chat_history_begin" -> {
                     clearStreamingMessage()
-                    pendingHistorySnapshotId = msg.optString("s")
-                    pendingHistoryHasMore = msg.optBoolean("hasMore", false)
-                    pendingHistoryIsLoadMore = msg.optBoolean("isLoadMore", false)
-                    pendingHistoryMessages.clear()
+                    historySnapshotAssembler.begin(
+                        snapshotId = msg.optString("s"),
+                        isLoadMore = msg.optBoolean("isLoadMore", false),
+                        hasMore = msg.optBoolean("hasMore", false),
+                    )
                     Log.d(GlassesApp.TAG, "History snapshot started")
                 }
 
                 "chat_history_chunk" -> {
                     val snapshotId = msg.optString("s")
-                    if (snapshotId != pendingHistorySnapshotId) {
-                        Log.w(GlassesApp.TAG, "Ignored stale history chunk")
-                    } else {
-                        val id = msg.optString("i")
-                        val role = when (msg.optString("r")) {
+                    val accepted = historySnapshotAssembler.append(
+                        snapshotId = snapshotId,
+                        id = msg.optString("i"),
+                        role = when (msg.optString("r")) {
                             "u" -> "user"
-                            "a" -> "assistant"
                             else -> "assistant"
-                        }
-                        pendingHistoryMessages
-                            .getOrPut(id) { PendingHistoryMessage(role) }
-                            .content
-                            .append(msg.optString("c"))
+                        },
+                        content = msg.optString("c"),
+                    )
+                    if (!accepted) {
+                        Log.w(GlassesApp.TAG, "Ignored stale history chunk")
                     }
                 }
 
                 "chat_history_end" -> {
                     val snapshotId = msg.optString("s")
-                    if (snapshotId != pendingHistorySnapshotId) {
+                    val snapshot = historySnapshotAssembler.finish(snapshotId)
+                    if (snapshot == null) {
                         Log.w(GlassesApp.TAG, "Ignored stale history end")
                     } else {
-                        val messages = pendingHistoryMessages.map { (id, pending) ->
+                        val messages = snapshot.messages.map { message ->
                             DisplayMessage(
-                                id = id,
-                                role = pending.role,
-                                content = unwrapContent(pending.content.toString()),
+                                id = message.id,
+                                role = message.role,
+                                content = unwrapContent(message.content),
                                 isStreaming = false,
                             )
                         }
@@ -1752,13 +1748,10 @@ class HudActivity : ComponentActivity() {
                             hudState.value,
                             HudStateEvent.HistoryLoaded(
                                 messages = messages,
-                                isLoadMore = pendingHistoryIsLoadMore,
-                                hasMore = pendingHistoryHasMore,
+                                isLoadMore = snapshot.isLoadMore,
+                                hasMore = snapshot.hasMore,
                             ),
                         ).state
-                        pendingHistorySnapshotId = null
-                        pendingHistoryIsLoadMore = false
-                        pendingHistoryMessages.clear()
                         Log.d(GlassesApp.TAG, "Loaded complete chunked history (${messages.size} messages)")
                     }
                 }
@@ -2277,37 +2270,37 @@ class HudActivity : ComponentActivity() {
             }
             is PhoneHudMessage.HistoryBegin -> {
                 clearStreamingMessage()
-                pendingHistorySnapshotId = message.snapshotId
-                pendingHistoryHasMore = message.hasMore
-                pendingHistoryIsLoadMore = message.isLoadMore
-                pendingHistoryMessages.clear()
+                historySnapshotAssembler.begin(
+                    message.snapshotId,
+                    message.isLoadMore,
+                    message.hasMore,
+                )
             }
             is PhoneHudMessage.HistoryChunk -> {
-                if (message.snapshotId != pendingHistorySnapshotId) {
+                if (!historySnapshotAssembler.append(
+                        message.snapshotId,
+                        message.id,
+                        message.role,
+                        message.content,
+                    )
+                ) {
                     Log.w(GlassesApp.TAG, "Ignored stale history chunk")
-                } else {
-                    pendingHistoryMessages
-                        .getOrPut(message.id) { PendingHistoryMessage(message.role) }
-                        .content
-                        .append(message.content)
                 }
             }
             is PhoneHudMessage.HistoryEnd -> {
-                if (message.snapshotId != pendingHistorySnapshotId) {
+                val snapshot = historySnapshotAssembler.finish(message.snapshotId)
+                if (snapshot == null) {
                     Log.w(GlassesApp.TAG, "Ignored stale history end")
                 } else {
-                    val messages = pendingHistoryMessages.map { (id, pending) ->
+                    val messages = snapshot.messages.map { assembled ->
                         DisplayMessage(
-                            id = id,
-                            role = pending.role,
-                            content = unwrapContent(pending.content.toString()),
+                            id = assembled.id,
+                            role = assembled.role,
+                            content = unwrapContent(assembled.content),
                             isStreaming = false,
                         )
                     }
-                    applyTypedHistory(messages, pendingHistoryIsLoadMore, pendingHistoryHasMore)
-                    pendingHistorySnapshotId = null
-                    pendingHistoryIsLoadMore = false
-                    pendingHistoryMessages.clear()
+                    applyTypedHistory(messages, snapshot.isLoadMore, snapshot.hasMore)
                 }
             }
             is PhoneHudMessage.AgentPhase -> {
@@ -2372,6 +2365,14 @@ class HudActivity : ComponentActivity() {
                     hudState.value,
                     HudStateEvent.RunChanged(message.state, message.canAbort),
                 ).state
+            }
+            is PhoneHudMessage.PeerState -> {
+                Log.i(
+                    GlassesApp.TAG,
+                    "Phone peer build=${message.versionCode}, protocol=${message.protocolVersion}, " +
+                        "compatibility=${PeerProtocol.compatibility(message.protocolVersion)}, " +
+                        "capabilities=${message.capabilities.sorted().joinToString()}",
+                )
             }
         }
     }

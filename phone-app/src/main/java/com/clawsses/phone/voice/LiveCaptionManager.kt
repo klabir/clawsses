@@ -1,6 +1,8 @@
 package com.clawsses.phone.voice
 
 import android.content.Context
+import com.clawsses.phone.audio.AudioSessionCoordinator
+import com.clawsses.phone.audio.AudioSessionLease
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,7 +22,10 @@ data class LiveCaptionState(
     val error: String? = null,
 )
 
-class LiveCaptionManager(context: Context) {
+class LiveCaptionManager(
+    context: Context,
+    private val audioSessionCoordinator: AudioSessionCoordinator,
+) {
     private val recognition = VoiceRecognitionManager(context)
     private val translator = OpenAiTranslationClient()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -32,9 +37,16 @@ class LiveCaptionManager(context: Context) {
     private var sourceLanguage: String? = null
     private var targetLanguage: String = "English"
     private var translate: Boolean = false
+    private var captureLease: AudioSessionLease? = null
 
     fun start(sourceLanguage: String?, targetLanguage: String, translate: Boolean) {
         stop()
+        val lease = audioSessionCoordinator.beginCapture()
+        if (lease == null) {
+            mutableState.value = LiveCaptionState(error = "Audio input is busy")
+            return
+        }
+        captureLease = lease
         generation += 1
         this.sourceLanguage = sourceLanguage
         this.targetLanguage = targetLanguage.ifBlank { "English" }
@@ -63,11 +75,16 @@ class LiveCaptionManager(context: Context) {
         recognition.stopListening()
         recognition.onPartialResult = null
         recognition.onSpeechStopped = null
+        captureLease?.let(audioSessionCoordinator::release)
+        captureLease = null
         mutableState.value = LiveCaptionState(enabled = false)
     }
 
     private fun startCycle(activeGeneration: Long) {
-        if (!mutableState.value.enabled || generation != activeGeneration) return
+        val lease = captureLease
+        if (!mutableState.value.enabled || generation != activeGeneration ||
+            lease == null || !audioSessionCoordinator.isCurrent(lease)
+        ) return
         recognition.onPartialResult = { partial ->
             if (generation == activeGeneration) {
                 mutableState.value = mutableState.value.copy(

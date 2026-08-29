@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import java.io.File
 import java.io.FileOutputStream
@@ -41,6 +42,7 @@ class ApkInstaller(
         private const val DEFAULT_ADB_PORT = 5555
         private const val ADB_OPERATION_TIMEOUT_MS = 60_000L
         private const val PEER_HANDSHAKE_TIMEOUT_MS = 60_000L
+        private const val KEY_PENDING_PEER_BUILD = "pending_peer_build"
     }
 
     /**
@@ -61,6 +63,12 @@ class ApkInstaller(
         object InitializingWifiHotspot : InstallState()
         object AwaitingHiRokidAuthorization : InstallState()
         data class ConnectingHiRokid(val message: String) : InstallState()
+        data class AwaitingPeerOwnership(val expectedBuild: Int) : InstallState()
+        data class VerifyingPeer(val expectedBuild: Int) : InstallState()
+        data class InstalledPendingVerification(
+            val expectedBuild: Int,
+            val message: String,
+        ) : InstallState()
         object PreparingApk : InstallState()
         data class Uploading(val message: String = "Uploading APK...", val progress: Int = -1) : InstallState()
         data class Installing(val message: String = "Installing...") : InstallState()
@@ -68,7 +76,16 @@ class ApkInstaller(
         data class Error(val message: String, val canRetry: Boolean = true) : InstallState()
     }
 
-    private val _installState = MutableStateFlow<InstallState>(InstallState.Idle)
+    private val installerPreferences = context.getSharedPreferences(
+        "clawsses_installer_state",
+        Context.MODE_PRIVATE,
+    )
+    private val restoredPendingBuild = installerPreferences
+        .getInt(KEY_PENDING_PEER_BUILD, 0)
+        .takeIf { it > 0 }
+    private val _installState = MutableStateFlow<InstallState>(
+        restoredPendingBuild?.let(::pendingVerificationState) ?: InstallState.Idle,
+    )
     val installState: StateFlow<InstallState> = _installState.asStateFlow()
 
     private val _lastError = MutableStateFlow<String?>(null)
@@ -77,6 +94,18 @@ class ApkInstaller(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var installJob: Job? = null
     private val hiRokidInstaller = HiRokidInstaller(context, glassesManager)
+
+    init {
+        scope.launch {
+            glassesManager.peerBuild.filterNotNull().collect { peerBuild ->
+                val expectedBuild = pendingPeerBuild() ?: return@collect
+                val gate = PeerInstallVerification(expectedBuild)
+                if (gate.observe(peerBuild) == PeerVerificationResult.VERIFIED) {
+                    markPeerVerified(expectedBuild)
+                }
+            }
+        }
+    }
 
     /** Activity-owned launcher; the authorization token is returned directly and never persisted. */
     var launchHiRokidAuthorization: ((Intent) -> Unit)? = null
@@ -285,12 +314,15 @@ class ApkInstaller(
         if (_installState.value !is InstallState.AwaitingHiRokidAuthorization) return
         val token = hiRokidInstaller.parseAuthorizationResult(resultCode, data)
         if (token == null) {
-            _installState.value = InstallState.Error(
-                "Hi Rokid authorization was cancelled or denied.",
-                canRetry = true,
-            )
+            _installState.value = pendingPeerBuild()?.let(::pendingVerificationState)
+                ?: InstallState.Error(
+                    "Hi Rokid authorization was cancelled or denied.",
+                    canRetry = true,
+                )
             return
         }
+
+        clearPendingPeerBuild()
 
         GlassesConnectionService.holdWakeLock(
             context,
@@ -304,27 +336,21 @@ class ApkInstaller(
                     extractApkFromAssets()
                         ?: throw IllegalStateException("Bundled glasses APK is missing.")
                 }
-                hiRokidInstaller.install(apkFile, token) { message ->
+                val receipt = hiRokidInstaller.install(apkFile, token) { message ->
                     _installState.value = InstallState.ConnectingHiRokid(message)
                 }
-                _installState.value = InstallState.Installing(
-                    "Installed. Reconnecting to verify Build ${BuildConfig.VERSION_CODE}...",
-                )
-                withTimeout(PEER_HANDSHAKE_TIMEOUT_MS) {
-                    glassesManager.peerBuild
-                        .filter { it == BuildConfig.VERSION_CODE }
-                        .first()
-                }
-                _installState.value = InstallState.Success(
-                    "Glasses Build ${BuildConfig.VERSION_CODE} installed and verified via Hi Rokid.",
-                )
+                check(receipt.installed && receipt.opened)
+                persistPendingPeerBuild(BuildConfig.VERSION_CODE)
+                _installState.value = InstallState.AwaitingPeerOwnership(BuildConfig.VERSION_CODE)
+                verifyPendingPeerBuild()
             } catch (error: TimeoutCancellationException) {
                 _installState.value = InstallState.Error(
-                    "Hi Rokid install timed out before the Build ${BuildConfig.VERSION_CODE} handshake.",
+                    "Hi Rokid did not complete the APK installation within its time limit.",
                     canRetry = true,
                 )
             } catch (error: CancellationException) {
-                _installState.value = InstallState.Idle
+                _installState.value = pendingPeerBuild()?.let(::pendingVerificationState)
+                    ?: InstallState.Idle
             } catch (error: Exception) {
                 Log.e(TAG, "Hi Rokid installation failed", error)
                 _installState.value = InstallState.Error(formatError(error), canRetry = true)
@@ -334,6 +360,54 @@ class ApkInstaller(
                 cleanupTempApk()
             }
         }
+    }
+
+    fun retryPendingVerification() {
+        val expectedBuild = pendingPeerBuild()
+        if (expectedBuild == null) {
+            _installState.value = InstallState.Idle
+            return
+        }
+        if (installJob?.isActive == true) return
+        installJob = scope.launch { verifyPendingPeerBuild() }
+    }
+
+    private suspend fun verifyPendingPeerBuild() {
+        val expectedBuild = pendingPeerBuild() ?: return
+        _installState.value = InstallState.VerifyingPeer(expectedBuild)
+        withContext(Dispatchers.Main.immediate) {
+            glassesManager.retryReconnectNow()
+        }
+        val verified = withTimeoutOrNull(PEER_HANDSHAKE_TIMEOUT_MS) {
+            glassesManager.peerBuild
+                .filter { it == expectedBuild }
+                .first()
+        } != null
+        if (verified) {
+            markPeerVerified(expectedBuild)
+        } else {
+            _installState.value = pendingVerificationState(expectedBuild)
+        }
+    }
+
+    private fun persistPendingPeerBuild(expectedBuild: Int) {
+        installerPreferences.edit().putInt(KEY_PENDING_PEER_BUILD, expectedBuild).apply()
+    }
+
+    private fun pendingPeerBuild(): Int? = installerPreferences
+        .getInt(KEY_PENDING_PEER_BUILD, 0)
+        .takeIf { it > 0 }
+
+    private fun clearPendingPeerBuild() {
+        installerPreferences.edit().remove(KEY_PENDING_PEER_BUILD).apply()
+    }
+
+    private fun markPeerVerified(expectedBuild: Int) {
+        if (pendingPeerBuild() != expectedBuild) return
+        clearPendingPeerBuild()
+        _installState.value = InstallState.Success(
+            "Glasses Build $expectedBuild installed and verified via Hi Rokid.",
+        )
     }
 
     private suspend fun doSdkInstall() = withContext(Dispatchers.IO) {
@@ -598,14 +672,15 @@ class ApkInstaller(
         hiRokidInstaller.cancel()
         installJob?.cancel()
         installJob = null
-        _installState.value = InstallState.Idle
+        _installState.value = pendingPeerBuild()?.let(::pendingVerificationState)
+            ?: InstallState.Idle
     }
 
     /**
      * Reset state to idle.
      */
     fun resetState() {
-        _installState.value = InstallState.Idle
+        _installState.value = pendingPeerBuild()?.let(::pendingVerificationState) ?: InstallState.Idle
         _lastError.value = null
     }
 
@@ -613,7 +688,8 @@ class ApkInstaller(
         val currentState = _installState.value
         if (currentState !is InstallState.Idle &&
             currentState !is InstallState.Error &&
-            currentState !is InstallState.Success) {
+            currentState !is InstallState.Success &&
+            currentState !is InstallState.InstalledPendingVerification) {
             Log.w(TAG, "Installation already in progress: $currentState")
             return false
         }
@@ -698,4 +774,11 @@ class ApkInstaller(
         scope.cancel()
         cleanupTempApk()
     }
+
+    private fun pendingVerificationState(expectedBuild: Int) =
+        InstallState.InstalledPendingVerification(
+            expectedBuild = expectedBuild,
+            message = "Hi Rokid installed the HUD. Reconnect the glasses to verify Build $expectedBuild.",
+        )
+
 }

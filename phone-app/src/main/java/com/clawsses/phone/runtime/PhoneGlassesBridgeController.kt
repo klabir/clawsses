@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.rokid.cxr.client.utils.ValueUtil
+import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.glasses.CxrOutboundTransport
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
@@ -11,6 +12,7 @@ import com.clawsses.phone.glasses.WakeSignalManager
 import com.clawsses.phone.media.ImagePipeline
 import com.clawsses.phone.media.MediaStoreSaver
 import com.clawsses.phone.media.PendingPhotoRepository
+import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.phone.notifications.NotificationRelay
 import com.clawsses.phone.openclaw.GlassesChatHistoryPage
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -39,6 +41,9 @@ import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
 import com.clawsses.shared.LiveCaptionUpdate
 import com.clawsses.shared.ModelOperationUpdate
+import com.clawsses.shared.PeerDescriptor
+import com.clawsses.shared.PeerProtocol
+import com.clawsses.shared.PhonePeerState
 import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.SessionOperationUpdate
 import com.clawsses.shared.TtsState
@@ -75,6 +80,7 @@ class PhoneGlassesBridgeController(
     private val ttsSettingsManager: TtsSettingsManager,
     private val ttsPlaybackManager: TtsPlaybackManager,
     private val pendingPhotoRepository: PendingPhotoRepository,
+    private val chatAttachmentFileStore: ChatAttachmentFileStore,
     private val talkCoordinator: TalkRuntimeCoordinator,
     private val stagedVoiceCoordinator: StagedVoiceCoordinator,
 ) {
@@ -473,7 +479,20 @@ class PhoneGlassesBridgeController(
     }
 
     private fun handleStateRequest(command: GlassesCommand.RequestState) {
-        glassesManager.updatePeerVersion(command.versionCode?.takeIf { it >= 0 })
+        glassesManager.updatePeerDescriptor(
+            PeerDescriptor(
+                versionName = command.versionName,
+                versionCode = command.versionCode?.takeIf { it >= 0 },
+                protocolVersion = command.protocolVersion,
+                capabilities = PeerProtocol.normalizeCapabilities(command.capabilities),
+            ),
+        )
+        glassesManager.sendRawMessage(
+            PhonePeerState(
+                versionName = BuildConfig.VERSION_NAME,
+                versionCode = BuildConfig.VERSION_CODE,
+            ).toJson(),
+        )
         sendCompleteState()
         openClawClient.requestModels()
     }
@@ -558,6 +577,7 @@ class PhoneGlassesBridgeController(
         if (state == "final" && fullText != null) {
             if (talk.enabled) {
                 if (ttsSettingsManager.isEnabled.value && ttsSettingsManager.isConfigured() && fullText.isNotBlank()) {
+                    if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                     talkCoordinator.prepareTtsPlayback()
                     talkModeManager.setPhase(TalkModePhase.SPEAKING)
                     ttsPlaybackManager.onMessageComplete(fullText)
@@ -567,6 +587,7 @@ class PhoneGlassesBridgeController(
                 }
             } else {
                 if (ttsSettingsManager.isEnabled.value && ttsSettingsManager.isConfigured() && fullText.isNotBlank()) {
+                    if (liveCaptionManager.state.value.enabled) setLiveCaptionsEnabled(false)
                     talkCoordinator.prepareTtsPlayback()
                 }
                 ttsPlaybackManager.onMessageComplete(fullText)
@@ -799,7 +820,7 @@ class PhoneGlassesBridgeController(
     private fun putThumbnailAttachments(target: JSONObject, message: ChatMessage) {
         val attachments = JSONArray()
         message.attachments.take(4).forEach { attachment ->
-            val bytes = decodeBase64Bytes(attachment.base64) ?: return@forEach
+            val bytes = chatAttachmentFileStore.readBytes(attachment) ?: return@forEach
             val thumbnail = ImagePipeline.createHudThumbnail(bytes) ?: return@forEach
             attachments.put(JSONObject().apply {
                 put("type", "image")
@@ -812,11 +833,6 @@ class PhoneGlassesBridgeController(
             })
         }
         if (attachments.length() > 0) target.put("attachments", attachments)
-    }
-
-    private fun decodeBase64Bytes(encoded: String?): ByteArray? {
-        if (encoded.isNullOrBlank()) return null
-        return runCatching { Base64.decode(encoded.substringAfter(',', encoded), Base64.DEFAULT) }.getOrNull()
     }
 
     private fun LiveCaptionState.toProtocol() = LiveCaptionUpdate(

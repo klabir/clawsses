@@ -16,7 +16,12 @@ sealed interface GlassesCommand {
     data class SelectModel(val sessionKey: String, val catalog: String, val index: Int) : GlassesCommand
     data object AbortRun : GlassesCommand
     data class Slash(val command: String) : GlassesCommand
-    data class RequestState(val versionCode: Int?) : GlassesCommand
+    data class RequestState(
+        val versionCode: Int?,
+        val versionName: String? = null,
+        val protocolVersion: Int? = null,
+        val capabilities: Set<String> = emptySet(),
+    ) : GlassesCommand
     data class TtsToggle(val enabled: Boolean) : GlassesCommand
     data class TtsControl(val action: String) : GlassesCommand
     data class TalkModeToggle(val enabled: Boolean) : GlassesCommand
@@ -75,7 +80,14 @@ object GlassesCommandCodec {
         )
         "abort_run" -> success(GlassesCommand.AbortRun)
         "slash_command" -> success(GlassesCommand.Slash(json.nonBlankString("command")))
-        "request_state" -> success(GlassesCommand.RequestState(json.optionalInt("versionCode")))
+        "request_state" -> success(
+            GlassesCommand.RequestState(
+                versionCode = json.optionalInt("versionCode"),
+                versionName = json.stringOrNull("versionName"),
+                protocolVersion = json.optionalInt("protocolVersion"),
+                capabilities = PeerProtocol.normalizeCapabilities(json.optionalStringList("capabilities")),
+            ),
+        )
         "tts_toggle" -> success(GlassesCommand.TtsToggle(json.requiredBoolean("enabled")))
         "tts_control" -> success(GlassesCommand.TtsControl(json.nonBlankString("action")))
         "talk_mode_toggle" -> success(GlassesCommand.TalkModeToggle(json.requiredBoolean("enabled")))
@@ -119,6 +131,15 @@ object GlassesCommandCodec {
     private fun JsonObject.stringOrNull(name: String): String? =
         element(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
             ?.takeIf(String::isNotBlank)
+
+    private fun JsonObject.optionalStringList(name: String): List<String>? {
+        val value = element(name) ?: return null
+        if (!value.isJsonArray) throw IllegalArgumentException("$name must be an array")
+        return value.asJsonArray.map { item ->
+            item.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+                ?: throw IllegalArgumentException("$name entries must be strings")
+        }
+    }
 
     private fun JsonObject.requiredInt(name: String): Int =
         optionalInt(name) ?: throw IllegalArgumentException("$name must be an integer")

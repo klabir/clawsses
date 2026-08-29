@@ -9,6 +9,8 @@ import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.os.SystemClock
 import android.util.Log
+import com.clawsses.phone.audio.AudioSessionCoordinator
+import com.clawsses.phone.audio.AudioSessionLease
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +46,7 @@ class TtsPlaybackManager(
     private val elevenLabsClient: ElevenLabsClient,
     private val openAiClient: OpenAiTtsClient,
     private val settings: TtsSettingsManager,
+    private val audioSessionCoordinator: AudioSessionCoordinator,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val generation = AtomicLong(0)
@@ -57,6 +60,7 @@ class TtsPlaybackManager(
     private var playbackStartedGeneration = NO_GENERATION
     private var requestStartedAtMs = 0L
     private var lastText: String? = null
+    private var audioSessionLease: AudioSessionLease? = null
     @Volatile private var requireBluetoothOutput = false
 
     private val _state = MutableStateFlow(TtsPlaybackState.IDLE)
@@ -86,6 +90,15 @@ class TtsPlaybackManager(
         }
 
         stopInternal(updateState = false)
+        val lease = audioSessionCoordinator.beginPlayback {
+            scope.launch { stop() }
+        }
+        if (lease == null) {
+            Log.w(TAG, "TTS audio focus request denied")
+            _state.value = TtsPlaybackState.ERROR
+            return
+        }
+        audioSessionLease = lease
         playbackActive.set(true)
         lastText = normalized
         _canReplay.value = true
@@ -478,6 +491,7 @@ class TtsPlaybackManager(
         completedSynthesisGeneration = NO_GENERATION
         playbackStartedGeneration = NO_GENERATION
         _state.value = TtsPlaybackState.IDLE
+        releaseAudioSession()
         Log.i(TAG, "TTS playback completed")
     }
 
@@ -490,6 +504,7 @@ class TtsPlaybackManager(
         releasePlayer()
         releaseAudioTrack()
         deleteAllTempFiles()
+        releaseAudioSession()
         _state.value = TtsPlaybackState.ERROR
     }
     /** Keep glasses speech on Rokid's communication channel; Android resamples 24 kHz PCM for SCO. */
@@ -524,7 +539,13 @@ class TtsPlaybackManager(
         releasePlayer()
         releaseAudioTrack()
         deleteAllTempFiles()
+        releaseAudioSession()
         if (updateState) _state.value = TtsPlaybackState.IDLE
+    }
+
+    private fun releaseAudioSession() {
+        audioSessionLease?.let(audioSessionCoordinator::release)
+        audioSessionLease = null
     }
 
     private fun releasePlayer() {

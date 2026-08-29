@@ -2,7 +2,11 @@ import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
@@ -29,18 +33,56 @@ abstract class VerifyReleaseExcludesDebugTransportTask : DefaultTask() {
 
     @TaskAction
     fun verify() {
-        val forbiddenClassPath = "com/clawsses/phone/debug/DebugGlassesServer"
+        val forbiddenClassPaths = listOf(
+            "com/clawsses/phone/debug/DebugGlassesServer",
+            "com/clawsses/phone/benchmark/",
+        )
         ZipFile(releaseApk.get().asFile).use { apk ->
-            val leakedFrom = apk.entries().asSequence()
+            val leaked = apk.entries().asSequence()
                 .filter { it.name.matches(Regex("classes\\d*\\.dex")) }
-                .firstOrNull { entry ->
+                .mapNotNull { entry ->
                     apk.getInputStream(entry).use { input ->
-                        input.readBytes().toString(Charsets.ISO_8859_1)
-                            .contains(forbiddenClassPath)
+                        val dex = input.readBytes().toString(Charsets.ISO_8859_1)
+                        forbiddenClassPaths.firstOrNull(dex::contains)?.let { entry.name to it }
                     }
+                }.firstOrNull()
+            check(leaked == null) {
+                "Release APK contains non-production class ${leaked?.second} in ${leaked?.first}"
+            }
+        }
+    }
+}
+
+abstract class VerifyPublicReleaseCredentialsTask : DefaultTask() {
+    @get:InputFile
+    abstract val releaseApk: RegularFileProperty
+
+    @get:Input
+    abstract val credentialEmbeddingEnabled: Property<Boolean>
+
+    @get:Internal
+    abstract val forbiddenCredentialValues: ListProperty<String>
+
+    @TaskAction
+    fun verify() {
+        check(!credentialEmbeddingEnabled.get()) {
+            "Public release verification cannot run with embedded Rokid credentials enabled"
+        }
+
+        val forbiddenValues = forbiddenCredentialValues.get().filter(String::isNotBlank)
+        if (forbiddenValues.isEmpty()) return
+
+        ZipFile(releaseApk.get().asFile).use { apk ->
+            val leakedValue = apk.entries().asSequence()
+                .filter { it.name.matches(Regex("classes\\d*\\.dex")) }
+                .flatMap { entry ->
+                    val dex = apk.getInputStream(entry).use { it.readBytes() }
+                        .toString(Charsets.ISO_8859_1)
+                    forbiddenValues.asSequence().map { value -> value to dex.contains(value) }
                 }
-            check(leakedFrom == null) {
-                "Release APK contains emulator-only debug transport in ${leakedFrom?.name}"
+                .firstOrNull { (_, leaked) -> leaked }
+            check(leakedValue == null) {
+                "Public release APK contains a configured private Rokid credential"
             }
         }
     }
@@ -59,6 +101,10 @@ val useDebugSigningForHardwareTest = providers
     .gradleProperty("clawsses.hardwareTestSigning")
     .map(String::toBooleanStrict)
     .orElse(false)
+val embedRokidCredentials = providers
+    .gradleProperty("clawsses.embedRokidCredentials")
+    .map(String::toBooleanStrict)
+    .orElse(useDebugSigningForHardwareTest)
 
 // Load Rokid credentials from local.properties (needed for SN verification)
 val localProperties = Properties().apply {
@@ -78,16 +124,12 @@ require(!hasRokidCredentials || (rokidClientSecret.isNotEmpty() && rokidAccessKe
 require(rokidClientSecret.isEmpty() || rokidClientSecret.replace("-", "").length == 32) {
     "rokid.clientSecret must contain 32 key characters after removing separators"
 }
-
-tasks.register("verifyPublicReleaseHasNoRokidCredentials") {
-    group = "verification"
-    description = "Fails when a public build environment embeds private Rokid credentials."
-    doLast {
-        check(!hasRokidCredentials) {
-            "Public release verification failed: the phone APK would embed private Rokid credentials"
-        }
-    }
+require(!embedRokidCredentials.get() || hasRokidCredentials) {
+    "Embedded Rokid credentials were requested, but local credentials are incomplete or missing"
 }
+
+val embeddedRokidClientSecret = if (embedRokidCredentials.get()) rokidClientSecret else ""
+val embeddedRokidAccessKey = if (embedRokidCredentials.get()) rokidAccessKey else ""
 
 android {
     namespace = "com.clawsses.phone"
@@ -102,11 +144,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Rokid credentials for SN verification during Bluetooth connection
-        // clientSecret = AES key used to decrypt snEncryptContent (from .lc file)
-        // accessKey = rokidAccount identifier
-        buildConfigField("String", "ROKID_CLIENT_SECRET", "\"$rokidClientSecret\"")
-        buildConfigField("String", "ROKID_ACCESS_KEY", "\"$rokidAccessKey\"")
+        // Public builds always receive empty values. Private hardware builds must opt in through
+        // clawsses.hardwareTestSigning or clawsses.embedRokidCredentials.
+        buildConfigField("String", "ROKID_CLIENT_SECRET", "\"$embeddedRokidClientSecret\"")
+        buildConfigField("String", "ROKID_ACCESS_KEY", "\"$embeddedRokidAccessKey\"")
     }
 
     buildTypes {
@@ -120,7 +161,12 @@ android {
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
+                *if (useDebugSigningForHardwareTest.get()) {
+                    emptyArray()
+                } else {
+                    arrayOf("proguard-public-release.pro")
+                },
             )
         }
     }
@@ -161,6 +207,9 @@ androidComponents {
                 applicationIdSuffix = ".benchmark"
             }
         }
+        extension.sourceSets.maybeCreate("benchmarkRelease").manifest.srcFile(
+            "src/benchmarkRelease/AndroidManifest.xml",
+        )
     }
 
     onVariants(selector().all()) { variant ->
@@ -295,6 +344,21 @@ val verifyReleaseExcludesDebugTransport =
         )
     }
 
+val verifyPublicReleaseHasNoRokidCredentials =
+    tasks.register<VerifyPublicReleaseCredentialsTask>("verifyPublicReleaseHasNoRokidCredentials") {
+        group = "verification"
+        description = "Fails if a public phone release embeds configured private Rokid credentials."
+        dependsOn("assembleRelease")
+        releaseApk.set(
+            layout.buildDirectory.file("outputs/apk/release/phone-app-release-unsigned.apk")
+        )
+        credentialEmbeddingEnabled.set(embedRokidCredentials)
+        forbiddenCredentialValues.set(listOf(rokidClientSecret, rokidAccessKey))
+    }
+
 tasks.named("check").configure {
     dependsOn(verifyReleaseExcludesDebugTransport)
+    if (!useDebugSigningForHardwareTest.get()) {
+        dependsOn(verifyPublicReleaseHasNoRokidCredentials)
+    }
 }

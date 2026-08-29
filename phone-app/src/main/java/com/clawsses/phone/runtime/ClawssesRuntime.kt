@@ -2,9 +2,12 @@ package com.clawsses.phone.runtime
 
 import android.content.Context
 import android.util.Log
+import com.clawsses.phone.audio.AndroidSpeechAudioFocusController
+import com.clawsses.phone.audio.AudioSessionCoordinator
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.media.PendingPhotoRepository
+import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.phone.openclaw.DeviceIdentity
 import com.clawsses.phone.openclaw.AndroidNetworkMonitor
 import com.clawsses.phone.openclaw.OpenClawClient
@@ -26,24 +29,30 @@ class ClawssesRuntime(context: Context) {
     private val appContext = context.applicationContext
 
     val glassesManager = GlassesConnectionManager(appContext)
+    val chatAttachmentFileStore = ChatAttachmentFileStore(appContext)
     val openClawClient = OpenClawClient(
         DeviceIdentity(appContext),
         AndroidNetworkMonitor(appContext),
+        chatAttachmentFileStore,
     )
     val voiceHandler = VoiceCommandHandler(appContext)
     val voiceLanguageManager = VoiceLanguageManager(appContext)
     val voiceRecognitionManager = VoiceRecognitionManager(appContext)
-    val liveCaptionManager = LiveCaptionManager(appContext)
     val talkModeManager = TalkModeManager(appContext)
     val apkInstaller = ApkInstaller(appContext, glassesManager)
     val ttsSettingsManager = TtsSettingsManager(appContext)
     val elevenLabsClient = ElevenLabsClient()
     val openAiTtsClient = OpenAiTtsClient()
+    val audioSessionCoordinator = AudioSessionCoordinator(
+        AndroidSpeechAudioFocusController(appContext),
+    )
+    val liveCaptionManager = LiveCaptionManager(appContext, audioSessionCoordinator)
     val ttsPlaybackManager = TtsPlaybackManager(
         appContext,
         elevenLabsClient,
         openAiTtsClient,
         ttsSettingsManager,
+        audioSessionCoordinator,
     )
 
     val pendingPhotoRepository = PendingPhotoRepository(appContext)
@@ -58,6 +67,7 @@ class ClawssesRuntime(context: Context) {
         voiceRecognitionManager = voiceRecognitionManager,
         talkModeManager = talkModeManager,
         ttsPlaybackManager = ttsPlaybackManager,
+        audioSessionCoordinator = audioSessionCoordinator,
         pendingPhotoRepository = pendingPhotoRepository,
     )
 
@@ -66,6 +76,7 @@ class ClawssesRuntime(context: Context) {
         voiceHandler = voiceHandler,
         voiceLanguageManager = voiceLanguageManager,
         voiceRecognitionManager = voiceRecognitionManager,
+        audioSessionCoordinator = audioSessionCoordinator,
         stopCurrentTtsOutput = talkCoordinator::stopCurrentTtsOutput,
     )
 
@@ -80,6 +91,7 @@ class ClawssesRuntime(context: Context) {
         ttsSettingsManager = ttsSettingsManager,
         ttsPlaybackManager = ttsPlaybackManager,
         pendingPhotoRepository = pendingPhotoRepository,
+        chatAttachmentFileStore = chatAttachmentFileStore,
         talkCoordinator = talkCoordinator,
         stagedVoiceCoordinator = stagedVoiceCoordinator,
     )
@@ -98,6 +110,7 @@ class ClawssesRuntime(context: Context) {
         talkCoordinator.cleanup()
         glassesManager.dispose()
         openClawClient.cleanup()
+        audioSessionCoordinator.clear()
         voiceHandler.cleanup()
         voiceRecognitionManager.cleanup()
         liveCaptionManager.cleanup()

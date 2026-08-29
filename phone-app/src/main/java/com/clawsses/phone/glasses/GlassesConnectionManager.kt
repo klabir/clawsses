@@ -10,6 +10,7 @@ import android.util.Log
 import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.debug.DebugGlassesTransport
 import com.clawsses.phone.debug.DebugGlassesTransportProvider
+import com.clawsses.shared.PeerDescriptor
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -77,6 +78,8 @@ class GlassesConnectionManager(private val context: Context) {
 
     private val _peerBuild = MutableStateFlow<Int?>(null)
     val peerBuild: StateFlow<Int?> = _peerBuild.asStateFlow()
+    private val _peerDescriptor = MutableStateFlow(PeerDescriptor())
+    val peerDescriptor: StateFlow<PeerDescriptor> = _peerDescriptor.asStateFlow()
 
     private val _lastMessages = MutableStateFlow<List<String>>(emptyList())
     val lastMessages: StateFlow<List<String>> = _lastMessages.asStateFlow()
@@ -170,6 +173,7 @@ class GlassesConnectionManager(private val context: Context) {
             _connectionState.value = ConnectionState.Disconnected
             _wifiP2PConnected.value = false
             outboundTransport.setConnected(false)
+            clearPeerDescriptor()
             // Notify wake signal manager of disconnection
             wakeSignalManager.handleGlassesDisconnected()
             Log.d(TAG, "SDK: Glasses disconnected")
@@ -509,7 +513,7 @@ class GlassesConnectionManager(private val context: Context) {
         }
         _connectionState.value = ConnectionState.Disconnected
         outboundTransport.setConnected(false)
-        _peerBuild.value = null
+        clearPeerDescriptor()
         _wifiP2PConnected.value = false
         if (stopForegroundService) {
             // Explicitly stop the foreground service on a real user disconnect.
@@ -697,6 +701,7 @@ class GlassesConnectionManager(private val context: Context) {
             onGlassesDisconnected = {
                 _connectionState.value = ConnectionState.Disconnected
                 outboundTransport.setConnected(false)
+                clearPeerDescriptor()
             }
             onMessageFromGlasses = { message ->
                 this@GlassesConnectionManager.onMessageFromGlasses?.invoke(message)
@@ -716,6 +721,7 @@ class GlassesConnectionManager(private val context: Context) {
         _debugModeEnabled.value = false
         _connectionState.value = ConnectionState.Disconnected
         outboundTransport.setConnected(false)
+        clearPeerDescriptor()
         Log.i(TAG, "Debug mode disabled")
     }
 
@@ -770,9 +776,20 @@ class GlassesConnectionManager(private val context: Context) {
     }
 
     /** Enable reliable ACK delivery only after a matching glasses build announces support. */
-    fun updatePeerVersion(versionCode: Int?) {
-        _peerBuild.value = versionCode
-        outboundTransport.setPeerBuild(versionCode)
+    fun updatePeerDescriptor(descriptor: PeerDescriptor) {
+        _peerDescriptor.value = descriptor
+        _peerBuild.value = descriptor.versionCode
+        outboundTransport.setPeerContract(
+            descriptor.versionCode,
+            descriptor.protocolVersion,
+            descriptor.capabilities,
+        )
+    }
+
+    private fun clearPeerDescriptor() {
+        _peerBuild.value = null
+        _peerDescriptor.value = PeerDescriptor()
+        outboundTransport.setPeerContract(null, null, emptySet())
     }
 
     /**

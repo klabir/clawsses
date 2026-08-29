@@ -132,7 +132,9 @@ data class ChatAttachment(
     @SerializedName("type") val type: String = "image",
     @SerializedName("mimeType") val mimeType: String? = null,
     @SerializedName("fileName") val fileName: String? = null,
-    @SerializedName("base64") val base64: String? = null
+    @SerializedName("base64") val base64: String? = null,
+    @Transient val localPath: String? = null,
+    @Transient val sizeBytes: Long? = null,
 )
 
 /**
@@ -403,6 +405,19 @@ data class GlassesStateRequest(
     @SerializedName("type") val type: String = "request_state",
     @SerializedName("versionName") val versionName: String? = null,
     @SerializedName("versionCode") val versionCode: Int? = null,
+    @SerializedName("protocolVersion") val protocolVersion: Int? = null,
+    @SerializedName("capabilities") val capabilities: List<String>? = null,
+) {
+    fun toJson(): String = gson.toJson(this)
+}
+
+/** Phone identity and explicitly supported protocol features. Older HUDs safely ignore this type. */
+data class PhonePeerState(
+    @SerializedName("type") val type: String = "peer_state",
+    @SerializedName("versionName") val versionName: String,
+    @SerializedName("versionCode") val versionCode: Int,
+    @SerializedName("protocolVersion") val protocolVersion: Int = PeerProtocol.CURRENT_VERSION,
+    @SerializedName("capabilities") val capabilities: List<String> = PeerProtocol.PHONE_CAPABILITIES,
 ) {
     fun toJson(): String = gson.toJson(this)
 }

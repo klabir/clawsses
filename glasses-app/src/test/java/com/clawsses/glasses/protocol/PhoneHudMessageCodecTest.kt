@@ -40,4 +40,15 @@ class PhoneHudMessageCodecTest {
 
         assertTrue(result is PhoneHudDecodeResult.Malformed)
     }
+
+    @Test
+    fun decodesPhonePeerContract() {
+        val result = PhoneHudMessageCodec.decode(
+            """{"type":"peer_state","versionName":"1.3.84","versionCode":93,"protocolVersion":1,"capabilities":["chunked_history","model_paging"]}""",
+        ) as PhoneHudDecodeResult.Success
+        val peer = result.envelope.message as PhoneHudMessage.PeerState
+
+        assertEquals(93, peer.versionCode)
+        assertEquals(setOf("chunked_history", "model_paging"), peer.capabilities)
+    }
 }

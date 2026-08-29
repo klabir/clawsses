@@ -2,6 +2,161 @@
 
 ## [Unreleased]
 
+## 1.3.86 (build 95)
+
+### Changed
+
+- Bind the emulator-only Phone WebSocket debug server to loopback instead of every network interface.
+- Make debug mode self-expire after 30 minutes and label that boundary explicitly in settings.
+
+### Fixed
+
+- Bound debug WebSocket handshake and frame sizes, reject unmasked client frames, and handle truncated length/mask fields safely.
+
+### Security
+
+- Prevent an explicitly enabled debug build from exposing its unauthenticated emulator transport to the LAN.
+
+## 1.3.85 (build 94)
+
+### Added
+
+- Add a bounded app-owned chat-attachment file store with content deduplication, path containment, age/size pruning, and eviction cleanup.
+- Add regression tests for file-backed decoding, oversized/external input rejection, eviction, and wire-format isolation.
+
+### Changed
+
+- Materialize gateway and locally sent image attachments at the transport boundary instead of retaining full Base64 strings in long-lived chat state.
+- Render Phone images and derive HUD thumbnails from bounded local files, while retaining legacy Base64 fallback compatibility.
+
+### Fixed
+
+- Prevent large embedded chat images from multiplying retained heap usage across history, Compose state, and HUD synchronization.
+- Ensure local attachment paths and byte metadata never enter the Phone/HUD or OpenClaw JSON protocol.
+
+## 1.3.84 (build 93)
+
+### Added
+
+- Add a bidirectional Phone/HUD protocol-version and capability handshake with bounded, validated capability names.
+- Add codec and transport regression tests for explicit capabilities, legacy peers, and future message compatibility.
+
+### Changed
+
+- Negotiate reliable transport acknowledgments from the HUD's declared capability instead of inferring support only from its build number.
+- Preserve the historical build-number fallback when an older HUD omits the new protocol contract.
+
+### Fixed
+
+- Prevent a newer or malformed peer contract from silently inheriting unsupported legacy transport behavior.
+
+## 1.3.83 (build 92)
+
+### Added
+
+- Add one process-scoped audio-session coordinator with generation-safe capture/playback leases and transient Android speech-output focus.
+- Add regression coverage for exclusive ownership, delayed lease release, denied focus, focus loss, and capture-to-playback exclusion.
+
+### Changed
+
+- Route Talk Mode, staged glasses voice, Live Captions, TTS, replay, and lifecycle cleanup through one explicit audio owner.
+- Stop Live Captions before automatic or replayed TTS instead of allowing recognition and playback to overlap.
+
+### Fixed
+
+- Stop and release TTS deterministically when Android revokes audio focus.
+- Prevent a delayed capture callback or second recognition path from releasing or replacing the current audio session.
+
+## 1.3.82 (build 91)
+
+### Added
+
+- Add production-path regression replays covering 500 parsed gateway messages, 1,000 streaming deltas, bounded Phone retention, compact CXR packets, typed HUD decoding, and lossless finalization.
+- Add interleaved history-snapshot and reconnect replacement scenarios so delayed frames and stale streaming tails remain measurable in CI.
+
+### Changed
+
+- Move multipart HUD history assembly out of `HudActivity` into one synchronized, attempt-scoped component shared by typed and compatibility paths.
+
+### Fixed
+
+- Invalidate delayed history chunks and end markers as soon as a newer snapshot begins, preventing an old response from contaminating visible HUD history.
+
+## 1.3.81 (build 90)
+
+### Added
+
+- Add an isolated benchmark-only chat workload with 500 retained messages and 1,000 incoming streaming deltas, rendered at the production coalescing cadence and measured by Android `FrameTimingMetric`.
+- Record the initial five-iteration Pixel 9 Pro reference: CPU frame time P50 3.3 ms, P90 5.9 ms, P95 6.7 ms, P99 8.3 ms; frame-overrun P95 -3.4 ms and P99 5.7 ms.
+- Add a deterministic integration budget covering gateway-history parsing, bounded retention, streaming replacement, and finalization.
+
+### Changed
+
+- Extend release artifact verification so benchmark workload code cannot leak into production Phone APKs.
+
+### Performance
+
+- Enforce a generous two-second CI ceiling for the pure 500-message/1,000-update integration workload while preserving the 500-message store limit.
+
+## 1.3.80 (build 89)
+
+### Changed
+
+- Move OpenClaw history JSON parsing, embedded-image filtering, stable identity generation, and prepend merging out of the network client.
+- Keep `OpenClawClient` responsible for transport and operation epochs while pure history components own content interpretation.
+
+### Fixed
+
+- Use one parser for initial and expanded history so supported roles, IDs, timestamps, text blocks, and attachment limits cannot drift between paths.
+
+### Added
+
+- Add regression coverage for embedded/remote images, malformed history entries, supported roles, and stable prepend merging.
+
+## 1.3.79 (build 88)
+
+### Changed
+
+- Route Phone chat history, local echoes, and completed assistant messages through one synchronized bounded store.
+- Keep the active assistant stream as a single replaceable tail until finalization instead of repeatedly searching and mutating durable history.
+
+### Fixed
+
+- Bound retained chat state to 500 messages, four attachments per message, and 16 MiB of decoded attachment data.
+- Discard stale streaming tails atomically when a session or history snapshot is replaced.
+
+### Added
+
+- Add regression coverage for message eviction, attachment budgets, streaming finalization, and history replacement.
+
+## 1.3.78 (build 87)
+
+### Changed
+
+- Separate the official Hi Rokid install receipt, CXR ownership handoff, and Clawsses peer-build verification into explicit installer phases.
+- Isolate the private CXR-L 1.1.1 service-connection compatibility lookup behind a small versioned adapter.
+
+### Fixed
+
+- Preserve a successful HUD installation as pending verification instead of reporting a false install failure when the glasses handshake is delayed.
+- Restore pending peer verification after a Phone process restart and complete it automatically when the expected HUD build reconnects.
+
+### Added
+
+- Add a manual verification retry that does not upload the APK again, plus regression tests for stale/matching builds and the reflection boundary.
+
+## 1.3.77 (build 86)
+
+### Changed
+
+- Keep Rokid credentials out of ordinary debug and release APKs unless a private hardware build explicitly opts in.
+- Strip Clawsses-owned Android log calls from public minified releases while preserving hardware-test diagnostics.
+- Run Android checks on build and refactor branches and install the declared API 35 compile platform in CI.
+
+### Added
+
+- Verify the public release artifact itself does not contain locally configured Rokid credential values.
+
 ## 1.3.76 (build 85)
 
 ### Changed

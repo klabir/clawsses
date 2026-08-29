@@ -2,6 +2,7 @@ package com.clawsses.phone.glasses
 
 import android.util.Log
 import com.clawsses.shared.CxrPayloadLimits
+import com.clawsses.shared.PeerProtocol
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CompletableDeferred
@@ -185,8 +186,13 @@ class CxrOutboundTransport(
     @Volatile private var epoch = 0L
     private val worker: Job = scope.launch { workerLoop() }
 
-    fun setPeerBuild(versionCode: Int?) {
-        acknowledgmentsSupported = versionCode != null && versionCode >= ACK_PROTOCOL_BUILD
+    fun setPeerContract(versionCode: Int?, protocolVersion: Int?, capabilities: Set<String>) {
+        acknowledgmentsSupported = PeerProtocol.supports(
+            capability = PeerProtocol.TRANSPORT_ACK,
+            protocolVersion = protocolVersion,
+            capabilities = capabilities,
+            legacyBuildSupports = versionCode != null && versionCode >= ACK_PROTOCOL_BUILD,
+        )
     }
 
     fun setConnected(value: Boolean) {

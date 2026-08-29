@@ -89,13 +89,20 @@ rokid.clientSecret=your-client-secret
 rokid.accessKey=your-access-key
 ```
 
-These are injected as `BuildConfig` fields at compile time and are required for Bluetooth pairing with the glasses.
+These values are available only to explicitly opted-in private hardware builds. Ordinary debug and
+release APKs receive empty `BuildConfig` fields even when `local.properties` contains credentials.
+The paired hardware-test release enables both data-preserving debug signing and credential embedding:
+
+```bash
+./gradlew -Pclawsses.hardwareTestSigning=true :phone-app:assembleRelease
+```
 
 > `local.properties` is git-ignored, but Rokid requires these values inside the Android client.
 > They therefore cannot be treated as confidential after compilation. APKs built with production
 > Rokid credentials are private-device artifacts and must never be published or attached to public
 > releases. Run `./gradlew :phone-app:verifyPublicReleaseHasNoRokidCredentials` in every public
-> release environment. Rotate a credential immediately after suspected APK or Logcat exposure.
+> release environment. The verification task builds and scans the public APK. Rotate a credential
+> immediately after suspected APK or Logcat exposure.
 
 ### 3. OpenClaw Gateway Setup
 

@@ -154,7 +154,7 @@ private fun DebugModeContent(state: GlassesConnectionManager.ConnectionState) {
             is GlassesConnectionManager.ConnectionState.Connecting -> "Connecting..."
             else -> "Not connected"
         },
-        subtitle = "WebSocket debug mode",
+        subtitle = "Loopback-only WebSocket debug mode (30 min)",
     )
 }
 

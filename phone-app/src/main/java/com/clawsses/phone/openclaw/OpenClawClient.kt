@@ -1,6 +1,7 @@
 package com.clawsses.phone.openclaw
 
 import android.util.Log
+import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.shared.*
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -28,6 +29,7 @@ import kotlin.random.Random
 class OpenClawClient(
     private val deviceIdentity: DeviceIdentity,
     private val networkMonitor: NetworkMonitor? = null,
+    private val attachmentFileStore: ChatAttachmentFileStore,
 ) {
 
     companion object {
@@ -59,8 +61,8 @@ class OpenClawClient(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
+    private val chatStore = BoundedChatStore(onMessagesChanged = attachmentFileStore::retainOnly)
+    val chatMessages: StateFlow<List<ChatMessage>> = chatStore.messages
 
     private val _events = MutableSharedFlow<OpenClawEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<OpenClawEvent> = _events.asSharedFlow()
@@ -333,11 +335,11 @@ class OpenClawClient(
                 // Add user message to local chat
                 val userMsgId = clientMessageId?.takeIf { it.isNotBlank() }
                     ?: UUID.randomUUID().toString()
-                val localAttachments = images.orEmpty().map { base64 ->
+                val localAttachments = images.orEmpty().mapNotNull { base64 ->
                     ChatAttachment(
                         mimeType = detectImageMimeType(base64),
                         base64 = base64
-                    )
+                    ).let(attachmentFileStore::materialize)
                 }
                 val userMsg = ChatMessage(
                     id = userMsgId,
@@ -825,77 +827,26 @@ class OpenClawClient(
                 Log.d(TAG, "Requesting chat history for session $key")
                 val response = sendRequest(OpenClawMethods.CHAT_HISTORY, params)
                 if (response.ok) {
-                    val chatMessages = mutableListOf<ChatMessage>()
                     val messagesArray = response.payload?.getAsJsonArray("messages")
                     Log.d(TAG, "Chat history response: payload keys=${response.payload?.keySet()}, messages count=${messagesArray?.size() ?: "null"}")
-
-                    if (messagesArray != null && messagesArray.size() > 0) {
-                        for ((rawIndex, element) in messagesArray.withIndex()) {
-                            try {
-                                val msgObj = element.asJsonObject
-                                val role = msgObj.get("role")?.asString ?: continue
-                                // Only show user and assistant messages
-                                if (role != "user" && role != "assistant") continue
-
-                                // content can be either a string or an array of {type,text} blocks
-                                val contentElement = msgObj.get("content")
-                                var content = ""
-                                var attachments: List<ChatAttachment> = emptyList()
-                                when {
-                                    contentElement == null -> continue
-                                    contentElement.isJsonPrimitive -> content = contentElement.asString
-                                    contentElement.isJsonArray -> {
-                                        val parsed = parseContentArray(contentElement.asJsonArray)
-                                        content = parsed.first
-                                        attachments = parsed.second
-                                    }
-                                    else -> continue
-                                }
-                                if (content.isEmpty() && attachments.isEmpty()) continue
-
-                                val timestamp = msgObj.get("timestamp")
-                                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
-                                    ?.asLong ?: 0L
-                                val explicitId = listOf("id", "messageId", "clientMessageId")
-                                    .firstNotNullOfOrNull { name ->
-                                        msgObj.get(name)?.takeIf { it.isJsonPrimitive }
-                                            ?.asString?.takeIf { it.isNotBlank() }
-                                    }
-                                val id = stableHistoryMessageId(
-                                    sessionKey = key,
-                                    explicitId = explicitId,
-                                    role = role,
-                                    content = content,
-                                    timestamp = timestamp,
-                                    tailIndex = messagesArray.size() - rawIndex - 1,
-                                )
-                                chatMessages.add(ChatMessage(
-                                    id = id,
-                                    role = role,
-                                    content = content,
-                                    timestamp = timestamp,
-                                    attachments = attachments
-                                ))
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Skipping unparseable history message", e)
-                            }
-                        }
-                    }
+                    val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
 
                     if (!isCurrentSessionOperation(key, operation)) {
                         Log.d(TAG, "Discarded stale history response for session $key")
                         return@launch
                     }
-                    val hasMore = (messagesArray?.size() ?: 0) >= 50
-                    Log.d(TAG, "Loaded ${chatMessages.size} history messages for session $key")
-                    _chatMessages.value = chatMessages
+                    val hasMore = parsedHistory.rawCount >= 50
+                    Log.d(TAG, "Loaded ${parsedHistory.messages.size} history messages for session $key")
+                    val boundedHistory = chatStore.replace(
+                        attachmentFileStore.materialize(parsedHistory.messages),
+                    )
                     _hasMoreHistory.value = hasMore
-                    onChatHistory?.invoke(chatMessages)
+                    onChatHistory?.invoke(boundedHistory)
                 } else {
                     if (!isCurrentSessionOperation(key, operation)) return@launch
                     Log.e(TAG, "Chat history request failed: ${response.error}")
                     // Still notify with empty list so glasses clear stale messages
-                    _chatMessages.value = emptyList()
+                    chatStore.clear()
                     _hasMoreHistory.value = false
                     onChatHistory?.invoke(emptyList())
                 }
@@ -903,7 +854,7 @@ class OpenClawClient(
                 if (!isCurrentSessionOperation(key, operation)) return@launch
                 Log.e(TAG, "Error loading session history for $key", e)
                 // Still notify with empty list so glasses clear stale messages
-                _chatMessages.value = emptyList()
+                chatStore.clear()
                 _hasMoreHistory.value = false
                 onChatHistory?.invoke(emptyList())
             }
@@ -925,7 +876,7 @@ class OpenClawClient(
         scope.launch {
             val key = _currentSessionKey.value ?: "main"
             val operation = sessionOperationEpoch.current()
-            val existingMessages = _chatMessages.value
+            val existingMessages = chatStore.value()
             val oldCount = existingMessages.size
 
             try {
@@ -944,85 +895,23 @@ class OpenClawClient(
                 currentHistoryLimit = requestedLimit
 
                 if (response.ok) {
-                    val rawMessages = mutableListOf<ChatMessage>()
                     val messagesArray = response.payload?.getAsJsonArray("messages")
-                    // Track total raw count (including system messages) for hasMore check
-                    val totalReturnedByGateway = messagesArray?.size() ?: 0
-
-                    if (messagesArray != null && messagesArray.size() > 0) {
-                        for ((rawIndex, element) in messagesArray.withIndex()) {
-                            try {
-                                val msgObj = element.asJsonObject
-                                val role = msgObj.get("role")?.asString ?: continue
-                                if (role != "user" && role != "assistant") continue
-
-                                val contentElement = msgObj.get("content")
-                                var content = ""
-                                var attachments: List<ChatAttachment> = emptyList()
-                                when {
-                                    contentElement == null -> continue
-                                    contentElement.isJsonPrimitive -> content = contentElement.asString
-                                    contentElement.isJsonArray -> {
-                                        val parsed = parseContentArray(contentElement.asJsonArray)
-                                        content = parsed.first
-                                        attachments = parsed.second
-                                    }
-                                    else -> continue
-                                }
-                                if (content.isEmpty() && attachments.isEmpty()) continue
-
-                                val timestamp = msgObj.get("timestamp")
-                                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
-                                    ?.asLong ?: 0L
-                                val explicitId = listOf("id", "messageId", "clientMessageId")
-                                    .firstNotNullOfOrNull { name ->
-                                        msgObj.get(name)?.takeIf { it.isJsonPrimitive }
-                                            ?.asString?.takeIf { it.isNotBlank() }
-                                    }
-                                rawMessages.add(ChatMessage(
-                                    id = stableHistoryMessageId(
-                                        sessionKey = key,
-                                        explicitId = explicitId,
-                                        role = role,
-                                        content = content,
-                                        timestamp = timestamp,
-                                        tailIndex = messagesArray.size() - rawIndex - 1,
-                                    ),
-                                    role = role,
-                                    content = content,
-                                    timestamp = timestamp,
-                                    attachments = attachments
-                                ))
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Skipping unparseable history message", e)
-                            }
-                        }
-                    }
-
-                    // The tail of rawMessages corresponds to our existing messages.
-                    // Reuse their IDs; only assign new IDs for the older prefix.
-                    val existingIds = existingMessages.mapTo(HashSet()) { it.id }
-                    val firstExistingIndex = rawMessages.indexOfFirst { it.id in existingIds }
-                    val olderMessages = when {
-                        firstExistingIndex >= 0 -> rawMessages.take(firstExistingIndex)
-                        oldCount > 0 -> rawMessages.dropLast(oldCount.coerceAtMost(rawMessages.size))
-                        else -> rawMessages
-                    }
-                    val newOlderCount = olderMessages.size
-
-                    // Combined: new older messages + existing (with stable IDs)
-                    val combined = olderMessages + existingMessages
-                    _chatMessages.value = combined
+                    val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
+                    val merge = HistoryPrependMerge.merge(
+                        attachmentFileStore.materialize(parsedHistory.messages),
+                        existingMessages,
+                    )
+                    val boundedCombined = chatStore.replace(merge.combined)
 
                     // Did we get everything the gateway has?
                     // Use the raw count (including system messages) vs the limit we sent,
                     // NOT the filtered user/assistant count which is always smaller.
-                    val hasMore = totalReturnedByGateway >= requestedLimit
+                    val hasMore = parsedHistory.rawCount >= requestedLimit
                     _hasMoreHistory.value = hasMore
 
-                    Log.d(TAG, "Prepended $newOlderCount older messages (total=${combined.size}, hasMore=$hasMore)")
+                    Log.d(TAG, "Prepended ${merge.prependedCount} older messages (total=${boundedCombined.size}, hasMore=$hasMore)")
                     _isLoadingMoreHistory.value = false
-                    onMoreHistoryLoaded?.invoke(newOlderCount, hasMore)
+                    onMoreHistoryLoaded?.invoke(merge.prependedCount, hasMore)
                 } else {
                     if (!isCurrentSessionOperation(key, operation)) return@launch
                     Log.e(TAG, "More history request failed: ${response.error}")
@@ -1480,7 +1369,7 @@ class OpenClawClient(
     private fun activateSession(sessionKey: String): Long {
         val operation = sessionOperationEpoch.begin()
         _currentSessionKey.value = sessionKey
-        _chatMessages.value = emptyList()
+        chatStore.clear()
         currentHistoryLimit = 50
         _hasMoreHistory.value = true
         _isLoadingMoreHistory.value = false
@@ -1503,34 +1392,17 @@ class OpenClawClient(
     }
 
     private fun addChatMessage(message: ChatMessage) {
-        val current = _chatMessages.value.toMutableList()
-        current.add(message)
-        _chatMessages.value = current
+        chatStore.add(message)
     }
 
     /** Update existing message by id or add if not found */
     private fun updateOrAddChatMessage(message: ChatMessage) {
-        val current = _chatMessages.value.toMutableList()
-        val index = current.indexOfFirst { it.id == message.id }
-        if (index >= 0) {
-            current[index] = message
-        } else {
-            current.add(message)
-        }
-        _chatMessages.value = current
+        chatStore.upsertCompleted(message)
     }
 
     /** Update or insert a streaming assistant message in the chat list */
     private fun updateStreamingMessage(msgId: String, fullText: String) {
-        val current = _chatMessages.value.toMutableList()
-        val index = current.indexOfFirst { it.id == msgId }
-        val msg = ChatMessage(id = msgId, role = "assistant", content = fullText)
-        if (index >= 0) {
-            current[index] = msg
-        } else {
-            current.add(msg)
-        }
-        _chatMessages.value = current
+        chatStore.updateStreaming(msgId, fullText)
     }
 
     private fun notifyConnectionUpdate(connected: Boolean, sessionId: String? = null) {
@@ -1652,57 +1524,6 @@ class OpenClawClient(
         pendingRequests.clear()
     }
 
-    /** Parse text and embedded image blocks without fetching remote image URLs. */
-    private fun parseContentArray(contentArray: JsonArray): Pair<String, List<ChatAttachment>> {
-        val text = StringBuilder()
-        val attachments = mutableListOf<ChatAttachment>()
-
-        for (element in contentArray) {
-            if (!element.isJsonObject) continue
-            val block = element.asJsonObject
-            when (block.get("type")?.asString) {
-                "text", "input_text", "output_text" -> {
-                    block.get("text")?.takeIf { it.isJsonPrimitive }?.asString?.let(text::append)
-                }
-                "image", "input_image" -> {
-                    val candidates = listOfNotNull(
-                        block.get("base64")?.takeIf { it.isJsonPrimitive }?.asString,
-                        block.get("content")?.takeIf { it.isJsonPrimitive }?.asString,
-                        block.get("url")?.takeIf { it.isJsonPrimitive }?.asString,
-                        nestedPrimitiveString(block, "data", "url"),
-                        nestedPrimitiveString(block, "image_url", "url")
-                    )
-                    val embedded = candidates.firstOrNull { value ->
-                        value.startsWith("data:image/") || !value.contains("://")
-                    } ?: continue
-                    val commaIndex = embedded.indexOf(',')
-                    val base64 = if (embedded.startsWith("data:") && commaIndex >= 0) {
-                        embedded.substring(commaIndex + 1)
-                    } else {
-                        embedded
-                    }
-                    if (base64.length > 12_000_000) continue
-                    val dataMime = embedded
-                        .takeIf { it.startsWith("data:") }
-                        ?.substringAfter("data:")
-                        ?.substringBefore(';')
-                    attachments += ChatAttachment(
-                        mimeType = block.get("mimeType")?.takeIf { it.isJsonPrimitive }?.asString
-                            ?: dataMime,
-                        fileName = block.get("fileName")?.takeIf { it.isJsonPrimitive }?.asString,
-                        base64 = base64
-                    )
-                }
-            }
-        }
-        return text.toString() to attachments
-    }
-
-    private fun nestedPrimitiveString(parent: JsonObject, objectName: String, valueName: String): String? {
-        val nested = parent.get(objectName)?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
-        return nested.get(valueName)?.takeIf { it.isJsonPrimitive }?.asString
-    }
-
     /** Detect image MIME type from base64 magic bytes. */
     private fun detectImageMimeType(base64: String): String {
         // Decode just enough bytes to check the magic header
@@ -1804,18 +1625,6 @@ internal data class ParsedModelCatalog(
     val models: List<ModelInfo>,
     val currentModel: String?,
 )
-
-internal fun stableHistoryMessageId(
-    sessionKey: String,
-    explicitId: String?,
-    role: String,
-    content: String,
-    timestamp: Long,
-    tailIndex: Int,
-): String = explicitId?.takeIf { it.isNotBlank() } ?: UUID.nameUUIDFromBytes(
-    "$sessionKey\u0000$role\u0000$timestamp\u0000$tailIndex\u0000$content"
-        .toByteArray(Charsets.UTF_8),
-).toString()
 
 internal fun parseConfiguredModels(payload: JsonObject?): List<ModelInfo> =
     payload?.getAsJsonArray("models")?.mapNotNull { element ->
