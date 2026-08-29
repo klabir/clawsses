@@ -6,6 +6,8 @@ Connect to your [OpenClaw](https://github.com/openclaw/openclaw) server 🦞 wit
   <img src="docs/images/clawsses-hero.jpg" width="700" alt="Clawsses - wearable AI on Rokid Glasses">
 </p>
 
+> **Current source release:** [Clawsses 1.3.96 / Build 105](https://github.com/klabir/clawsses/releases/tag/v1.3.96). Builds 103–105 harden HUD gesture, hardware-key, lifecycle, and reconnect orchestration and add privacy-safe runtime diagnostics with soak coverage. Public releases contain source only; APKs built with Rokid credentials are private device artifacts.
+
 <p align="center">
   <img src="docs/images/rokid-display.jpg" width="340" alt="Dual-eye monochrome display">
   <img src="docs/images/rokid-camera.jpg" width="340" alt="12MP POV camera">
@@ -22,6 +24,7 @@ Clawsses connects your Rokid glasses to an OpenClaw Gateway, via your Android ph
 - **Text-to-speech** - Hear responses through ElevenLabs or OpenAI, with stop and replay controls
 - **Run control** - See thinking/streaming status and cancel the exact active OpenClaw run
 - **Wake-on-message** - Glasses display wakes automatically when new messages arrive
+- **Deep-sleep recovery** - Detect and retry an unresponsive CXR session without deleting the Android Bluetooth bond; optional Always Ready mode trades battery life for faster availability
 - **Slash commands** - Quick access to OpenClaw commands (`/model`, `/clear`, `/status`, etc.)
 
 <p align="center">
@@ -243,6 +246,12 @@ Choose ElevenLabs or OpenAI in the phone app TTS settings, then enable voice res
 
 When new content arrives (streaming responses, proactive messages, cron notifications), the phone automatically wakes the glasses display via the CXR SDK and delivers buffered messages once the glasses acknowledge readiness. A keep-alive mechanism prevents the display from sleeping during long streaming responses.
 
+### Deep-Sleep Recovery and Always Ready
+
+Rokid firmware can put the proprietary CXR path into deep sleep even while Android still shows the glasses as paired. Clawsses detects a connected-but-unresponsive session, runs a bounded recovery sequence, and exposes an explicit retry action instead of deleting the Bluetooth bond or retrying indefinitely.
+
+If recovery asks you to wake the glasses, fold the right leg and triple-press the camera button to advertise the CXR beacon, then retry. **Settings → Glasses → Always Ready** keeps the display/CXR path refreshed independently of Talk Mode, but increases glasses battery use.
+
 ## Display
 
 The Rokid AR Lite uses JBD 0.13" micro-LED displays:
@@ -324,8 +333,10 @@ This is normal! OpenClaw requires device approval before allowing connections:
 
 ### Glasses app installation fails
 
-- Retry the installation from the phone app settings
-- If it keeps failing, unpair and re-pair the Bluetooth connection with the glasses, then try again
+- Keep the existing Android Bluetooth bond; do not unpair the glasses as the first recovery step
+- Enable and foreground Hi Rokid, fold the right leg, and triple-press the camera button to advertise the CXR beacon
+- Wait until Hi Rokid reports a live glasses connection, then retry installation from Clawsses
+- If the integrated route still fails and the standalone Rokid CXR-L installer is available, install the exact matching glasses APK through that route
 
 ### Voice recognition not working
 
