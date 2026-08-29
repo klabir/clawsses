@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.82 (build 91)
+
+### Added
+
+- Add production-path regression replays covering 500 parsed gateway messages, 1,000 streaming deltas, bounded Phone retention, compact CXR packets, typed HUD decoding, and lossless finalization.
+- Add interleaved history-snapshot and reconnect replacement scenarios so delayed frames and stale streaming tails remain measurable in CI.
+
+### Changed
+
+- Move multipart HUD history assembly out of `HudActivity` into one synchronized, attempt-scoped component shared by typed and compatibility paths.
+
+### Fixed
+
+- Invalidate delayed history chunks and end markers as soon as a newer snapshot begins, preventing an old response from contaminating visible HUD history.
+
 ## 1.3.81 (build 90)
 
 ### Added
