@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Update the README for Build 105 recovery and source-only release behavior, and redact the private gateway address from the settings screenshot.
+- Update the README for Build 105 recovery and source-only release behavior.
 
 ## 1.3.96 (build 105)
 

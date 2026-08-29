@@ -155,7 +155,7 @@ The phone app bundles the glasses APK and can push it to the glasses over WiFi P
 ### 5. Connect
 
 <p align="center">
-  <img src="docs/images/phone-settings-top-redacted.png" width="260" alt="Phone app settings - server and voice configuration">
+  <img src="docs/images/phone-settings-top.png" width="260" alt="Phone app settings - server and voice configuration">
 </p>
 
 1. Open the phone app and configure your private WSS OpenClaw Gateway host, port, and token in Settings. A Tailscale Serve hostname normally uses port `443`.
