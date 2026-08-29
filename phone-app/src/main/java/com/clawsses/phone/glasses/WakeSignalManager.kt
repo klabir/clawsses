@@ -41,6 +41,9 @@ class WakeSignalManager(
     private val wakeAckTimeoutMs: Long = WAKE_ACK_TIMEOUT_MS,
     private val standbyDetectionMs: Long = STANDBY_DETECTION_MS,
     private val persistentWakeIntervalMs: Long = PERSISTENT_WAKE_INTERVAL_MS,
+    private val onResponsiveActivity: () -> Unit = {},
+    private val onStandbyDetected: () -> Unit = {},
+    private val onWakeTimeout: () -> Unit = {},
 ) {
     companion object {
         // Timeout waiting for wake acknowledgment
@@ -107,8 +110,11 @@ class WakeSignalManager(
     // Standby detection timer — fires STANDBY_DETECTION_MS after last confirmed activity
     private var standbyTimerJob: Job? = null
 
-    // Explicit Talk Mode keep-awake policy. It is active only while requested and connected.
-    private var persistentWakeRequested = false
+    // Persistent wake is opt-in. Talk Mode and Always Ready are independent reasons.
+    private var talkModeWakeRequested = false
+    private var alwaysReadyWakeRequested = false
+    private val persistentWakeRequested: Boolean
+        get() = talkModeWakeRequested || alwaysReadyWakeRequested
     private var glassesConnected = false
     private var persistentWakeJob: Job? = null
 
@@ -248,12 +254,14 @@ class WakeSignalManager(
         if (ready) {
             _wakeState.value = WakeState.Awake
             setDeliveryAllowed(true)
+            onResponsiveActivity()
             resetStandbyTimer()
         } else {
             // Wake failed - try again after a delay
             logger(WakeLogLevel.WARN, "Wake acknowledgment indicated failure, retrying...")
             _wakeState.value = WakeState.Unknown
             setDeliveryAllowed(false)
+            onWakeTimeout()
             scope.launch {
                 delay(500)
                 if (pendingMessageCount() > 0) {
@@ -269,6 +277,7 @@ class WakeSignalManager(
      */
     fun handleGlassesActivity() {
         lastConfirmedActivityTime = monotonicClock()
+        onResponsiveActivity()
 
         // If we were in unknown or waking state, mark as awake
         when (_wakeState.value) {
@@ -350,13 +359,19 @@ class WakeSignalManager(
      * Firmware 1.24 otherwise stops forwarding AI-key and wake-word events after its 30s timeout.
      */
     fun setPersistentWakeEnabled(enabled: Boolean) {
-        if (persistentWakeRequested == enabled) {
-            if (enabled && glassesConnected) startPersistentWakeLoop()
-            return
-        }
+        if (talkModeWakeRequested == enabled) return
+        talkModeWakeRequested = enabled
+        updatePersistentWakePolicy("Talk Mode")
+    }
 
-        persistentWakeRequested = enabled
-        if (enabled) {
+    fun setAlwaysReadyEnabled(enabled: Boolean) {
+        if (alwaysReadyWakeRequested == enabled) return
+        alwaysReadyWakeRequested = enabled
+        updatePersistentWakePolicy("Always Ready")
+    }
+
+    private fun updatePersistentWakePolicy(source: String) {
+        if (persistentWakeRequested) {
             standbyTimerJob?.cancel()
             if (glassesConnected) {
                 _wakeState.value = WakeState.Awake
@@ -368,7 +383,15 @@ class WakeSignalManager(
             persistentWakeJob = null
             if (glassesConnected && _wakeState.value is WakeState.Awake) resetStandbyTimer()
         }
-        logger(WakeLogLevel.INFO, "Persistent glasses wake ${if (enabled) "enabled" else "disabled"}")
+        logger(
+            WakeLogLevel.INFO,
+            "$source wake request updated; persistent glasses wake=$persistentWakeRequested",
+        )
+    }
+
+    /** Force one bounded wake probe without changing the persistent wake policy. */
+    fun requestWakeProbe() {
+        initiateWake("manual_recovery")
     }
 
     private fun startPersistentWakeLoop() {
@@ -444,6 +467,7 @@ class WakeSignalManager(
                 logger(WakeLogLevel.WARN, "Wake acknowledgment timeout, delivering messages anyway")
                 _wakeState.value = WakeState.Unknown
                 setDeliveryAllowed(true)
+                onWakeTimeout()
             }
         }
     }
@@ -466,6 +490,7 @@ class WakeSignalManager(
                 )
                 _wakeState.value = WakeState.Unknown
                 setDeliveryAllowed(false)
+                onStandbyDetected()
             }
         }
     }

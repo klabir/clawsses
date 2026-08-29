@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.clawsses.phone.glasses.GlassesConnectionManager
+import com.clawsses.phone.glasses.GlassesRecoverySnapshot
 
 @Composable
 fun GlassesSection(
@@ -66,6 +67,10 @@ fun GlassesSection(
     cachedDeviceName: String?,
     wakeOnStreamEnabled: Boolean = true,
     onWakeOnStreamChange: (Boolean) -> Unit = {},
+    recoveryState: GlassesRecoverySnapshot = GlassesRecoverySnapshot(),
+    alwaysReadyEnabled: Boolean = false,
+    onAlwaysReadyChange: (Boolean) -> Unit = {},
+    onWakeProbe: () -> Unit = {},
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
     onSwitchToHiRokid: () -> Unit = {},
@@ -77,6 +82,14 @@ fun GlassesSection(
             .padding(horizontal = 16.dp)
             .animateContentSize(),
     ) {
+        if (recoveryState.needsPhysicalWake) {
+            DeepSleepRecoveryCard(
+                recoveryState = recoveryState,
+                onRetry = onWakeProbe,
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+
         if (debugModeEnabled) {
             DebugModeContent(state)
         } else {
@@ -110,6 +123,10 @@ fun GlassesSection(
                         cachedDeviceName = cachedDeviceName,
                         wakeOnStreamEnabled = wakeOnStreamEnabled,
                         onWakeOnStreamChange = onWakeOnStreamChange,
+                        recoveryState = recoveryState,
+                        alwaysReadyEnabled = alwaysReadyEnabled,
+                        onAlwaysReadyChange = onAlwaysReadyChange,
+                        onWakeProbe = onWakeProbe,
                         savePhotosToGallery = savePhotosToGallery,
                         onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
                         onDisconnect = onDisconnectGlasses,
@@ -314,6 +331,10 @@ private fun ConnectedContent(
     cachedDeviceName: String?,
     wakeOnStreamEnabled: Boolean,
     onWakeOnStreamChange: (Boolean) -> Unit,
+    recoveryState: GlassesRecoverySnapshot,
+    alwaysReadyEnabled: Boolean,
+    onAlwaysReadyChange: (Boolean) -> Unit,
+    onWakeProbe: () -> Unit,
     savePhotosToGallery: Boolean,
     onSavePhotosToGalleryChange: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
@@ -400,6 +421,48 @@ private fun ConnectedContent(
             )
         }
     }
+
+    Spacer(Modifier.height(12.dp))
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Always Ready", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Keep the Rokid display/CXR radio awake. Uses more glasses battery.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                checked = alwaysReadyEnabled,
+                onCheckedChange = onAlwaysReadyChange,
+            )
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
+
+    OutlinedButton(onClick = onWakeProbe, modifier = Modifier.fillMaxWidth()) {
+        Text("Wake glasses now")
+    }
+    Text(
+        "Recovery: ${recoveryState.successfulRecoveries} successful · " +
+            "${recoveryState.deepSleepDetections} deep-sleep detections",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 
     Spacer(Modifier.height(12.dp))
 
@@ -549,6 +612,39 @@ private fun ConnectedContent(
         Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Text("Disconnect")
+    }
+}
+
+@Composable
+private fun DeepSleepRecoveryCard(
+    recoveryState: GlassesRecoverySnapshot,
+    onRetry: () -> Unit,
+) {
+    Surface(
+        color = Color(0xFFFFF3CD),
+        contentColor = Color(0xFF4D3A00),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Glasses may be deeply asleep", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Android pairing is still intact. Press the glasses button 3× until the blue " +
+                    "LED blinks, then retry. Do not clear pairing.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Reconnect attempts: ${recoveryState.reconnectAttempt} · " +
+                    "timeouts: ${recoveryState.reconnectTimeouts}",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
+                Text("I pressed 3× — retry")
+            }
+        }
     }
 }
 

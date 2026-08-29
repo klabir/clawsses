@@ -39,6 +39,7 @@ class GlassesConnectionManager(private val context: Context) {
         private const val RECONNECT_MAX_DELAY_MS = 60000L   // Cap at 60 seconds
         private const val RECONNECT_BACKOFF_MULTIPLIER = 1.5
         private const val RECONNECT_TIMEOUT_MS = 10000L     // 10s timeout for silent failures
+        private const val KEY_ALWAYS_READY = "always_ready"
 
         // Rokid BLE Service UUID (glasses advertise with this UUID)
         val ROKID_SERVICE_UUID: UUID = UUID.fromString("00009100-0000-1000-8000-00805f9b34fb")
@@ -103,6 +104,17 @@ class GlassesConnectionManager(private val context: Context) {
     private var reconnectAttempts = 0
     private var currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
 
+    private val recoveryTracker = GlassesRecoveryTracker()
+    private val _recoveryState = MutableStateFlow(recoveryTracker.current())
+    val recoveryState: StateFlow<GlassesRecoverySnapshot> = _recoveryState.asStateFlow()
+
+    private val wakePreferences =
+        context.getSharedPreferences("glasses_wake_policy", Context.MODE_PRIVATE)
+    private val _alwaysReadyEnabled = MutableStateFlow(
+        wakePreferences.getBoolean(KEY_ALWAYS_READY, false),
+    )
+    val alwaysReadyEnabled: StateFlow<Boolean> = _alwaysReadyEnabled.asStateFlow()
+
     private val outboundTransport = CxrOutboundTransport(
         scope = reconnectScope,
         sendDirect = { message -> sendRawMessageDirect(message) },
@@ -129,13 +141,23 @@ class GlassesConnectionManager(private val context: Context) {
             if (!_debugModeEnabled.value) {
                 RokidSdkManager.wakeGlassesScreen()
             } else false
-        }
+        },
+        onResponsiveActivity = {
+            _recoveryState.value = recoveryTracker.onResponsiveActivity()
+        },
+        onStandbyDetected = {
+            _recoveryState.value = recoveryTracker.onStandbyDetected()
+        },
+        onWakeTimeout = {
+            _recoveryState.value = recoveryTracker.onWakeTimeout()
+        },
     )
 
     // Track when streaming is active (to know when to send wake signals)
     private var _activeStreamMessageId: String? = null
 
     init {
+        wakeSignalManager.setAlwaysReadyEnabled(_alwaysReadyEnabled.value)
         // Set up SDK callbacks first so any state transitions are captured
         setupSdkCallbacks()
 
@@ -148,6 +170,7 @@ class GlassesConnectionManager(private val context: Context) {
             _connectionState.value = ConnectionState.Connected(name)
             outboundTransport.setConnected(true)
             wakeSignalManager.handleGlassesConnected()
+            _recoveryState.value = recoveryTracker.onConnected()
             RokidSdkManager.syncAssistantInput()
             Log.i(TAG, "SDK already connected on init; restored connected state")
         }
@@ -164,6 +187,7 @@ class GlassesConnectionManager(private val context: Context) {
             RokidSdkManager.syncAssistantInput()
             // Notify wake signal manager that glasses is connected
             wakeSignalManager.handleGlassesConnected()
+            _recoveryState.value = recoveryTracker.onConnected()
             Log.d(TAG, "SDK: Glasses connected")
         }
 
@@ -174,6 +198,7 @@ class GlassesConnectionManager(private val context: Context) {
             clearPeerDescriptor()
             // Notify wake signal manager of disconnection
             wakeSignalManager.handleGlassesDisconnected()
+            _recoveryState.value = recoveryTracker.onStandbyDetected()
             Log.d(TAG, "SDK: Glasses disconnected")
 
             // Auto-reconnect: when the glasses app restarts, the system-level BT
@@ -542,6 +567,7 @@ class GlassesConnectionManager(private val context: Context) {
             val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
             _connectionState.value = ConnectionState.Connected(name)
             RokidSdkManager.syncAssistantInput()
+            _recoveryState.value = recoveryTracker.onConnected()
             resetReconnectState()
             Log.i(TAG, "Auto-reconnect skipped: SDK connection is already active")
             return
@@ -556,6 +582,13 @@ class GlassesConnectionManager(private val context: Context) {
 
         val attempt = reconnectAttempts + 1
         val delayMs = currentReconnectDelayMs
+        val withinBudget = recoveryTracker.onReconnectAttempt(attempt)
+        _recoveryState.value = recoveryTracker.current()
+        if (!withinBudget) {
+            Log.w(TAG, "Auto-reconnect paused after bounded retry budget; physical wake required")
+            _connectionState.value = ConnectionState.Disconnected
+            return
+        }
 
         Log.i(TAG, "Auto-reconnect attempt $attempt in ${delayMs}ms (exponential backoff)")
         _connectionState.value = ConnectionState.Reconnecting(attempt, delayMs)
@@ -567,6 +600,7 @@ class GlassesConnectionManager(private val context: Context) {
                 val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
                 _connectionState.value = ConnectionState.Connected(name)
                 RokidSdkManager.syncAssistantInput()
+                _recoveryState.value = recoveryTracker.onConnected()
                 resetReconnectState()
                 Log.i(TAG, "Pending auto-reconnect cancelled: SDK connection recovered")
                 return@launch
@@ -590,6 +624,7 @@ class GlassesConnectionManager(private val context: Context) {
                     val name = RokidSdkManager.getSavedDeviceName() ?: "Rokid Glasses"
                     _connectionState.value = ConnectionState.Connected(name)
                     RokidSdkManager.syncAssistantInput()
+                    _recoveryState.value = recoveryTracker.onConnected()
                     resetReconnectState()
                     Log.i(TAG, "Auto-reconnect completed: active SDK connection confirmed")
                     return@launch
@@ -597,6 +632,7 @@ class GlassesConnectionManager(private val context: Context) {
                 val state = _connectionState.value
                 if (state is ConnectionState.Reconnecting || state is ConnectionState.Connecting) {
                     Log.w(TAG, "Auto-reconnect attempt $attempt timed out (no SDK callback)")
+                    _recoveryState.value = recoveryTracker.onReconnectTimeout()
                     scheduleReconnect()
                 }
             } else {
@@ -624,6 +660,7 @@ class GlassesConnectionManager(private val context: Context) {
         reconnectJob?.cancel()
         reconnectAttempts = 0
         currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
+        _recoveryState.value = recoveryTracker.onManualRetry()
 
         if (!RokidSdkManager.hasSavedConnectionInfo()) {
             _connectionState.value = ConnectionState.Disconnected
@@ -656,6 +693,21 @@ class GlassesConnectionManager(private val context: Context) {
         userInitiatedDisconnect = true // prevent auto-reconnect from re-triggering
         RokidSdkManager.disconnect()
         _connectionState.value = ConnectionState.Disconnected
+    }
+
+    fun setAlwaysReadyEnabled(enabled: Boolean) {
+        if (_alwaysReadyEnabled.value == enabled) return
+        _alwaysReadyEnabled.value = enabled
+        wakePreferences.edit().putBoolean(KEY_ALWAYS_READY, enabled).apply()
+        wakeSignalManager.setAlwaysReadyEnabled(enabled)
+    }
+
+    fun requestWakeProbe() {
+        if (_connectionState.value is ConnectionState.Connected) {
+            wakeSignalManager.requestWakeProbe()
+        } else {
+            retryReconnectNow()
+        }
     }
 
     /**
