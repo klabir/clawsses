@@ -33,6 +33,7 @@ fun SoftwareUpdateSection(
     sdkConnected: Boolean,
     onInstall: () -> Unit,
     onInstallViaHiRokid: () -> Unit,
+    onVerifyInstall: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -59,6 +60,25 @@ fun SoftwareUpdateSection(
             is ApkInstaller.InstallState.ConnectingHiRokid ->
                 ProgressContent(installState.message, -1, "Keep Hi Rokid and the glasses awake", onCancel)
 
+            is ApkInstaller.InstallState.AwaitingPeerOwnership ->
+                ProgressContent(
+                    "Installed. Waiting for Clawsses to reclaim the glasses connection...",
+                    -1,
+                    "Expected Build ${installState.expectedBuild}",
+                    onCancel,
+                )
+
+            is ApkInstaller.InstallState.VerifyingPeer ->
+                ProgressContent(
+                    "Verifying glasses Build ${installState.expectedBuild}...",
+                    -1,
+                    "Wake the glasses if they do not reconnect automatically",
+                    onCancel,
+                )
+
+            is ApkInstaller.InstallState.InstalledPendingVerification ->
+                PendingVerificationContent(installState, onVerifyInstall, onInstallViaHiRokid)
+
             is ApkInstaller.InstallState.PreparingApk ->
                 ProgressContent("Preparing APK...", -1, null, onCancel = null)
 
@@ -74,6 +94,35 @@ fun SoftwareUpdateSection(
             is ApkInstaller.InstallState.Error ->
                 ErrorContent(installState.message, installState.canRetry, onInstall, onInstallViaHiRokid)
         }
+    }
+}
+
+@Composable
+private fun PendingVerificationContent(
+    state: ApkInstaller.InstallState.InstalledPendingVerification,
+    onVerify: () -> Unit,
+    onInstallAgain: () -> Unit,
+) {
+    Text(
+        "Installed — verification pending",
+        style = MaterialTheme.typography.bodyLarge,
+        color = Color(0xFFFFC107),
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        state.message,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+    Button(onClick = onVerify, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Verify installed build")
+    }
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(onClick = onInstallAgain, modifier = Modifier.fillMaxWidth()) {
+        Text("Install again")
     }
 }
 

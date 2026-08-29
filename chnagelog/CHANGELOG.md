@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 1.3.78 (build 87)
+
+### Changed
+
+- Separate the official Hi Rokid install receipt, CXR ownership handoff, and Clawsses peer-build verification into explicit installer phases.
+- Isolate the private CXR-L 1.1.1 service-connection compatibility lookup behind a small versioned adapter.
+
+### Fixed
+
+- Preserve a successful HUD installation as pending verification instead of reporting a false install failure when the glasses handshake is delayed.
+- Restore pending peer verification after a Phone process restart and complete it automatically when the expected HUD build reconnects.
+
+### Added
+
+- Add a manual verification retry that does not upload the APK again, plus regression tests for stale/matching builds and the reflection boundary.
+
 ## 1.3.77 (build 86)
 
 ### Changed

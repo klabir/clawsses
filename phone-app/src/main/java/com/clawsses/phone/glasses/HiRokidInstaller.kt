@@ -23,6 +23,8 @@ import java.io.File
 internal class HiRokidInstaller(
     context: Context,
     private val glassesManager: GlassesConnectionManager,
+    private val serviceConnectionAdapter: HiRokidServiceConnectionAdapter =
+        CxrLink111ServiceConnectionAdapter,
 ) {
     companion object {
         private const val TAG = "HiRokidInstaller"
@@ -75,7 +77,17 @@ internal class HiRokidInstaller(
         }.getOrDefault(false)
     }
 
-    suspend fun install(apkFile: File, token: String, onStatus: (String) -> Unit) {
+    data class InstallReceipt(
+        val packageName: String,
+        val installed: Boolean,
+        val opened: Boolean,
+    )
+
+    suspend fun install(
+        apkFile: File,
+        token: String,
+        onStatus: (String) -> Unit,
+    ): InstallReceipt {
         require(apkFile.isFile && apkFile.length() > 0L) { "Bundled glasses APK is missing." }
         require(token.isNotBlank()) { "Hi Rokid authorization token is empty." }
 
@@ -84,7 +96,7 @@ internal class HiRokidInstaller(
             ?.packageName
             ?.takeIf(String::isNotBlank)
             ?: error("Could not read the bundled glasses package name.")
-        val completion = CompletableDeferred<Boolean>()
+        val completion = CompletableDeferred<InstallReceipt>()
         var gate = HiRokidInstallGate()
         val cxrLink = CXRLink(appContext)
         link = cxrLink
@@ -103,7 +115,9 @@ internal class HiRokidInstaller(
                 cxrLink.appUploadAndInstall(apkFile.absolutePath, object : IGlassAppCbk {
                     override fun onInstallAppResult(success: Boolean) {
                         if (!success) {
-                            completion.complete(false)
+                            completion.completeExceptionally(
+                                IllegalStateException("Hi Rokid reported installation failure."),
+                            )
                             return
                         }
                         onStatus("Installation complete; launching the glasses app...")
@@ -113,7 +127,15 @@ internal class HiRokidInstaller(
 
                     override fun onUnInstallAppResult(success: Boolean) = Unit
                     override fun onOpenAppResult(success: Boolean) {
-                        completion.complete(success)
+                        if (success) {
+                            completion.complete(
+                                InstallReceipt(packageName, installed = true, opened = true),
+                            )
+                        } else {
+                            completion.completeExceptionally(
+                                IllegalStateException("Hi Rokid installed but could not open the HUD."),
+                            )
+                        }
                     }
                     override fun onStopAppResult(success: Boolean) = Unit
                     override fun onGlassAppResume(resumed: Boolean) = Unit
@@ -158,7 +180,7 @@ internal class HiRokidInstaller(
             ) { "Could not configure the Hi Rokid CUSTOMAPP session." }
 
             onStatus("Connecting through the official Hi Rokid bridge...")
-            val connection = findServiceConnection(cxrLink)
+            val connection = serviceConnectionAdapter.connectionFor(cxrLink)
             serviceConnection = connection
             val bindIntent = Intent(MEDIA_SERVICE_ACTION)
                 .setPackage(HI_ROKID_PACKAGE)
@@ -170,8 +192,7 @@ internal class HiRokidInstaller(
             check(bound) { "Could not bind the official Hi Rokid service." }
             bringCompanionToForeground()
 
-            val installed = withTimeout(INSTALL_TIMEOUT_MS) { completion.await() }
-            check(installed) { "Hi Rokid reported that glasses installation failed." }
+            return withTimeout(INSTALL_TIMEOUT_MS) { completion.await() }
         } finally {
             cleanupConnection()
             withContext(Dispatchers.Main.immediate) {
@@ -183,22 +204,6 @@ internal class HiRokidInstaller(
     }
 
     fun cancel() = cleanupConnection()
-
-    private fun findServiceConnection(cxrLink: CXRLink): ServiceConnection {
-        var type: Class<*>? = cxrLink.javaClass
-        while (type != null) {
-            val field = type.declaredFields.firstOrNull {
-                ServiceConnection::class.java.isAssignableFrom(it.type)
-            }
-            if (field != null) {
-                field.isAccessible = true
-                return field.get(cxrLink) as? ServiceConnection
-                    ?: error("Hi Rokid CXR-L ServiceConnection is unavailable.")
-            }
-            type = type.superclass
-        }
-        error("Hi Rokid CXR-L ServiceConnection was not found.")
-    }
 
     private fun cleanupConnection() {
         val currentLink = link

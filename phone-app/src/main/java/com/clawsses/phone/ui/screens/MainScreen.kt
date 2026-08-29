@@ -486,6 +486,7 @@ fun MainScreen() {
             sdkConnected = sdkConnected,
             onInstall = { apkInstaller.installViaSdk() },
             onInstallViaHiRokid = { apkInstaller.installViaHiRokid() },
+            onVerifyInstall = { apkInstaller.retryPendingVerification() },
             onCancelInstall = { apkInstaller.cancelInstallation() },
             // Voice
             voiceLanguageManager = voiceLanguageManager,
