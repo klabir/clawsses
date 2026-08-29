@@ -1,11 +1,14 @@
 package com.clawsses.benchmark
 
+import android.content.Intent
+import android.net.Uri
+import android.os.SystemClock
 import androidx.benchmark.macro.CompilationMode
 import androidx.benchmark.macro.FrameTimingMetric
+import androidx.benchmark.macro.StartupMode
 import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.uiautomator.By
-import androidx.test.uiautomator.Until
+import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,17 +23,32 @@ class ChatRenderingBenchmark {
             packageName = targetPackage,
             metrics = listOf(FrameTimingMetric()),
             compilationMode = CompilationMode.Partial(),
+            startupMode = StartupMode.COLD,
             iterations = 5,
-            setupBlock = { pressHome() },
+            setupBlock = {
+                device.wakeUp()
+                device.executeShellCommand("wm dismiss-keyguard")
+                pressHome()
+            },
         ) {
-            device.executeShellCommand(
-                "am start -W -n $targetPackage/com.clawsses.phone.benchmark.ChatBenchmarkActivity",
+            startActivityAndWait(
+                Intent().setClassName(
+                    targetPackage,
+                    "com.clawsses.phone.benchmark.ChatBenchmarkActivity",
+                ),
             )
-            check(device.wait(Until.hasObject(By.text("Run stream benchmark")), 5_000)) {
-                "Benchmark workload did not become ready"
+            SystemClock.sleep(12_000)
+            val resolver = InstrumentationRegistry.getInstrumentation().context.contentResolver
+            val statusUri = Uri.parse("content://com.clawsses.phone.benchmark.status/workload")
+            val deadline = SystemClock.elapsedRealtime() + 8_000
+            var completed = false
+            while (!completed && SystemClock.elapsedRealtime() < deadline) {
+                completed = resolver.query(statusUri, null, null, null, null)?.use { cursor ->
+                    cursor.moveToFirst() && cursor.getInt(0) == 1
+                } == true
+                if (!completed) SystemClock.sleep(250)
             }
-            device.findObject(By.text("Run stream benchmark")).click()
-            check(device.wait(Until.hasObject(By.text("Benchmark complete")), 15_000)) {
+            check(completed) {
                 "Benchmark workload did not complete"
             }
         }

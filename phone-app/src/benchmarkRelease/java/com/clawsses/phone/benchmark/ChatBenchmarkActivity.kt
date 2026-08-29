@@ -1,13 +1,13 @@
 package com.clawsses.phone.benchmark
 
 import android.os.Bundle
+import android.os.Trace
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,11 +27,11 @@ import kotlinx.coroutines.delay
 class ChatBenchmarkActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ChatBenchmarkStatusProvider.reset()
         setContent {
             ClawssesTheme {
                 val store = remember { BoundedChatStore() }
                 val messages by store.messages.collectAsState()
-                var running by remember { mutableStateOf(false) }
                 var completed by remember { mutableStateOf(false) }
 
                 LaunchedEffect(Unit) {
@@ -44,27 +44,30 @@ class ChatBenchmarkActivity : ComponentActivity() {
                             )
                         },
                     )
-                }
-                LaunchedEffect(running) {
-                    if (!running) return@LaunchedEffect
                     completed = false
-                    repeat(1_000) { update ->
-                        store.updateStreaming("live-tail", "Streaming response ${"word ".repeat(update % 120)}")
-                        delay(1)
+                    Trace.beginSection(TRACE_SECTION)
+                    try {
+                        var pendingText = ""
+                        repeat(1_000) { update ->
+                            pendingText = "Streaming response ${"word ".repeat(update % 120)}"
+                            if ((update + 1) % DELTAS_PER_PUBLICATION == 0) {
+                                store.updateStreaming("live-tail", pendingText)
+                            }
+                            delay(INCOMING_DELTA_INTERVAL_MS)
+                        }
+                        store.upsertCompleted(
+                            ChatMessage(id = "live-tail", role = "assistant", content = "Streaming complete"),
+                        )
+                    } finally {
+                        Trace.endSection()
                     }
-                    store.upsertCompleted(
-                        ChatMessage(id = "live-tail", role = "assistant", content = "Streaming complete"),
-                    )
-                    running = false
                     completed = true
+                    ChatBenchmarkStatusProvider.markComplete()
                 }
 
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Column {
-                        Button(onClick = { running = true }, enabled = !running) {
-                            Text(if (running) "Benchmark running" else "Run stream benchmark")
-                        }
-                        if (completed) Text("Benchmark complete")
+                        Text(if (completed) "Benchmark complete" else "Benchmark running")
                         Text("Live tail: ${messages.lastOrNull()?.content.orEmpty()}")
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(messages, key = ChatMessage::id) { message ->
@@ -75,5 +78,11 @@ class ChatBenchmarkActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private companion object {
+        const val TRACE_SECTION = "clawsses_chat_stream_1000"
+        const val DELTAS_PER_PUBLICATION = 10
+        const val INCOMING_DELTA_INTERVAL_MS = 10L
     }
 }

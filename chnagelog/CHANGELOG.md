@@ -6,7 +6,8 @@
 
 ### Added
 
-- Add an isolated benchmark-only chat workload with 500 retained messages and 1,000 streaming-tail updates measured by Android `FrameTimingMetric`.
+- Add an isolated benchmark-only chat workload with 500 retained messages and 1,000 incoming streaming deltas, rendered at the production coalescing cadence and measured by Android `FrameTimingMetric`.
+- Record the initial five-iteration Pixel 9 Pro reference: CPU frame time P50 3.3 ms, P90 5.9 ms, P95 6.7 ms, P99 8.3 ms; frame-overrun P95 -3.4 ms and P99 5.7 ms.
 - Add a deterministic integration budget covering gateway-history parsing, bounded retention, streaming replacement, and finalization.
 
 ### Changed

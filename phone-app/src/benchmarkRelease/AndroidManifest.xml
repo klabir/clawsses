@@ -4,5 +4,9 @@
         <activity
             android:name="com.clawsses.phone.benchmark.ChatBenchmarkActivity"
             android:exported="true" />
+        <provider
+            android:name="com.clawsses.phone.benchmark.ChatBenchmarkStatusProvider"
+            android:authorities="com.clawsses.phone.benchmark.status"
+            android:exported="true" />
     </application>
 </manifest>

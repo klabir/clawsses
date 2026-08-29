@@ -35,7 +35,7 @@ abstract class VerifyReleaseExcludesDebugTransportTask : DefaultTask() {
     fun verify() {
         val forbiddenClassPaths = listOf(
             "com/clawsses/phone/debug/DebugGlassesServer",
-            "com/clawsses/phone/benchmark/ChatBenchmarkActivity",
+            "com/clawsses/phone/benchmark/",
         )
         ZipFile(releaseApk.get().asFile).use { apk ->
             val leaked = apk.entries().asSequence()
