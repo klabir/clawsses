@@ -8,6 +8,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.security.MessageDigest
 import java.util.Base64
 
@@ -23,6 +25,11 @@ internal class DebugGlassesServer(
 
     companion object {
         private const val TAG = "DebugGlassesServer"
+        internal const val MAX_RUNTIME_MS = 30L * 60L * 1_000L
+        internal const val MAX_HANDSHAKE_BYTES = 16 * 1_024
+        internal const val MAX_FRAME_BYTES = 64 * 1_024
+
+        internal fun loopbackAddress(port: Int) = InetSocketAddress(InetAddress.getLoopbackAddress(), port)
     }
 
     private var serverSocket: ServerSocket? = null
@@ -51,10 +58,18 @@ internal class DebugGlassesServer(
 
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         scope?.launch {
+            delay(MAX_RUNTIME_MS)
+            Log.i(TAG, "Debug server lifetime expired")
+            stop()
+        }
+        scope?.launch {
             try {
-                serverSocket = ServerSocket(port)
+                serverSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(loopbackAddress(port), 1)
+                }
                 _isRunning.value = true
-                Log.i(TAG, "Debug glasses server started on port $port")
+                Log.i(TAG, "Debug glasses server started on loopback port $port")
 
                 while (isActive && _isRunning.value) {
                     try {
@@ -129,6 +144,7 @@ internal class DebugGlassesServer(
             val b = input.read()
             if (b == -1) return false
             requestBuilder.append(b.toChar())
+            if (requestBuilder.length > MAX_HANDSHAKE_BYTES) return false
 
             // Check for end of headers (\r\n\r\n)
             if (b == 10 && prevByte == 13) {
@@ -179,6 +195,7 @@ internal class DebugGlassesServer(
             if (secondByte == -1) return null
 
             val isMasked = (secondByte and 0x80) != 0
+            if (!isMasked) return null
             var payloadLength = (secondByte and 0x7F).toLong()
 
             if (payloadLength == 126L) {
@@ -186,13 +203,21 @@ internal class DebugGlassesServer(
             } else if (payloadLength == 127L) {
                 payloadLength = 0
                 for (i in 0..7) {
-                    payloadLength = (payloadLength shl 8) or input.read().toLong()
+                    val next = input.read()
+                    if (next < 0) return null
+                    payloadLength = (payloadLength shl 8) or next.toLong()
                 }
             }
 
-            val mask = if (isMasked) {
-                ByteArray(4).also { input.read(it) }
-            } else null
+            if (payloadLength !in 0..MAX_FRAME_BYTES.toLong()) return null
+
+            val mask = ByteArray(4)
+            var maskBytes = 0
+            while (maskBytes < mask.size) {
+                val read = input.read(mask, maskBytes, mask.size - maskBytes)
+                if (read < 0) return null
+                maskBytes += read
+            }
 
             val payload = ByteArray(payloadLength.toInt())
             var bytesRead = 0
@@ -202,10 +227,8 @@ internal class DebugGlassesServer(
                 bytesRead += read
             }
 
-            if (mask != null) {
-                for (i in payload.indices) {
-                    payload[i] = (payload[i].toInt() xor mask[i % 4].toInt()).toByte()
-                }
+            for (i in payload.indices) {
+                payload[i] = (payload[i].toInt() xor mask[i % 4].toInt()).toByte()
             }
 
             // Check for close frame

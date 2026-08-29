@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.86 (build 95)
+
+### Changed
+
+- Bind the emulator-only Phone WebSocket debug server to loopback instead of every network interface.
+- Make debug mode self-expire after 30 minutes and label that boundary explicitly in settings.
+
+### Fixed
+
+- Bound debug WebSocket handshake and frame sizes, reject unmasked client frames, and handle truncated length/mask fields safely.
+
+### Security
+
+- Prevent an explicitly enabled debug build from exposing its unauthenticated emulator transport to the LAN.
+
 ## 1.3.85 (build 94)
 
 ### Added
