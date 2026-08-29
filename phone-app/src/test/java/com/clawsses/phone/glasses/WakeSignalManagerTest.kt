@@ -156,6 +156,54 @@ class WakeSignalManagerTest {
         manager.cleanup()
     }
 
+    @Test
+    fun `always ready remains active when talk wake is disabled`() = runBlocking {
+        var hardwareWakeCount = 0
+        val manager = WakeSignalManager(
+            enqueueToGlasses = { _, _ -> },
+            setDeliveryAllowed = { },
+            wakeHardwareDisplay = {
+                hardwareWakeCount += 1
+                true
+            },
+            scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+            logger = { _, _ -> },
+            monotonicClock = { 10_000L },
+            persistentWakeIntervalMs = 10L,
+        )
+
+        manager.setAlwaysReadyEnabled(true)
+        manager.setPersistentWakeEnabled(true)
+        manager.handleGlassesConnected()
+        manager.setPersistentWakeEnabled(false)
+        delay(45L)
+
+        assertTrue(hardwareWakeCount >= 2)
+        manager.cleanup()
+    }
+
+    @Test
+    fun `wake probe timeout reports unresponsive firmware`() = runBlocking {
+        var timeoutCount = 0
+        val manager = WakeSignalManager(
+            enqueueToGlasses = { _, _ -> },
+            setDeliveryAllowed = { },
+            scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+            logger = { _, _ -> },
+            monotonicClock = { 10_000L },
+            wakeAckTimeoutMs = 15L,
+            onWakeTimeout = { timeoutCount += 1 },
+        )
+
+        manager.handleGlassesConnected()
+        manager.requestWakeProbe()
+        delay(45L)
+
+        assertEquals(1, timeoutCount)
+        assertTrue(manager.wakeState.value is WakeSignalManager.WakeState.Unknown)
+        manager.cleanup()
+    }
+
     private class Harness {
         val enqueued = mutableListOf<Pair<String, Boolean>>()
         val gates = mutableListOf<Boolean>()

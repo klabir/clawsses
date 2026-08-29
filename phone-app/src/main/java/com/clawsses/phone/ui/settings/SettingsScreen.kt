@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.glasses.GlassesConnectionManager
+import com.clawsses.phone.glasses.GlassesRecoverySnapshot
 import com.clawsses.phone.openclaw.OpenClawClient
 import com.clawsses.phone.talk.TalkModeState
 import com.clawsses.phone.talk.TalkInteractionMode
@@ -60,6 +61,10 @@ fun SettingsScreen(
     // Wake on stream
     wakeOnStreamEnabled: Boolean = true,
     onWakeOnStreamChange: (Boolean) -> Unit = {},
+    glassesRecoveryState: GlassesRecoverySnapshot = GlassesRecoverySnapshot(),
+    alwaysReadyEnabled: Boolean = false,
+    onAlwaysReadyChange: (Boolean) -> Unit = {},
+    onWakeProbe: () -> Unit = {},
     savePhotosToGallery: Boolean = false,
     onSavePhotosToGalleryChange: (Boolean) -> Unit = {},
     onSwitchToHiRokid: () -> Unit = {},
@@ -147,6 +152,10 @@ fun SettingsScreen(
                     cachedDeviceName = cachedDeviceName,
                     wakeOnStreamEnabled = wakeOnStreamEnabled,
                     onWakeOnStreamChange = onWakeOnStreamChange,
+                    recoveryState = glassesRecoveryState,
+                    alwaysReadyEnabled = alwaysReadyEnabled,
+                    onAlwaysReadyChange = onAlwaysReadyChange,
+                    onWakeProbe = onWakeProbe,
                     savePhotosToGallery = savePhotosToGallery,
                     onSavePhotosToGalleryChange = onSavePhotosToGalleryChange,
                     onSwitchToHiRokid = onSwitchToHiRokid,

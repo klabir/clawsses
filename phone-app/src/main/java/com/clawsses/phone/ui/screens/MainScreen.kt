@@ -45,6 +45,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -66,6 +67,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.clawsses.phone.ClawssesApp
 import com.clawsses.phone.glasses.ApkInstaller
 import com.clawsses.phone.glasses.GlassesConnectionManager
+import com.clawsses.phone.glasses.GlassesRecoverySnapshot
 import com.clawsses.phone.glasses.RokidSdkManager
 import com.clawsses.phone.media.ImagePipeline
 import com.clawsses.phone.media.PendingPhoto
@@ -116,6 +118,7 @@ fun MainScreen() {
     val isListening by voiceRecognitionManager.isListening.collectAsStateWithLifecycle()
     val voiceMode by voiceRecognitionManager.activeMode.collectAsStateWithLifecycle()
     val glassesWakeState by glassesManager.wakeSignalManager.wakeState.collectAsStateWithLifecycle()
+    val glassesRecoveryState by glassesManager.recoveryState.collectAsStateWithLifecycle()
     val ttsEnabled by ttsSettingsManager.isEnabled.collectAsStateWithLifecycle()
     val ttsVoiceName by ttsSettingsManager.selectedVoiceName.collectAsStateWithLifecycle()
     val ttsProvider by ttsSettingsManager.provider.collectAsStateWithLifecycle()
@@ -392,6 +395,13 @@ fun MainScreen() {
                 }
             )
 
+            if (glassesRecoveryState.needsPhysicalWake) {
+                GlassesDeepSleepBanner(
+                    recoveryState = glassesRecoveryState,
+                    onRetry = glassesManager::requestWakeProbe,
+                )
+            }
+
             // Session selector
             if (openClawState is OpenClawClient.ConnectionState.Connected) {
                 MainCatalogControls(openClawClient)
@@ -418,6 +428,7 @@ fun MainScreen() {
         val installState by apkInstaller.installState.collectAsStateWithLifecycle()
         val wakeOnStreamEnabled by
             glassesManager.wakeSignalManager.enabled.collectAsStateWithLifecycle()
+        val alwaysReadyEnabled by glassesManager.alwaysReadyEnabled.collectAsStateWithLifecycle()
         val debugModeEnabled by glassesManager.debugModeEnabled.collectAsStateWithLifecycle()
         val discoveredDevices by glassesManager.discoveredDevices.collectAsStateWithLifecycle()
         val wifiP2PConnected by glassesManager.wifiP2PConnected.collectAsStateWithLifecycle()
@@ -470,6 +481,10 @@ fun MainScreen() {
             onWakeOnStreamChange = { enabled ->
                 glassesManager.wakeSignalManager.setEnabled(enabled)
             },
+            glassesRecoveryState = glassesRecoveryState,
+            alwaysReadyEnabled = alwaysReadyEnabled,
+            onAlwaysReadyChange = glassesManager::setAlwaysReadyEnabled,
+            onWakeProbe = glassesManager::requestWakeProbe,
             savePhotosToGallery = savePhotosToGallery,
             onSavePhotosToGalleryChange = { enabled ->
                 savePhotosToGallery = enabled
@@ -687,6 +702,38 @@ fun ChatMessageRow(msg: ChatMessage) {
                     color = if (isUser) Color(0xFF4EC9B0) else Color(0xFFD4D4D4),
                     fontSize = 13.sp,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlassesDeepSleepBanner(
+    recoveryState: GlassesRecoverySnapshot,
+    onRetry: () -> Unit,
+) {
+    Surface(
+        color = Color(0xFFFFC107).copy(alpha = 0.2f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFFA000))
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Glasses deeply asleep", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "Pairing is intact. Press the glasses button 3× until blue, then retry.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            TextButton(onClick = onRetry) {
+                Text("Retry")
             }
         }
     }

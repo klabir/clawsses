@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## 1.3.93 (build 102)
+
+### Added
+
+- Add a bounded deep-sleep recovery state with reconnect, wake-timeout, detection, and successful-recovery counters.
+- Add an opt-in Always Ready policy that keeps the Rokid display/CXR path awake independently of Talk Mode and warns about higher glasses battery use.
+- Add explicit Phone UI guidance that preserves Android pairing and instructs users to wake the proprietary CXR beacon with a triple press before retrying.
+
+### Changed
+
+- Limit automatic CXR rediscovery to five attempts per recovery window instead of retrying indefinitely against deeply sleeping firmware.
+- Keep Talk Mode and Always Ready as independent persistent-wake reasons so disabling one does not silently disable the other.
+
+### Fixed
+
+- Detect a stale connected-but-unresponsive glasses session after a bounded wake probe instead of continuing to label it healthy.
+- Separate firmware deep sleep from lost Android pairing and offer one explicit recovery action without clearing bond data.
+
 ## 1.3.92 (build 101)
 
 ### Changed
