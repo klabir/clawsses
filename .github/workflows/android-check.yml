@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+      - 'build/**'
+      - 'refactor/**'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,8 +33,8 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
 
-      - name: Install Android SDK 34
-        run: sdkmanager "platforms;android-34"
+      - name: Install Android SDK 35
+        run: sdkmanager "platforms;android-35"
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0

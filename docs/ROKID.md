@@ -122,11 +122,12 @@ rokid.clientSecret=your_client_secret
 rokid.accessKey=your_access_key
 ```
 
-Keep `local.properties` untracked. Rokid's connection API requires the client secret at runtime,
-so an APK containing production credentials must be treated as a private-device artifact rather
-than a secret-preserving public binary. Do not distribute it. Public build environments must run
-`./gradlew :phone-app:verifyPublicReleaseHasNoRokidCredentials`, and exposed credentials must be
-rotated in the Rokid Developer Portal.
+Keep `local.properties` untracked. Ordinary builds receive empty Rokid `BuildConfig` fields even
+when local credentials exist. Private paired-device releases opt in with
+`-Pclawsses.hardwareTestSigning=true`; those APKs contain extractable credentials and must never be
+distributed. Public build environments must run
+`./gradlew :phone-app:verifyPublicReleaseHasNoRokidCredentials`, which builds and scans the public
+APK. Exposed credentials must be rotated in the Rokid Developer Portal.
 
 Get credentials from [Rokid Developer Portal](https://ar.rokid.com).
 

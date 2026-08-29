@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 1.3.77 (build 86)
+
+### Changed
+
+- Keep Rokid credentials out of ordinary debug and release APKs unless a private hardware build explicitly opts in.
+- Strip Clawsses-owned Android log calls from public minified releases while preserving hardware-test diagnostics.
+- Run Android checks on build and refactor branches and install the declared API 35 compile platform in CI.
+
+### Added
+
+- Verify the public release artifact itself does not contain locally configured Rokid credential values.
+
 ## 1.3.76 (build 85)
 
 ### Changed
