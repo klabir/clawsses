@@ -297,18 +297,7 @@ class PhoneGlassesBridgeController(
     private fun wireGlassesCallbacks() {
         glassesManager.onAiKeyDown = ::activateGlassesVoice
         glassesManager.onAiExit = {
-            val talk = talkModeManager.state.value
-            val needsFallback = if (talk.enabled) {
-                talk.phase in setOf(
-                    TalkModePhase.IDLE,
-                    TalkModePhase.STANDBY,
-                    TalkModePhase.DISCONNECTED,
-                    TalkModePhase.ERROR,
-                )
-            } else {
-                !voiceRecognitionManager.isListening.value
-            }
-            if (needsFallback && !activationPending.get()) activateGlassesVoice()
+            Log.d(TAG, "Glasses AI scene exited; waiting for an explicit or scheduled activation")
         }
         glassesManager.onMessageFromGlasses = { raw ->
             scope.launch { handleGlassesMessage(raw) }

@@ -193,7 +193,7 @@ class TalkRuntimeCoordinator(
             return
         }
         restartJob = scope.launch {
-            delay(delayMs)
+            delay(safeTalkRestartDelay(delayMs, current.source))
             val state = talkModeManager.state.value
             if (!state.enabled || TtsPlaybackManager.isPlaybackActive() ||
                 ttsPlaybackManager.state.value.blocksVoiceCapture()
@@ -466,7 +466,7 @@ class TalkRuntimeCoordinator(
                         rokidDevice.clearCommunicationDevice()
                     }
                     TalkModeTransitions.shouldResumeFromStandby(state, awake) -> {
-                        delay(700L)
+                        delay(safeTalkRestartDelay(700L, state.source))
                         val latest = talkModeManager.state.value
                         if (latest.phase == TalkModePhase.STANDBY &&
                             glassesManager.wakeSignalManager.wakeState.value is WakeSignalManager.WakeState.Awake
@@ -563,6 +563,7 @@ class TalkRuntimeCoordinator(
             glassesManager.connectionState.collect { state ->
                 when (state) {
                     is GlassesConnectionManager.ConnectionState.Connected -> {
+                        voiceRecognitionManager.onGlassesConnected()
                         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.RECONNECT)
                     }
                     is GlassesConnectionManager.ConnectionState.Reconnecting -> {
@@ -573,6 +574,7 @@ class TalkRuntimeCoordinator(
                         )
                     }
                     is GlassesConnectionManager.ConnectionState.Disconnected -> {
+                        val phoneFallbackStarted = voiceRecognitionManager.onGlassesDisconnected()
                         GlassesConnectionService.releaseWakeLock(context, WakeLockReason.RECONNECT)
                         GlassesConnectionService.releaseWakeLock(
                             context,
@@ -581,10 +583,14 @@ class TalkRuntimeCoordinator(
                         val talk = talkModeManager.state.value
                         if (talk.enabled && talk.source == TalkModeSource.GLASSES) {
                             cancelRestart()
-                            voiceRecognitionManager.stopListening()
-                            releaseCaptureLease()
-                            rokidDevice.clearCommunicationDevice()
-                            talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
+                            if (phoneFallbackStarted) {
+                                Log.i(TAG, "Continuing current Talk cycle on the phone microphone")
+                            } else {
+                                voiceRecognitionManager.stopListening()
+                                releaseCaptureLease()
+                                rokidDevice.clearCommunicationDevice()
+                                talkModeManager.setPhase(TalkModePhase.DISCONNECTED)
+                            }
                         }
                         if (!rokidDevice.hasSavedConnectionInfo()) {
                             GlassesConnectionService.stop(context)
@@ -651,3 +657,6 @@ class TalkRuntimeCoordinator(
 }
 
 internal fun shouldRequireGlassesMediaOutput(glassesConnected: Boolean): Boolean = glassesConnected
+
+internal fun safeTalkRestartDelay(requestedMs: Long, source: TalkModeSource): Long =
+    if (source == TalkModeSource.GLASSES) maxOf(requestedMs, 2_000L) else requestedMs

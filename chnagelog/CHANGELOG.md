@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.88 (build 97)
+
+### Changed
+
+- Coalesce duplicate Rokid AI-key and scene-edge activations and wait for firmware audio teardown before automatic glasses follow-up capture.
+- Continue an interrupted direct CXR recognition attempt once through the Phone microphone instead of repeatedly reopening the glasses audio stream.
+
+### Fixed
+
+- Prevent an AI-scene exit callback from starting a new voice capture.
+- Treat an empty direct-glasses transcription as a capture failure and fall back once to Android speech recognition.
+- Circuit-break direct glasses audio after a mid-capture CXR disconnect until the reconnected session has remained stable.
+
 ## 1.3.87 (build 96)
 
 ### Added

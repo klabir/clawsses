@@ -144,6 +144,7 @@ object RokidSdkManager {
     // Last known brightness from glasses (tracked via BrightnessUpdateListener)
     private var lastKnownBrightness: Int = 15
     private var aiSceneRunning = false
+    private val aiActivationGate = AiActivationGate()
     private var classicBluetoothActivationRequested = false
     private val activateClassicBluetoothRunnable = Runnable {
         if (!isConnected() || classicBluetoothActivationRequested) return@Runnable
@@ -635,7 +636,7 @@ object RokidSdkManager {
                 override fun onAiKeyDown() {
                     aiSceneRunning = true
                     Log.i(TAG, "AI key pressed on glasses (long press)")
-                    onAiKeyDown?.invoke()
+                    dispatchAiActivation("key")
                 }
                 override fun onAiKeyUp() {
                     Log.d(TAG, "AI key released on glasses")
@@ -661,7 +662,7 @@ object RokidSdkManager {
                     Log.d(TAG, "AI scene status updated: running=$running")
                     if (started) {
                         Log.i(TAG, "AI activation detected from scene status")
-                        onAiKeyDown?.invoke()
+                        dispatchAiActivation("scene")
                     }
                 }
             })
@@ -719,6 +720,15 @@ object RokidSdkManager {
             Log.e(TAG, "Failed to initialize Rokid SDK", e)
             return false
         }
+    }
+
+    private fun dispatchAiActivation(source: String) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!aiActivationGate.tryAccept(nowMs)) {
+            Log.i(TAG, "Ignoring duplicate AI activation source=$source")
+            return
+        }
+        onAiKeyDown?.invoke()
     }
 
     /**
