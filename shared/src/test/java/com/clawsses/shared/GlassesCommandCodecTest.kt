@@ -45,6 +45,27 @@ class GlassesCommandCodecTest {
             GlassesCommandDecodeResult.Success(GlassesCommand.UserInput("hello", null)),
             GlassesCommandCodec.decode("""{"type":"user_input","text":"hello"}"""),
         )
+        assertEquals(
+            GlassesCommandDecodeResult.Success(GlassesCommand.RequestState(90)),
+            GlassesCommandCodec.decode("""{"type":"request_state","versionCode":90}"""),
+        )
+    }
+
+    @Test
+    fun decodesExplicitPeerContract() {
+        assertEquals(
+            GlassesCommandDecodeResult.Success(
+                GlassesCommand.RequestState(
+                    versionCode = 93,
+                    versionName = "1.3.84",
+                    protocolVersion = 1,
+                    capabilities = setOf("transport_ack", "model_paging"),
+                ),
+            ),
+            GlassesCommandCodec.decode(
+                """{"type":"request_state","versionName":"1.3.84","versionCode":93,"protocolVersion":1,"capabilities":["transport_ack","model_paging"]}""",
+            ),
+        )
     }
 
     @Test

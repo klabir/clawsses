@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 1.3.84 (build 93)
+
+### Added
+
+- Add a bidirectional Phone/HUD protocol-version and capability handshake with bounded, validated capability names.
+- Add codec and transport regression tests for explicit capabilities, legacy peers, and future message compatibility.
+
+### Changed
+
+- Negotiate reliable transport acknowledgments from the HUD's declared capability instead of inferring support only from its build number.
+- Preserve the historical build-number fallback when an older HUD omits the new protocol contract.
+
+### Fixed
+
+- Prevent a newer or malformed peer contract from silently inheriting unsupported legacy transport behavior.
+
 ## 1.3.83 (build 92)
 
 ### Added

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.rokid.cxr.client.utils.ValueUtil
+import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.glasses.CxrOutboundTransport
 import com.clawsses.phone.glasses.GlassesConnectionManager
 import com.clawsses.phone.glasses.RokidSdkManager
@@ -39,6 +40,9 @@ import com.clawsses.shared.HudCard
 import com.clawsses.shared.HudCardAction
 import com.clawsses.shared.LiveCaptionUpdate
 import com.clawsses.shared.ModelOperationUpdate
+import com.clawsses.shared.PeerDescriptor
+import com.clawsses.shared.PeerProtocol
+import com.clawsses.shared.PhonePeerState
 import com.clawsses.shared.RunStateUpdate
 import com.clawsses.shared.SessionOperationUpdate
 import com.clawsses.shared.TtsState
@@ -473,7 +477,20 @@ class PhoneGlassesBridgeController(
     }
 
     private fun handleStateRequest(command: GlassesCommand.RequestState) {
-        glassesManager.updatePeerVersion(command.versionCode?.takeIf { it >= 0 })
+        glassesManager.updatePeerDescriptor(
+            PeerDescriptor(
+                versionName = command.versionName,
+                versionCode = command.versionCode?.takeIf { it >= 0 },
+                protocolVersion = command.protocolVersion,
+                capabilities = PeerProtocol.normalizeCapabilities(command.capabilities),
+            ),
+        )
+        glassesManager.sendRawMessage(
+            PhonePeerState(
+                versionName = BuildConfig.VERSION_NAME,
+                versionCode = BuildConfig.VERSION_CODE,
+            ).toJson(),
+        )
         sendCompleteState()
         openClawClient.requestModels()
     }

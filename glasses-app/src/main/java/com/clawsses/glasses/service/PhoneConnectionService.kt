@@ -6,6 +6,7 @@ import com.clawsses.glasses.debug.DebugPhoneTransport
 import com.clawsses.glasses.debug.DebugPhoneTransportDefaults
 import com.clawsses.glasses.debug.createDebugPhoneTransport
 import com.clawsses.shared.GlassesStateRequest
+import com.clawsses.shared.PeerProtocol
 import com.rokid.cxr.Caps
 import com.rokid.cxr.CXRServiceBridge
 import kotlinx.coroutines.*
@@ -213,6 +214,8 @@ class PhoneConnectionService(
                             GlassesStateRequest(
                                 versionName = BuildConfig.VERSION_NAME,
                                 versionCode = BuildConfig.VERSION_CODE,
+                                protocolVersion = PeerProtocol.CURRENT_VERSION,
+                                capabilities = PeerProtocol.HUD_CAPABILITIES,
                             ).toJson()
                         )
                         cxrBridge?.sendMessage(MSG_TYPE_COMMAND, caps)

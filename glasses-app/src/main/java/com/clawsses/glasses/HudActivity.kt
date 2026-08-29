@@ -64,6 +64,7 @@ import com.clawsses.glasses.ui.visibleMoreMenuItems
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
 import com.clawsses.shared.GlassesStateRequest
+import com.clawsses.shared.PeerProtocol
 import com.clawsses.shared.VisionCommands
 import com.clawsses.shared.TtsVoiceCommands
 import kotlinx.coroutines.Job
@@ -378,6 +379,8 @@ class HudActivity : ComponentActivity() {
             GlassesStateRequest(
                 versionName = BuildConfig.VERSION_NAME,
                 versionCode = BuildConfig.VERSION_CODE,
+                protocolVersion = PeerProtocol.CURRENT_VERSION,
+                capabilities = PeerProtocol.HUD_CAPABILITIES,
             ).toJson()
         )
     }
@@ -2362,6 +2365,14 @@ class HudActivity : ComponentActivity() {
                     hudState.value,
                     HudStateEvent.RunChanged(message.state, message.canAbort),
                 ).state
+            }
+            is PhoneHudMessage.PeerState -> {
+                Log.i(
+                    GlassesApp.TAG,
+                    "Phone peer build=${message.versionCode}, protocol=${message.protocolVersion}, " +
+                        "compatibility=${PeerProtocol.compatibility(message.protocolVersion)}, " +
+                        "capabilities=${message.capabilities.sorted().joinToString()}",
+                )
             }
         }
     }

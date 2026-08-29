@@ -50,6 +50,13 @@ sealed interface PhoneHudMessage {
 
     data class RunState(val state: String, val canAbort: Boolean) : PhoneHudMessage
 
+    data class PeerState(
+        val versionName: String,
+        val versionCode: Int,
+        val protocolVersion: Int,
+        val capabilities: Set<String>,
+    ) : PhoneHudMessage
+
     data class Thumbnail(
         val encoded: String,
         val format: String?,
@@ -124,6 +131,15 @@ object PhoneHudMessageCodec {
             state = json.requiredString("state"),
             canAbort = json.requiredBoolean("canAbort"),
         )
+        "peer_state" -> PhoneHudMessage.PeerState(
+            versionName = json.requiredString("versionName"),
+            versionCode = json.requiredInt("versionCode"),
+            protocolVersion = json.requiredInt("protocolVersion"),
+            capabilities = json.optionalArray("capabilities")?.map { item ->
+                item.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+                    ?: error("capabilities entries must be strings")
+            }?.toSet().orEmpty(),
+        )
         else -> null
     }
 
@@ -169,6 +185,10 @@ object PhoneHudMessageCodec {
     private fun JsonObject.requiredBoolean(key: String): Boolean =
         get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive
             ?.takeIf { it.isBoolean }?.asBoolean ?: error("$key must be a boolean")
+
+    private fun JsonObject.requiredInt(key: String): Int =
+        get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive
+            ?.takeIf { it.isNumber }?.asInt ?: error("$key must be a number")
 
     private fun JsonObject.booleanOrDefault(key: String, default: Boolean): Boolean =
         if (!has(key) || get(key).isJsonNull) default else requiredBoolean(key)
