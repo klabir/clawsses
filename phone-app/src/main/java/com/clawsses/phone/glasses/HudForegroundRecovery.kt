@@ -21,6 +21,14 @@ internal class HudForegroundRecovery(
         recoveryScheduled = true
     }
 
+    /** Schedules recovery only when a matching accepted AI activation armed this cycle. */
+    fun scheduleIfArmedForAiExit(nowMs: Long): Boolean {
+        if (!isArmed(nowMs) || recoveryScheduled) return false
+        armedUntilMs = nowMs + recoveryWindowMs
+        recoveryScheduled = true
+        return true
+    }
+
     fun onForegroundChanged(
         packageName: String?,
         connected: Boolean,
@@ -31,7 +39,16 @@ internal class HudForegroundRecovery(
             return ForegroundAction.CANCEL_RECOVERY
         }
 
-        if (packageName == hudPackage || packageName != launcherPackage) {
+        if (packageName == hudPackage) {
+            // The vendor can report the HUD once more while its AI scene is starting. Preserve an
+            // armed cycle until exit; only a scheduled recovery followed by HUD resume proves that
+            // recovery completed.
+            if (!recoveryScheduled) return ForegroundAction.NONE
+            reset()
+            return ForegroundAction.CANCEL_RECOVERY
+        }
+
+        if (packageName != launcherPackage) {
             reset()
             return ForegroundAction.CANCEL_RECOVERY
         }

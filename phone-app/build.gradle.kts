@@ -7,9 +7,11 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.security.MessageDigest
 import java.util.zip.ZipFile
 
 abstract class BundleGlassesApkTask : DefaultTask() {
@@ -85,6 +87,83 @@ abstract class VerifyPublicReleaseCredentialsTask : DefaultTask() {
                 "Public release APK contains a configured private Rokid credential"
             }
         }
+    }
+}
+
+abstract class GeneratePairedReleaseEvidenceTask : DefaultTask() {
+    @get:InputFile
+    abstract val phoneApk: RegularFileProperty
+
+    @get:InputFile
+    abstract val glassesApk: RegularFileProperty
+
+    @get:Input
+    abstract val sourceCommit: Property<String>
+
+    @get:Input
+    abstract val sourceTreeDirty: Property<Boolean>
+
+    @get:Input
+    abstract val versionCode: Property<Int>
+
+    @get:Input
+    abstract val versionName: Property<String>
+
+    @get:OutputFile
+    abstract val evidenceFile: RegularFileProperty
+
+    @TaskAction
+    fun generate() {
+        val phone = phoneApk.get().asFile
+        val glasses = glassesApk.get().asFile
+        val phoneHash = phone.inputStream().use(::sha256)
+        val glassesHash = glasses.inputStream().use(::sha256)
+        val embeddedHash = ZipFile(phone).use { apk ->
+            val embedded = apk.getEntry("assets/glasses-app-release.apk")
+                ?: error("Phone release does not contain the paired HUD APK")
+            apk.getInputStream(embedded).use(::sha256)
+        }
+        check(embeddedHash == glassesHash) {
+            "Phone release embeds HUD $embeddedHash but paired HUD is $glassesHash"
+        }
+
+        val output = evidenceFile.get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(
+            """
+            {
+              "schemaVersion": 1,
+              "sourceCommit": "${sourceCommit.get()}",
+              "sourceTreeDirty": ${sourceTreeDirty.get()},
+              "versionName": "${versionName.get()}",
+              "versionCode": ${versionCode.get()},
+              "artifactClass": "public-release",
+              "phone": {
+                "file": "${phone.name}",
+                "sizeBytes": ${phone.length()},
+                "sha256": "$phoneHash"
+              },
+              "hud": {
+                "file": "${glasses.name}",
+                "sizeBytes": ${glasses.length()},
+                "sha256": "$glassesHash",
+                "embeddedSha256": "$embeddedHash",
+                "embeddedMatches": true
+              }
+            }
+            """.trimIndent() + "\n"
+        )
+    }
+
+    private fun sha256(input: java.io.InputStream): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
 }
 
@@ -361,4 +440,43 @@ tasks.named("check").configure {
     if (!useDebugSigningForHardwareTest.get()) {
         dependsOn(verifyPublicReleaseHasNoRokidCredentials)
     }
+}
+
+val generatePairedReleaseEvidence = tasks.register<GeneratePairedReleaseEvidenceTask>(
+    "generatePairedReleaseEvidence"
+) {
+    group = "verification"
+    description = "Writes public paired Phone/HUD hashes and verifies the embedded HUD identity."
+    dependsOn(
+        verifyReleaseExcludesDebugTransport,
+        verifyPublicReleaseHasNoRokidCredentials,
+        ":glasses-app:verifyGlassesReleaseIsolation",
+    )
+    phoneApk.set(
+        layout.buildDirectory.file("outputs/apk/release/phone-app-release-unsigned.apk")
+    )
+    glassesApk.set(
+        project(":glasses-app").layout.buildDirectory.file(
+            "outputs/apk/release/glasses-app-release-unsigned.apk"
+        )
+    )
+    sourceCommit.set(
+        providers.exec {
+            commandLine("git", "rev-parse", "HEAD")
+        }.standardOutput.asText.map(String::trim)
+    )
+    sourceTreeDirty.set(
+        providers.exec {
+            commandLine("git", "status", "--porcelain", "--untracked-files=normal")
+        }.standardOutput.asText.map { it.isNotBlank() }
+    )
+    versionCode.set(clawssesVersionCode)
+    versionName.set(clawssesVersionName)
+    evidenceFile.set(layout.buildDirectory.file("reports/release/paired-release-evidence.json"))
+}
+
+tasks.register("verifyPairedRelease") {
+    group = "verification"
+    description = "Runs the full source gate and emits paired public-release evidence."
+    dependsOn("check", generatePairedReleaseEvidence)
 }

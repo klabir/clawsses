@@ -6,7 +6,8 @@ import android.util.Log
 import com.clawsses.phone.audio.AudioSessionCoordinator
 import com.clawsses.phone.audio.AudioSessionLease
 import com.clawsses.phone.glasses.GlassesConnectionManager
-import com.clawsses.phone.glasses.RokidSdkManager
+import com.clawsses.phone.glasses.RokidDeviceFacade
+import com.clawsses.phone.glasses.ProductionRokidDeviceFacade
 import com.clawsses.phone.voice.VoiceCommandHandler
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
@@ -27,6 +28,7 @@ class StagedVoiceCoordinator(
     private val voiceRecognitionManager: VoiceRecognitionManager,
     private val audioSessionCoordinator: AudioSessionCoordinator,
     private val stopCurrentTtsOutput: () -> Unit,
+    private val rokidDevice: RokidDeviceFacade = ProductionRokidDeviceFacade,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val attemptGate = RecognitionAttemptGate()
@@ -46,8 +48,8 @@ class StagedVoiceCoordinator(
 
         voiceRecognitionManager.cancelListening()
         voiceHandler.cancelListening()
-        RokidSdkManager.setCommunicationDevice()
-        RokidSdkManager.sendAsrContent("...")
+        rokidDevice.setCommunicationDevice()
+        rokidDevice.sendAsrContent("...")
         sendVoiceState("listening", mode)
 
         voiceRecognitionManager.onSpeechStopped = {
@@ -68,7 +70,7 @@ class StagedVoiceCoordinator(
         voiceRecognitionManager.onSpeechStopped = null
         voiceHandler.cancelListening()
         releaseCaptureLease()
-        RokidSdkManager.clearCommunicationDevice()
+        rokidDevice.clearCommunicationDevice()
         if (sendIdle) sendVoiceState("idle")
     }
 
@@ -76,7 +78,7 @@ class StagedVoiceCoordinator(
         if (!attemptGate.isCurrent(attemptId)) return
         Log.w(TAG, "Primary recognition failed; retrying once with phone microphone")
         voiceRecognitionManager.cancelListening()
-        RokidSdkManager.clearCommunicationDevice()
+        rokidDevice.clearCommunicationDevice()
         mainHandler.postDelayed({
             if (!attemptGate.isCurrent(attemptId)) return@postDelayed
             voiceHandler.startListening(languageTag) { result -> complete(attemptId, result) }
@@ -87,7 +89,7 @@ class StagedVoiceCoordinator(
         if (!attemptGate.complete(attemptId)) return
         releaseCaptureLease()
         voiceRecognitionManager.onSpeechStopped = null
-        RokidSdkManager.clearCommunicationDevice()
+        rokidDevice.clearCommunicationDevice()
         when (result) {
             is VoiceCommandHandler.VoiceResult.Text -> completeText(result.text)
             is VoiceCommandHandler.VoiceResult.Command -> completeCommand(result.command)
@@ -98,27 +100,27 @@ class StagedVoiceCoordinator(
     private fun completeText(rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty()) {
-            RokidSdkManager.notifyAsrNone()
+            rokidDevice.notifyAsrNone()
             sendVoiceState("idle")
             postExit(EMPTY_EXIT_DELAY_MS)
             return
         }
-        RokidSdkManager.sendAsrContent(text)
-        RokidSdkManager.notifyAsrEnd()
+        rokidDevice.sendAsrContent(text)
+        rokidDevice.notifyAsrEnd()
         sendVoiceResult("text", text)
         postExit(TEXT_EXIT_DELAY_MS)
     }
 
     private fun completeCommand(command: String) {
         if (TtsVoiceCommands.isStopCurrentOutput(command)) stopCurrentTtsOutput()
-        RokidSdkManager.sendAsrContent(command)
-        RokidSdkManager.notifyAsrEnd()
+        rokidDevice.sendAsrContent(command)
+        rokidDevice.notifyAsrEnd()
         sendVoiceResult("command", command)
         postExit(COMMAND_EXIT_DELAY_MS)
     }
 
     private fun completeError(message: String) {
-        RokidSdkManager.notifyAsrError()
+        rokidDevice.notifyAsrError()
         sendVoiceResult("error", message)
         postExit(ERROR_EXIT_DELAY_MS)
     }
@@ -149,7 +151,7 @@ class StagedVoiceCoordinator(
     }
 
     private fun postExit(delayMs: Long) {
-        mainHandler.postDelayed(RokidSdkManager::sendExitEvent, delayMs)
+        mainHandler.postDelayed({ rokidDevice.sendExitEvent() }, delayMs)
     }
 
     companion object {

@@ -69,6 +69,21 @@ class HudForegroundRecoveryTest {
     }
 
     @Test
+    fun `hud callback during active ai scene keeps recovery armed`() {
+        recovery.armForAiExit(10_000L)
+
+        assertEquals(NONE, recovery.onForegroundChanged(hud, true, 10_100L))
+        assertTrue(recovery.scheduleIfArmedForAiExit(10_200L))
+        assertTrue(recovery.consumeScheduledRecovery(true, 10_300L))
+    }
+
+    @Test
+    fun `stray ai exit cannot reclaim launcher`() {
+        assertFalse(recovery.scheduleIfArmedForAiExit(10_000L))
+        assertEquals(NONE, recovery.onForegroundChanged(launcher, true, 10_100L))
+    }
+
+    @Test
     fun `expired recovery window does not reclaim launcher`() {
         recovery.armForAiExit(10_000L)
 

@@ -5,7 +5,6 @@ import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.shared.*
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -117,7 +116,9 @@ class OpenClawClient(
     @Volatile private var activeSessionKey: String? = null // session that initiated the current run
     @Volatile private var abortingRunId: String? = null
     private val completedAbortedRuns = ConcurrentHashMap<String, Long>()
-    private var streamingContent = StringBuilder()
+    // Gateway deltas already carry the full immutable text. Retain that String directly instead
+    // of copying the whole response into a StringBuilder for every delta.
+    private var streamingContent = ""
     private val streamUpdateBuffer = StreamUpdateBuffer()
     private var lastAgentPhase: String? = null
     @Volatile private var agentProgressActive = false
@@ -378,7 +379,7 @@ class OpenClawClient(
                 activeSessionKey = sessionKey
                 activeRunId = idempotencyKey
                 abortingRunId = null
-                streamingContent.clear()
+                streamingContent = ""
                 streamUpdateBuffer.reset()
                 lastAgentPhase = null
 
@@ -978,40 +979,31 @@ class OpenClawClient(
 
     private fun handleFrame(json: String, generation: Long) {
         if (!isCurrentConnection(generation)) return
-        try {
-            val obj = JsonParser.parseString(json).asJsonObject
-            when (obj.get("type")?.asString) {
-                "res" -> handleResponse(obj)
-                "event" -> handleEvent(obj, generation)
-                else -> Log.w(TAG, "Unknown frame type (${json.length} bytes)")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing frame (${json.length} bytes)", e)
+        when (val frame = OpenClawWireCodec.decode(json)) {
+            is GatewayFrame.Response -> handleResponse(frame.value)
+            is GatewayFrame.Event -> handleEvent(frame.value, generation)
+            is GatewayFrame.Unknown -> Log.w(TAG, "Unknown frame type (${json.length} bytes)")
+            is GatewayFrame.Malformed -> Log.e(
+                TAG,
+                "Error parsing frame (${json.length} bytes): ${frame.reason}",
+            )
         }
     }
 
-    private fun handleResponse(obj: JsonObject) {
-        val id = obj.get("id")?.asString ?: return
-        val ok = obj.get("ok")?.asBoolean ?: false
-        val payload = obj.getAsJsonObject("payload")
-        val error = obj.getAsJsonObject("error")
-
-        val response = OpenClawResponse(id = id, ok = ok, payload = payload, error = error)
-
+    private fun handleResponse(response: OpenClawResponse) {
         // Complete the pending request
-        val deferred = pendingRequests.remove(id)
+        val deferred = pendingRequests.remove(response.id)
         if (deferred != null) {
             deferred.complete(response)
         } else {
-            Log.d(TAG, "No pending request for id=$id (may be agent completion)")
+            Log.d(TAG, "No pending request for id=${response.id} (may be agent completion)")
         }
     }
 
-    private fun handleEvent(obj: JsonObject, generation: Long) {
+    private fun handleEvent(event: OpenClawEvent, generation: Long) {
         if (!isCurrentConnection(generation)) return
-        val eventName = obj.get("event")?.asString ?: return
-        val payload = obj.getAsJsonObject("payload")
-        val event = OpenClawEvent(event = eventName, payload = payload)
+        val eventName = event.event
+        val payload = event.payload
 
         Log.d(TAG, "Received event: $eventName")
 
@@ -1088,53 +1080,13 @@ class OpenClawClient(
                 val authToken = synchronized(connectionLock) {
                     token.takeIf { connectionEpoch.isCurrent(generation) }
                 } ?: return@launch
-                val params = JsonObject().apply {
-                    addProperty("minProtocol", PROTOCOL_VERSION)
-                    addProperty("maxProtocol", PROTOCOL_VERSION)
-
-                    add("client", JsonObject().apply {
-                        addProperty("id", "openclaw-control-ui")
-                        addProperty("version", "1.0.0")
-                        addProperty("platform", "android")
-                        addProperty("mode", "ui")
-                    })
-
-                    addProperty("role", "operator")
-                    add("scopes", JsonArray().apply {
-                        add("operator.read")
-                        add("operator.write")
-                    })
-
-                    add("auth", JsonObject().apply {
-                        addProperty("token", authToken)
-                    })
-
-                    // Device identity for pairing
-                    val signedAtMs = System.currentTimeMillis()
-                    val scopesList = listOf("operator.read", "operator.write")
-                    add("device", JsonObject().apply {
-                        addProperty("id", deviceIdentity.deviceId)
-                        addProperty("publicKey", deviceIdentity.publicKeyBase64Url)
-                        addProperty("signature", deviceIdentity.signAuthPayload(
-                            clientId = "openclaw-control-ui",
-                            clientMode = "ui",
-                            role = "operator",
-                            scopes = scopesList,
-                            signedAtMs = signedAtMs,
-                            token = authToken,
-                            nonce = nonce
-                        ))
-                        addProperty("signedAt", signedAtMs)
-                        addProperty("nonce", nonce)
-                        val savedToken = deviceIdentity.deviceToken
-                        if (savedToken != null) {
-                            addProperty("deviceToken", savedToken)
-                        }
-                    })
-
-                    addProperty("locale", "nl-NL")
-                    addProperty("userAgent", "clawsses-android/1.0.0")
-                }
+                val params = OpenClawAuthRequestFactory.create(
+                    protocolVersion = PROTOCOL_VERSION,
+                    token = authToken,
+                    nonce = nonce,
+                    deviceIdentity = deviceIdentity,
+                    signedAtMs = System.currentTimeMillis(),
+                )
 
                 Log.d(TAG, "Sending connect...")
                 val response = sendRequest(
@@ -1203,10 +1155,10 @@ class OpenClawClient(
      *     message: { role, content: [{type:"text", text:"..."}] } }
      */
     private fun handleChatEvent(payload: JsonObject?) {
-        payload ?: return
-        val state = payload.get("state")?.asString ?: return
-        val runId = payload.get("runId")?.asString
-        val eventSessionKey = payload.get("sessionKey")?.asString
+        val event = ChatEventParser.parse(payload) ?: return
+        val state = event.state
+        val runId = event.runId
+        val eventSessionKey = event.sessionKey
 
         if (runId != null && completedAbortedRuns.containsKey(runId)) return
 
@@ -1225,7 +1177,7 @@ class OpenClawClient(
                     activeMessageId = null
                     activeSessionKey = null
                     abortingRunId = null
-                    streamingContent.clear()
+                    streamingContent = ""
                     updateRunState(if (state == "error") RunState.ERROR else RunState.IDLE)
                 }
             }
@@ -1242,12 +1194,11 @@ class OpenClawClient(
                 if (runId == abortingRunId) return
                 // Each delta contains the full accumulated text, not just the new chunk.
                 // Track only the prior length so growing responses are not copied twice per event.
-                val fullText = extractTextFromMessage(payload)
+                val fullText = event.fullText
                 val previousLength = streamingContent.length
                 if (fullText.length > previousLength) {
                     val newChunk = fullText.substring(previousLength)
-                    streamingContent.clear()
-                    streamingContent.append(fullText)
+                    streamingContent = fullText
                     clearAgentProgress()
                     updateRunState(RunState.STREAMING)
                     enqueueStreamingUpdate(msgId, fullText, newChunk)
@@ -1259,12 +1210,11 @@ class OpenClawClient(
                     finalizeStreaming("aborted")
                     return
                 }
-                val fullText = extractTextFromMessage(payload)
+                val fullText = event.fullText
                 val previousLength = streamingContent.length
                 if (fullText.length > previousLength) {
                     val newChunk = fullText.substring(previousLength)
-                    streamingContent.clear()
-                    streamingContent.append(fullText)
+                    streamingContent = fullText
                     enqueueStreamingUpdate(msgId, fullText, newChunk)
                 }
                 flushPendingStreamingUpdate()
@@ -1272,30 +1222,10 @@ class OpenClawClient(
             }
             "aborted", "error" -> {
                 if (state == "aborted" && runId != null) rememberAbortedRun(runId)
-                val errorMsg = payload.get("errorMessage")
-                    ?.takeIf { it.isJsonPrimitive }?.asString
                 Log.w(TAG, "Chat run ended with state=$state")
-                finalizeStreaming(state, errorMsg)
+                finalizeStreaming(state, event.errorMessage)
             }
         }
-    }
-
-    /**
-     * Extract text from a chat event message payload.
-     * message.content is an array of {type:"text", text:"..."} blocks.
-     */
-    private fun extractTextFromMessage(payload: JsonObject): String {
-        val message = payload.getAsJsonObject("message") ?: return ""
-        val contentArray = message.getAsJsonArray("content") ?: return ""
-        val sb = StringBuilder()
-        for (element in contentArray) {
-            val block = element.asJsonObject
-            if (block.get("type")?.asString == "text") {
-                val text = block.get("text")?.asString
-                if (text != null) sb.append(text)
-            }
-        }
-        return sb.toString()
     }
 
     private fun enqueueStreamingUpdate(messageId: String, fullText: String, chunk: String) {
@@ -1314,7 +1244,7 @@ class OpenClawClient(
 
     private fun finalizeStreaming(terminalState: String, errorMessage: String? = null) {
         val msgId = activeMessageId ?: return
-        val content = streamingContent.toString()
+        val content = streamingContent
         clearAgentProgress()
 
         if (content.isNotEmpty()) {
@@ -1336,7 +1266,7 @@ class OpenClawClient(
         activeMessageId = null
         activeSessionKey = null
         abortingRunId = null
-        streamingContent.clear()
+        streamingContent = ""
         streamUpdateBuffer.reset()
         lastAgentPhase = null
         updateRunState(
@@ -1352,7 +1282,7 @@ class OpenClawClient(
         activeMessageId = null
         activeSessionKey = null
         abortingRunId = null
-        streamingContent.clear()
+        streamingContent = ""
         streamUpdateBuffer.reset()
         lastAgentPhase = null
         updateRunState(

@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
@@ -25,6 +24,7 @@ import com.clawsses.glasses.camera.CameraCapture
 import com.clawsses.glasses.camera.PhotoCaptureState
 import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.media.ThumbnailBitmapCache
+import com.clawsses.glasses.media.ThumbnailHandle
 import com.clawsses.glasses.protocol.PhoneHudDecodeResult
 import com.clawsses.glasses.protocol.PhoneHudMessage
 import com.clawsses.glasses.protocol.PhoneHudMessageCodec
@@ -47,6 +47,7 @@ import com.clawsses.glasses.ui.HudCardActionDisplay
 import com.clawsses.glasses.ui.HudCardDisplay
 import com.clawsses.glasses.ui.HudPosition
 import com.clawsses.glasses.ui.HudScreen
+import com.clawsses.glasses.ui.toHudUiState
 import com.clawsses.glasses.ui.HudStreamingAccumulator
 import com.clawsses.glasses.ui.HudStreamingSnapshot
 import com.clawsses.glasses.ui.HudTelemetry
@@ -63,7 +64,8 @@ import com.clawsses.glasses.ui.LiveCaptionDisplay
 import com.clawsses.glasses.ui.visibleMoreMenuItems
 import com.clawsses.glasses.ui.theme.GlassesHudTheme
 import com.clawsses.glasses.voice.GlassesVoiceHandler
-import com.clawsses.shared.GlassesStateRequest
+import com.clawsses.shared.GlassesCommand
+import com.clawsses.shared.GlassesCommandCodec
 import com.clawsses.shared.PeerProtocol
 import com.clawsses.shared.VisionCommands
 import com.clawsses.shared.TtsVoiceCommands
@@ -186,7 +188,7 @@ class HudActivity : ComponentActivity() {
         Log.i(GlassesApp.TAG, "HudActivity attached to process-scoped phone bridge, debugMode=$DEBUG_MODE")
 
         voiceHandler = GlassesVoiceHandler()
-        voiceHandler.sendToPhone = { message -> phoneConnection.sendToPhone(message) }
+        voiceHandler.sendCommand = ::sendCommand
         voiceHandler.initialize()
         val assistantIntentFilter = IntentFilter(ACTION_AI_START).apply {
             addAction(ACTION_SPRITE_BUTTON_LONG_PRESS)
@@ -245,7 +247,8 @@ class HudActivity : ComponentActivity() {
                         val current = hudState.value
                         if (current.photoThumbnails.size < MAX_PHOTOS) {
                             hudState.value = current.copy(
-                                photoThumbnails = current.photoThumbnails + photoState.thumbnail
+                                photoThumbnails = current.photoThumbnails +
+                                    ThumbnailBitmapCache.put(photoState.thumbnail)
                             )
                         } else {
                             Log.w(GlassesApp.TAG, "Max $MAX_PHOTOS photos reached, ignoring capture")
@@ -267,8 +270,9 @@ class HudActivity : ComponentActivity() {
         setContent {
             GlassesHudTheme {
                 val state by hudState.collectAsStateWithLifecycle()
+                val uiState = remember(state) { state.toHudUiState() }
                 HudScreen(
-                    state = state,
+                    state = uiState,
                     telemetry = hudTelemetry,
                     streamingMessage = streamingMessage,
                     onTap = { handleGesture(Gesture.TAP) },
@@ -375,14 +379,18 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun requestCurrentPhoneState() {
-        phoneConnection.sendToPhone(
-            GlassesStateRequest(
+        sendCommand(
+            GlassesCommand.RequestState(
                 versionName = BuildConfig.VERSION_NAME,
                 versionCode = BuildConfig.VERSION_CODE,
                 protocolVersion = PeerProtocol.CURRENT_VERSION,
-                capabilities = PeerProtocol.HUD_CAPABILITIES,
-            ).toJson()
+                capabilities = PeerProtocol.HUD_CAPABILITIES.toSet(),
+            )
         )
+    }
+
+    private fun sendCommand(command: GlassesCommand) {
+        phoneConnection.sendToPhone(GlassesCommandCodec.encode(command))
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
@@ -526,7 +534,7 @@ class HudActivity : ComponentActivity() {
             return
         }
         if (current.liveCaptionEnabled && gesture == Gesture.DOUBLE_TAP) {
-            phoneConnection.sendToPhone("""{"type":"live_caption_toggle","enabled":false}""")
+            sendCommand(GlassesCommand.LiveCaptionToggle(false))
             hudState.value = current.copy(liveCaptionEnabled = false, liveCaption = null)
             return
         }
@@ -660,7 +668,7 @@ class HudActivity : ComponentActivity() {
                                 focusedArea = ChatFocusArea.MENU,
                                 menuBarIndex = 0
                             )
-                            phoneConnection.sendToPhone("""{"type":"remove_photo","index":$idx}""")
+                            sendCommand(GlassesCommand.RemovePhoto(all = false, index = idx))
                             return
                         } else {
                             // Keep the primary action focused after removing a photo.
@@ -670,7 +678,7 @@ class HudActivity : ComponentActivity() {
                             photoThumbnails = newThumbnails,
                             inputActionIndex = newIndex
                         )
-                        phoneConnection.sendToPhone("""{"type":"remove_photo","index":$idx}""")
+                        sendCommand(GlassesCommand.RemovePhoto(all = false, index = idx))
                     }
                     idx == clearIndex -> {
                         // Clear all staged content and dismiss.
@@ -682,7 +690,7 @@ class HudActivity : ComponentActivity() {
                             focusedArea = ChatFocusArea.CONTENT
                         )
                         if (current.photoThumbnails.isNotEmpty()) {
-                            phoneConnection.sendToPhone("""{"type":"remove_photo","all":true}""")
+                            sendCommand(GlassesCommand.RemovePhoto(all = true, index = null))
                         }
                     }
                     idx == sendIndex -> {
@@ -815,12 +823,7 @@ class HudActivity : ComponentActivity() {
             return
         }
 
-        val request = JSONObject().apply {
-            put("type", "take_photo")
-            put("sendAfterCapture", sendAfterCapture)
-            visionPrompt?.let { put("visionPrompt", it) }
-        }
-        phoneConnection.sendToPhone(request.toString())
+        sendCommand(GlassesCommand.TakePhoto(sendAfterCapture, visionPrompt))
         Log.d(GlassesApp.TAG, "Requested photo capture from phone (autoSend=$sendAfterCapture)")
     }
 
@@ -845,16 +848,11 @@ class HudActivity : ComponentActivity() {
         messages.add(userMsg)
 
         // Send user_input to phone
-        val json = JSONObject().apply {
-            put("type", "user_input")
-            put("id", userMsg.id)
-            put("text", text)
-        }
-        phoneConnection.sendToPhone(json.toString())
+        sendCommand(GlassesCommand.UserInput(text, userMsg.id))
 
         // Tell phone to clear its photos too
         if (thumbnails.isNotEmpty()) {
-            phoneConnection.sendToPhone("""{"type":"remove_photo","all":true}""")
+            sendCommand(GlassesCommand.RemovePhoto(all = true, index = null))
         }
         hudState.value = current.copy(
             messages = messages,
@@ -957,7 +955,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun createNewSession() {
-        phoneConnection.sendToPhone("""{"type":"create_session"}""")
+        sendCommand(GlassesCommand.CreateSession)
     }
 
     // ============== Model Picker Gestures ==============
@@ -1128,11 +1126,7 @@ class HudActivity : ComponentActivity() {
                 // Toggle TTS and notify phone
                 val newEnabled = !current.ttsEnabled
                 hudState.value = current.copy(ttsEnabled = newEnabled)
-                val json = JSONObject().apply {
-                    put("type", "tts_toggle")
-                    put("enabled", newEnabled)
-                }
-                phoneConnection.sendToPhone(json.toString())
+                sendCommand(GlassesCommand.TtsToggle(newEnabled))
                 Log.d(GlassesApp.TAG, "TTS toggle: $newEnabled")
             }
             MoreMenuItem.TALK -> {
@@ -1141,12 +1135,7 @@ class HudActivity : ComponentActivity() {
                     talkModeEnabled = enabled,
                     talkModePhase = if (enabled) "idle" else "off"
                 )
-                phoneConnection.sendToPhone(
-                    org.json.JSONObject().apply {
-                        put("type", "talk_mode_toggle")
-                        put("enabled", enabled)
-                    }.toString()
-                )
+                sendCommand(GlassesCommand.TalkModeToggle(enabled))
             }
             MoreMenuItem.CAPTIONS -> {
                 val enabled = !current.liveCaptionEnabled
@@ -1154,22 +1143,17 @@ class HudActivity : ComponentActivity() {
                     liveCaptionEnabled = enabled,
                     liveCaption = if (enabled) LiveCaptionDisplay() else null,
                 )
-                phoneConnection.sendToPhone(
-                    JSONObject().apply {
-                        put("type", "live_caption_toggle")
-                        put("enabled", enabled)
-                    }.toString()
-                )
+                sendCommand(GlassesCommand.LiveCaptionToggle(enabled))
             }
             MoreMenuItem.TTS_STOP -> {
-                phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
+                sendCommand(GlassesCommand.TtsControl("stop"))
             }
             MoreMenuItem.TTS_REPLAY -> {
-                phoneConnection.sendToPhone("""{"type":"tts_control","action":"replay"}""")
+                sendCommand(GlassesCommand.TtsControl("replay"))
             }
             MoreMenuItem.STOP_RUN -> {
                 if (current.runCanAbort) {
-                    phoneConnection.sendToPhone("""{"type":"abort_run"}""")
+                    sendCommand(GlassesCommand.AbortRun)
                     hudState.value = current.copy(
                         runState = "aborting",
                         runCanAbort = false,
@@ -1204,11 +1188,7 @@ class HudActivity : ComponentActivity() {
             Gesture.TAP -> {
                 val item = commands[current.selectedSlashIndex]
                 // Send slash command to phone
-                val json = JSONObject().apply {
-                    put("type", "slash_command")
-                    put("command", item.command)
-                }
-                phoneConnection.sendToPhone(json.toString())
+                sendCommand(GlassesCommand.Slash(item.command))
                 hudState.value = current.copy(
                     showSlashMenu = false,
                     selectedSlashIndex = 0
@@ -1265,11 +1245,7 @@ class HudActivity : ComponentActivity() {
 
         hudState.value = current.copy(isLoadingMoreHistory = true)
 
-        val json = JSONObject().apply {
-            put("type", "request_more_history")
-            put("beforeMessageId", current.messages.first().id)
-        }
-        phoneConnection.sendToPhone(json.toString())
+        sendCommand(GlassesCommand.RequestMoreHistory(current.messages.first().id))
         Log.d(GlassesApp.TAG, "Requesting more history (currentCount=${current.messages.size})")
     }
 
@@ -1358,7 +1334,7 @@ class HudActivity : ComponentActivity() {
         }
         when (command) {
             TtsVoiceCommands.STOP_CURRENT_OUTPUT -> {
-                phoneConnection.sendToPhone("""{"type":"tts_control","action":"stop"}""")
+                sendCommand(GlassesCommand.TtsControl("stop"))
             }
             "scroll up" -> scrollUp()
             "scroll down" -> scrollDown()
@@ -1433,13 +1409,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun dismissHudCard(card: HudCardDisplay, action: HudCardActionDisplay) {
-        phoneConnection.sendToPhone(
-            JSONObject().apply {
-                put("type", "hud_card_action")
-                put("cardId", card.id)
-                put("actionId", action.id)
-            }.toString()
-        )
+        sendCommand(GlassesCommand.HudCardAction(card.id, action.id))
         hudState.update { current ->
             current.copy(
                 hudCards = current.hudCards.filterNot { it.id == card.id },
@@ -1508,19 +1478,11 @@ class HudActivity : ComponentActivity() {
                 sessionOperationError = null
             )
         }
-        val request = JSONObject().apply {
-            put("type", "list_sessions")
-            put("offset", offset.coerceAtLeast(0))
-        }
-        phoneConnection.sendToPhone(request.toString())
+        sendCommand(GlassesCommand.ListSessions(offset.coerceAtLeast(0)))
     }
 
     private fun switchToSession(sessionKey: String) {
-        val json = JSONObject().apply {
-            put("type", "switch_session")
-            put("sessionKey", sessionKey)
-        }
-        phoneConnection.sendToPhone(json.toString())
+        sendCommand(GlassesCommand.SwitchSession(sessionKey))
     }
 
     private fun requestModelPage(
@@ -1537,12 +1499,7 @@ class HudActivity : ComponentActivity() {
                 modelOperationError = null,
             )
         }
-        phoneConnection.sendToPhone(
-            JSONObject().apply {
-                put("type", "list_models")
-                put("offset", offset)
-            }.toString()
-        )
+        sendCommand(GlassesCommand.ListModels(offset))
     }
 
     private fun selectModel(model: ModelPickerInfo) {
@@ -1554,28 +1511,16 @@ class HudActivity : ComponentActivity() {
             modelOperationMessage = "Changing model...",
             modelOperationError = null,
         )
-        phoneConnection.sendToPhone(
-            JSONObject().apply {
-                put("type", "select_model")
-                put("catalog", catalogId)
-                put("index", model.index)
-                put("sessionKey", sessionKey)
-            }.toString()
-        )
+        sendCommand(GlassesCommand.SelectModel(sessionKey, catalogId, model.index))
     }
 
     private fun requestAgentList() {
         agentPickerRequested = true
-        phoneConnection.sendToPhone("""{"type":"list_agents"}""")
+        sendCommand(GlassesCommand.ListAgents)
     }
 
     private fun switchToAgent(agentId: String, agentName: String) {
-        val json = JSONObject().apply {
-            put("type", "switch_agent")
-            put("agentId", agentId)
-            put("agentName", agentName)
-        }
-        phoneConnection.sendToPhone(json.toString())
+        sendCommand(GlassesCommand.SwitchAgent(agentId, agentName))
     }
 
     private fun agentIdFromSessionKey(key: String?): String? {
@@ -2147,7 +2092,7 @@ class HudActivity : ComponentActivity() {
                     showWakeNotification(reason)
 
                     // Send acknowledgment back to phone
-                    phoneConnection.sendToPhone("""{"type":"wake_ack","ready":true,"timestamp":${System.currentTimeMillis()}}""")
+                    sendCommand(GlassesCommand.WakeAck(ready = true, timestamp = System.currentTimeMillis()))
                     Log.d(GlassesApp.TAG, "Sent wake_ack to phone")
                 }
 
@@ -2412,12 +2357,7 @@ class HudActivity : ComponentActivity() {
     )
 
     private fun acknowledgeTransport(transactionId: String) {
-        phoneConnection.sendToPhone(
-            JSONObject().apply {
-                put("type", "transport_ack")
-                put("tx", transactionId)
-            }.toString(),
-        )
+        sendCommand(GlassesCommand.TransportAck(transactionId))
     }
 
     private fun recordAndAcknowledgeTransport(transactionId: String) {
@@ -2426,21 +2366,21 @@ class HudActivity : ComponentActivity() {
         acknowledgeTransport(transactionId)
     }
 
-    private fun parseAttachmentThumbnails(message: JSONObject): List<Bitmap> {
+    private fun parseAttachmentThumbnails(message: JSONObject): List<ThumbnailHandle> {
         val attachments = message.optJSONArray("attachments") ?: return emptyList()
-        val thumbnails = mutableListOf<Bitmap>()
+        val thumbnails = mutableListOf<ThumbnailHandle>()
         for (index in 0 until minOf(attachments.length(), MAX_PHOTOS)) {
             val attachment = attachments.optJSONObject(index) ?: continue
             val encoded = attachment.optString("thumbnail")
                 ?.takeIf { it.isNotBlank() }
                 ?: continue
-            val bitmap = ThumbnailBitmapCache.decode(
+            val thumbnail = ThumbnailBitmapCache.decode(
                 encoded = encoded,
                 format = attachment.optString("thumbnailFormat").takeIf { it.isNotBlank() },
                 width = attachment.optInt("thumbnailWidth"),
                 height = attachment.optInt("thumbnailHeight"),
             )
-            if (bitmap != null) thumbnails += bitmap
+            if (thumbnail != null) thumbnails += thumbnail
         }
         return thumbnails
     }

@@ -137,13 +137,15 @@ object RokidSdkManager {
     private var savedMacAddress: String? = null
     private var savedRokidAccount: String? = null
     private var savedDeviceName: String? = null
+    private val connectionAttemptGate = CxrConnectionAttemptGate()
 
-    // Track if we're in init phase (need to call connectBluetooth after getting info)
-    private var pendingConnect = false
+    // The init callback may advance only the attempt that created it.
+    private var pendingConnectAttemptId: Long? = null
 
     // Last known brightness from glasses (tracked via BrightnessUpdateListener)
     private var lastKnownBrightness: Int = 15
     private var aiSceneRunning = false
+    private val aiActivationGate = AiActivationGate()
     private var classicBluetoothActivationRequested = false
     private val activateClassicBluetoothRunnable = Runnable {
         if (!isConnected() || classicBluetoothActivationRequested) return@Runnable
@@ -158,7 +160,7 @@ object RokidSdkManager {
     }
 
     // SN auto-generation: first attempt fails, we read the SN and retry
-    private var snAutoRetryInProgress = false
+    private var snAutoRetryAttemptId: Long? = null
     // Generated snEncryptContent for retry (stored after first SN_CHECK_FAILED)
     private var generatedSnEncryptContent: ByteArray? = null
 
@@ -191,12 +193,17 @@ object RokidSdkManager {
     var onAudioStreamStarted: ((codec: Int, originCodec: Int, channels: Int, streamType: String) -> Unit)? = null
     var onAudioStreamData: ((data: ByteArray, offset: Int, length: Int) -> Unit)? = null
     var onAudioStreamFinished: (() -> Unit)? = null
+    var onAudioTransportActivity: (() -> Unit)? = null
 
     // Photo capture callback
     var onPhotoResult: ((status: ValueUtil.CxrStatus?, photoBytes: ByteArray?) -> Unit)? = null
 
-    private val bluetoothCallback = object : BluetoothStatusCallback {
+    private fun bluetoothCallback(attemptId: Long) = object : BluetoothStatusCallback {
         override fun onConnectionInfo(socketUuid: String?, macAddress: String?, rokidAccount: String?, deviceType: Int) {
+            if (!connectionAttemptGate.isCurrent(attemptId)) {
+                Log.i(TAG, "Ignoring stale CXR connection-info callback attempt=$attemptId")
+                return
+            }
             Log.i(TAG, "=== onConnectionInfo ===")
             Log.i(TAG, "  connection identifiers received")
             Log.i(TAG, "  deviceType=$deviceType")
@@ -206,7 +213,7 @@ object RokidSdkManager {
             savedMacAddress = macAddress
             savedRokidAccount = rokidAccount
             if (!socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()) {
-                saveConnectionInfo(socketUuid, macAddress)
+                saveConnectionInfo(macAddress)
             }
             // Try to save device name from Bluetooth device
             try {
@@ -228,18 +235,24 @@ object RokidSdkManager {
             onConnectionInfo?.invoke(socketUuid ?: "", macAddress ?: "", rokidAccount ?: "", deviceType)
 
             // After initBluetooth, call connectBluetooth to complete the connection
-            if (pendingConnect && !socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()) {
+            if (pendingConnectAttemptId == attemptId &&
+                !socketUuid.isNullOrEmpty() && !macAddress.isNullOrEmpty()
+            ) {
                 Log.i(TAG, "Got connection info, now calling connectBluetooth...")
-                pendingConnect = false
-                connectBluetoothInternal(socketUuid, macAddress, rokidAccount ?: "")
+                pendingConnectAttemptId = null
+                connectBluetoothInternal(attemptId, socketUuid, macAddress, rokidAccount ?: "")
             }
         }
 
         override fun onConnected() {
+            if (!connectionAttemptGate.isCurrent(attemptId)) {
+                Log.i(TAG, "Ignoring stale CXR connected callback attempt=$attemptId")
+                return
+            }
             Log.i(TAG, "=== onConnected === Bluetooth connected to glasses!")
             isBluetoothConnectedState = true
-            pendingConnect = false
-            snAutoRetryInProgress = false
+            pendingConnectAttemptId = null
+            snAutoRetryAttemptId = null
             requestGlassesSoftwareVersions()
             syncAssistantInput()
             scheduleClassicBluetoothActivation()
@@ -248,17 +261,21 @@ object RokidSdkManager {
         }
 
         override fun onInActiveConnected(socketUuid: String?, macAddress: String?) {
+            if (!connectionAttemptGate.isCurrent(attemptId)) {
+                Log.i(TAG, "Ignoring stale adopted-connection callback attempt=$attemptId")
+                return
+            }
             Log.i(TAG, "=== onInActiveConnected === Existing Bluetooth link adopted")
             if (!socketUuid.isNullOrEmpty() && socketUuid != "unknown" &&
                 !macAddress.isNullOrEmpty() && macAddress != "unknown"
             ) {
                 savedSocketUuid = socketUuid
                 savedMacAddress = macAddress
-                saveConnectionInfo(socketUuid, macAddress)
+                saveConnectionInfo(macAddress)
             }
             isBluetoothConnectedState = true
-            pendingConnect = false
-            snAutoRetryInProgress = false
+            pendingConnectAttemptId = null
+            snAutoRetryAttemptId = null
             requestGlassesSoftwareVersions()
             syncAssistantInput()
             scheduleClassicBluetoothActivation()
@@ -267,7 +284,12 @@ object RokidSdkManager {
         }
 
         override fun onDisconnected() {
+            if (!connectionAttemptGate.isCurrent(attemptId)) {
+                Log.i(TAG, "Ignoring stale CXR disconnected callback attempt=$attemptId")
+                return
+            }
             Log.i(TAG, "=== onDisconnected === Bluetooth disconnected from glasses")
+            connectionAttemptGate.cancel()
             isBluetoothConnectedState = false
             classicBluetoothActivationRequested = false
             mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
@@ -277,21 +299,27 @@ object RokidSdkManager {
         }
 
         override fun onFailed(errorCode: ValueUtil.CxrBluetoothErrorCode?) {
+            if (!connectionAttemptGate.isCurrent(attemptId)) {
+                Log.i(TAG, "Ignoring stale CXR failure callback attempt=$attemptId")
+                return
+            }
             Log.e(TAG, "=== onFailed === Bluetooth connection failed: $errorCode")
             isBluetoothConnectedState = false
             classicBluetoothActivationRequested = false
             mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
-            pendingConnect = false
+            pendingConnectAttemptId = null
 
             // SN_CHECK_FAILED means BT connected but SN verification failed.
             // Read the glasses SN from the SDK, generate encrypted content, and retry.
-            if (errorCode == ValueUtil.CxrBluetoothErrorCode.SN_CHECK_FAILED && !snAutoRetryInProgress) {
+            if (errorCode == ValueUtil.CxrBluetoothErrorCode.SN_CHECK_FAILED &&
+                snAutoRetryAttemptId != attemptId
+            ) {
                 Log.i(TAG, "SN_CHECK_FAILED - attempting auto-recovery...")
                 val glassesSn = readGlassesSnFromSdk()
                 if (glassesSn != null && glassesSn.isNotEmpty()) {
                     val clientSecret = configuredClientSecret()
                     if (clientSecret == null) {
-                        snAutoRetryInProgress = false
+                        snAutoRetryAttemptId = null
                         onBluetoothFailed?.invoke("Rokid credentials are missing or invalid")
                         return
                     }
@@ -300,13 +328,13 @@ object RokidSdkManager {
                         Log.i(TAG, "Generated SN verification content (${encrypted.size} bytes)")
                         generatedSnEncryptContent = encrypted
                         saveCachedSnEncryptContent(encrypted, glassesSn)
-                        snAutoRetryInProgress = true
+                        snAutoRetryAttemptId = attemptId
                         // Retry connection with correct snEncryptContent
                         val uuid = savedSocketUuid
                         val mac = savedMacAddress
                         if (!uuid.isNullOrEmpty() && !mac.isNullOrEmpty()) {
                             Log.i(TAG, "Retrying connectBluetooth with generated snEncryptContent...")
-                            connectBluetoothInternal(uuid, mac, savedRokidAccount ?: "")
+                            connectBluetoothInternal(attemptId, uuid, mac, savedRokidAccount ?: "")
                             return
                         }
                     }
@@ -314,7 +342,8 @@ object RokidSdkManager {
                 Log.e(TAG, "SN auto-recovery failed - could not read glasses SN or generate encrypted content")
             }
 
-            snAutoRetryInProgress = false
+            snAutoRetryAttemptId = null
+            connectionAttemptGate.cancel()
             onBluetoothFailed?.invoke(errorCode?.name ?: "Unknown error")
         }
     }
@@ -635,7 +664,7 @@ object RokidSdkManager {
                 override fun onAiKeyDown() {
                     aiSceneRunning = true
                     Log.i(TAG, "AI key pressed on glasses (long press)")
-                    onAiKeyDown?.invoke()
+                    dispatchAiActivation("key")
                 }
                 override fun onAiKeyUp() {
                     Log.d(TAG, "AI key released on glasses")
@@ -644,6 +673,7 @@ object RokidSdkManager {
                 override fun onAiExit() {
                     aiSceneRunning = false
                     Log.d(TAG, "AI scene exited on glasses")
+                    scheduleHudRecoveryAfterAiExit("event")
                     onAiExit?.invoke()
                 }
             })
@@ -656,13 +686,16 @@ object RokidSdkManager {
                     val running = sceneStatusInfo?.let {
                         it.isAiAssistRunning || it.isAiChatRunning
                     } ?: false
-                    val started = running && !aiSceneRunning
+                    val wasRunning = aiSceneRunning
+                    val started = running && !wasRunning
+                    val stopped = !running && wasRunning
                     aiSceneRunning = running
                     Log.d(TAG, "AI scene status updated: running=$running")
                     if (started) {
                         Log.i(TAG, "AI activation detected from scene status")
-                        onAiKeyDown?.invoke()
+                        dispatchAiActivation("scene")
                     }
+                    if (stopped) scheduleHudRecoveryAfterAiExit("scene")
                 }
             })
 
@@ -673,6 +706,7 @@ object RokidSdkManager {
                     channels: Int,
                     streamType: String?,
                 ) {
+                    onAudioTransportActivity?.invoke()
                     Log.i(
                         TAG,
                         "Glasses microphone stream started: codec=$codecType, originCodec=$originCodec, channels=$channels",
@@ -692,11 +726,13 @@ object RokidSdkManager {
                     length: Int,
                 ) {
                     if (data != null && length > 0 && offset >= 0 && offset + length <= data.size) {
+                        onAudioTransportActivity?.invoke()
                         onAudioStreamData?.invoke(data, offset, length)
                     }
                 }
 
                 override fun onAudioStreamFinish(streamId: Int) {
+                    onAudioTransportActivity?.invoke()
                     Log.i(TAG, "Glasses microphone stream finished")
                     onAudioStreamFinished?.invoke()
                 }
@@ -721,6 +757,24 @@ object RokidSdkManager {
         }
     }
 
+    private fun dispatchAiActivation(source: String) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!aiActivationGate.tryAccept(nowMs)) {
+            Log.i(TAG, "Ignoring duplicate AI activation source=$source")
+            return
+        }
+        hudForegroundRecovery.armForAiExit(nowMs)
+        onAiKeyDown?.invoke()
+    }
+
+    private fun scheduleHudRecoveryAfterAiExit(source: String) {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!hudForegroundRecovery.scheduleIfArmedForAiExit(nowMs)) return
+        Log.i(TAG, "Scheduling HUD recovery after AI exit source=$source")
+        mainHandler.removeCallbacks(reopenHudRunnable)
+        mainHandler.postDelayed(reopenHudRunnable, HUD_RECOVERY_FALLBACK_DELAY_MS)
+    }
+
     /**
      * Initialize Bluetooth connection with a discovered device.
      * This triggers onConnectionInfo callback, then we automatically call
@@ -733,13 +787,15 @@ object RokidSdkManager {
         }
 
         try {
-            Log.i(TAG, "=== initBluetooth === Starting with device: ${device.address}")
-            pendingConnect = true
-            cxrApi?.initBluetooth(context, device, bluetoothCallback)
+            val attemptId = connectionAttemptGate.begin()
+            Log.i(TAG, "=== initBluetooth === Starting attempt=$attemptId")
+            pendingConnectAttemptId = attemptId
+            snAutoRetryAttemptId = null
+            cxrApi?.initBluetooth(context, device, bluetoothCallback(attemptId))
             Log.i(TAG, "initBluetooth called, waiting for onConnectionInfo callback...")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing Bluetooth", e)
-            pendingConnect = false
+            pendingConnectAttemptId = null
         }
     }
 
@@ -757,7 +813,16 @@ object RokidSdkManager {
      * The onFailed handler then reads the SN via reflection and auto-retries with
      * correctly generated encrypted content.
      */
-    private fun connectBluetoothInternal(socketUuid: String, macAddress: String, rokidAccount: String = "") {
+    private fun connectBluetoothInternal(
+        attemptId: Long,
+        socketUuid: String,
+        macAddress: String,
+        rokidAccount: String = "",
+    ) {
+        if (!connectionAttemptGate.isCurrent(attemptId)) {
+            Log.i(TAG, "Ignoring stale connectBluetooth request attempt=$attemptId")
+            return
+        }
         val context = appContext ?: run {
             Log.e(TAG, "SDK not initialized")
             return
@@ -771,7 +836,7 @@ object RokidSdkManager {
 
             Log.i(TAG, "=== connectBluetoothInternal ===")
             Log.i(TAG, "  connection identifiers available")
-            Log.i(TAG, "  autoRetry=$snAutoRetryInProgress, cachedSn=${generatedSnEncryptContent != null}")
+            Log.i(TAG, "  snRetry=${snAutoRetryAttemptId == attemptId}, cachedSn=${generatedSnEncryptContent != null}")
 
             // Use cached snEncryptContent if available (from previous SN auto-recovery).
             // Only use dummy content on the very first connection attempt when we don't
@@ -789,7 +854,7 @@ object RokidSdkManager {
                 socketUuid,
                 macAddress,
                 rokidAccount,
-                bluetoothCallback,
+                bluetoothCallback(attemptId),
                 encryptContent,
                 clientSecret
             )
@@ -803,7 +868,15 @@ object RokidSdkManager {
      * Connect to glasses via Bluetooth using saved connection info.
      */
     fun connectBluetooth(socketUuid: String, macAddress: String) {
-        connectBluetoothInternal(socketUuid, macAddress)
+        val account = savedRokidAccount
+        if (socketUuid != savedSocketUuid || account == null) {
+            Log.w(TAG, "Refusing direct reconnect with identifiers outside the current process session")
+            return
+        }
+        val attemptId = connectionAttemptGate.begin()
+        pendingConnectAttemptId = null
+        snAutoRetryAttemptId = null
+        connectBluetoothInternal(attemptId, socketUuid, macAddress, account)
     }
 
     // ============== SN Auto-Generation Helpers ==============
@@ -948,7 +1021,7 @@ object RokidSdkManager {
     private const val SN_KEY = "sn_encrypt_content"
     private const val SN_PLAIN_KEY = "sn_plain"
     private const val DEVICE_NAME_KEY = "device_name"
-    private const val SOCKET_UUID_KEY = "socket_uuid"
+    private const val LEGACY_SOCKET_UUID_KEY = "socket_uuid"
     private const val MAC_ADDRESS_KEY = "mac_address"
     private var cachedSnPlain: String? = null
     private var cachedDeviceName: String? = null
@@ -992,30 +1065,35 @@ object RokidSdkManager {
     }
 
     /**
-     * Save connection info (socketUuid, macAddress) for auto-reconnection.
+     * Persist only the bonded device address for auto-reconnection.
+     *
+     * CXR socket UUIDs belong to one firmware session and rotate after reboot or GlassRemoveBond.
+     * The current UUID remains in memory for the same handshake and SN retry, but must never become
+     * a cold-start reconnect credential.
      * Called after successful Bluetooth connection.
      */
-    private fun saveConnectionInfo(socketUuid: String, macAddress: String) {
+    private fun saveConnectionInfo(macAddress: String) {
         val ctx = appContext ?: return
         SecurePreferences.create(ctx, SN_PREFS)
             .edit()
-            .putString(SOCKET_UUID_KEY, socketUuid)
             .putString(MAC_ADDRESS_KEY, macAddress)
+            .remove(LEGACY_SOCKET_UUID_KEY)
             .apply()
-        Log.i(TAG, "Saved connection info for auto-reconnect")
+        Log.i(TAG, "Saved bonded device address for full CXR rediscovery")
     }
 
     /**
-     * Load saved connection info from SharedPreferences.
+     * Load the bonded device address from SharedPreferences.
      * Called during SDK initialization.
      */
     private fun loadSavedConnectionInfo() {
         val ctx = appContext ?: return
         val prefs = SecurePreferences.create(ctx, SN_PREFS)
-        savedSocketUuid = prefs.getString(SOCKET_UUID_KEY, null)
+        savedSocketUuid = null
         savedMacAddress = prefs.getString(MAC_ADDRESS_KEY, null)
-        if (savedSocketUuid != null && savedMacAddress != null) {
-            Log.i(TAG, "Loaded saved connection information")
+        prefs.edit().remove(LEGACY_SOCKET_UUID_KEY).apply()
+        if (savedMacAddress != null) {
+            Log.i(TAG, "Loaded bonded device address for full CXR rediscovery")
         }
     }
 
@@ -1023,7 +1101,7 @@ object RokidSdkManager {
      * Check if we have saved connection info for auto-reconnection.
      */
     fun hasSavedConnectionInfo(): Boolean {
-        return !savedSocketUuid.isNullOrEmpty() && !savedMacAddress.isNullOrEmpty()
+        return !savedMacAddress.isNullOrEmpty()
     }
 
     /**
@@ -1042,7 +1120,7 @@ object RokidSdkManager {
             .remove(SN_KEY)
             .remove(SN_PLAIN_KEY)
             .remove(DEVICE_NAME_KEY)
-            .remove(SOCKET_UUID_KEY)
+            .remove(LEGACY_SOCKET_UUID_KEY)
             .remove(MAC_ADDRESS_KEY)
             .apply()
         Log.i(TAG, "Cleared cached SN and connection info")
@@ -1335,13 +1413,10 @@ object RokidSdkManager {
     fun getSavedSocketUuid(): String? = savedSocketUuid
 
     /**
-     * Attempt to reconnect to previously connected glasses.
+     * Attempt a full CXR rediscovery for the bonded glasses.
      *
-     * Alternates between two strategies based on the attempt number:
-     * - Odd attempts: initBluetooth with BluetoothDevice from saved MAC (full SDK init path,
-     *   required on cold start when SDK has no internal BT state)
-     * - Even attempts: connectBluetooth with saved socketUuid/macAddress (fast path,
-     *   works when SDK state is still alive from a previous session)
+     * The firmware rotates its socket UUID after reboot and GlassRemoveBond, so reconnect never
+     * reuses a persisted UUID. Every attempt obtains fresh identifiers through initBluetooth.
      */
     fun reconnect(attempt: Int = 1): Boolean {
         if (isConnected()) {
@@ -1365,36 +1440,22 @@ object RokidSdkManager {
             return false
         }
 
-        // Alternate strategies: odd attempts use initBluetooth (full path),
-        // even attempts use connectBluetooth (fast path)
-        val useInitBluetooth = attempt % 2 == 1
-
-        if (useInitBluetooth) {
-            try {
-                val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
-                    as? android.bluetooth.BluetoothManager)?.adapter
-                if (adapter != null && adapter.isEnabled) {
-                    val device = adapter.getRemoteDevice(mac)
-                    Log.i(TAG, "Reconnect attempt $attempt: initializing Bluetooth")
-                    pendingConnect = true
-                    cxrApi?.initBluetooth(context, device, bluetoothCallback)
-                    return true
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Bluetooth initialization failed during reconnect")
+        return try {
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
+                as? android.bluetooth.BluetoothManager)?.adapter
+            if (adapter == null || !adapter.isEnabled) {
+                Log.w(TAG, "Reconnect attempt $attempt: Bluetooth adapter unavailable")
+                false
+            } else {
+                val device = adapter.getRemoteDevice(mac)
+                Log.i(TAG, "Reconnect attempt $attempt: starting full CXR rediscovery")
+                initBluetooth(device)
+                true
             }
+        } catch (error: Exception) {
+            Log.w(TAG, "Bluetooth initialization failed during reconnect", error)
+            false
         }
-
-        // Fast path or fallback: connectBluetooth with saved credentials
-        val socketUuid = savedSocketUuid
-        if (!socketUuid.isNullOrEmpty()) {
-            Log.i(TAG, "Reconnect attempt $attempt: connecting with saved identifiers")
-            connectBluetoothInternal(socketUuid, mac, savedRokidAccount ?: "")
-            return true
-        }
-
-        Log.w(TAG, "No viable reconnection path")
-        return false
     }
 
     /**
@@ -1402,6 +1463,9 @@ object RokidSdkManager {
      */
     fun disconnect() {
         try {
+            connectionAttemptGate.cancel()
+            pendingConnectAttemptId = null
+            snAutoRetryAttemptId = null
             mainHandler.removeCallbacks(activateClassicBluetoothRunnable)
             classicBluetoothActivationRequested = false
             deinitWifiP2P()
@@ -1594,6 +1658,9 @@ object RokidSdkManager {
         if (!isInitialized) return
 
         try {
+            connectionAttemptGate.cancel()
+            pendingConnectAttemptId = null
+            snAutoRetryAttemptId = null
             mainHandler.removeCallbacks(reopenHudRunnable)
             hudForegroundRecovery.reset()
             deinitWifiP2P()

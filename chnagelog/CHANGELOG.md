@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+## 1.3.92 (build 101)
+
+### Changed
+
+- Keep the Rokid display and CXR input path awake with a 20-second hardware timeout refresh while glasses Talk Mode is explicitly enabled.
+- Preserve normal battery-saving standby whenever glasses Talk Mode is disabled or the glasses disconnect.
+
+### Fixed
+
+- Prevent firmware 1.24 from entering a 30-second sleep state in Talk Mode where neither the AI key nor wake word can revive Clawsses without pairing mode.
+
+## 1.3.91 (build 100)
+
+### Changed
+
+- Treat direct CXR microphone packets as rate-limited proof that the glasses are awake.
+- Refresh Rokid's hardware display timeout during active direct-audio capture without issuing a wake call for every packet.
+
+### Fixed
+
+- Prevent the 25-second inactivity detector from pausing Talk Mode while microphone audio is still arriving from the glasses.
+- Prevent active AI capture from falling into a false standby state that previously required renewed Rokid discoverability to recover.
+
+## 1.3.90 (build 99)
+
+### Changed
+
+- Route HUD `start_voice` commands and Rokid AI callbacks through one process-scoped activation gate before either path can acquire the audio session.
+- Keep HUD recovery armed across the vendor's intermediate foreground callback while an AI scene is active.
+
+### Fixed
+
+- Prevent one physical wake/AI gesture from closing and immediately reopening the direct glasses microphone stream.
+- Recover the Clawsses HUD once after a matching AI scene exits, while ignoring unrelated launcher visits and stray exit callbacks.
+
+## 1.3.89 (build 98)
+
+### Changed
+
+- Reconnect to bonded glasses through full BLE/CXR rediscovery instead of alternating with a persisted session-UUID fast path.
+- Persist only the bonded glasses address; retain rotating socket identifiers and the Rokid account only for the active process handshake.
+
+### Fixed
+
+- Reject connection-info, connected, disconnected, adopted-link, and failure callbacks from superseded CXR attempts.
+- Scope pending connection and SN-recovery state to the attempt that created it.
+- Keep the immediate reconnect coroutine under the same single-job ownership as background retries.
+
+## 1.3.88 (build 97)
+
+### Changed
+
+- Coalesce duplicate Rokid AI-key and scene-edge activations and wait for firmware audio teardown before automatic glasses follow-up capture.
+- Continue an interrupted direct CXR recognition attempt once through the Phone microphone instead of repeatedly reopening the glasses audio stream.
+
+### Fixed
+
+- Prevent an AI-scene exit callback from starting a new voice capture.
+- Treat an empty direct-glasses transcription as a capture failure and fall back once to Android speech recognition.
+- Circuit-break direct glasses audio after a mid-capture CXR disconnect until the reconnected session has remained stable.
+
+## 1.3.87 (build 96)
+
+### Added
+
+- Add dependency locks for every Gradle module and paired public-release evidence containing source state, Phone/HUD hashes, versions, and embedded-HUD identity.
+- Add typed HUD command encoding with round-trip coverage and a narrow application-facing Rokid device facade around the unchanged vendor adapter.
+
+### Changed
+
+- Split the HUD Compose state into stable chat, input, picker, and status slices and replace retained raw bitmaps with bounded thumbnail handles.
+- Split OpenClaw frame decoding, chat-event parsing, and authentication payload construction out of the WebSocket client.
+- Make attachment storage content-addressed from decoded bytes and defer original-file reads until a thumbnail-cache miss.
+- Retain immutable gateway streaming text directly instead of copying the full response into a mutable buffer for every delta.
+
+### Fixed
+
+- Prevent unrelated HUD state changes from invalidating broad chat and picker state.
+- Prevent repeated HUD synchronization of the same attachment from reopening and decoding its original file.
+
+### Security
+
+- Make CI run the paired public-release artifact gate and record whether evidence was produced from a clean or dirty source tree.
+
 ## 1.3.86 (build 95)
 
 ### Changed

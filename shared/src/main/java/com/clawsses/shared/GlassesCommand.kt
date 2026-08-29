@@ -1,6 +1,7 @@
 package com.clawsses.shared
 
 import com.google.gson.JsonObject
+import com.google.gson.JsonArray
 import com.google.gson.JsonParser
 
 sealed interface GlassesCommand {
@@ -30,6 +31,8 @@ sealed interface GlassesCommand {
     data class TakePhoto(val sendAfterCapture: Boolean, val visionPrompt: String?) : GlassesCommand
     data class RemovePhoto(val all: Boolean, val index: Int?) : GlassesCommand
     data class RequestMoreHistory(val beforeMessageId: String?) : GlassesCommand
+    data class TransportAck(val transactionId: String) : GlassesCommand
+    data class WakeAck(val ready: Boolean, val timestamp: Long) : GlassesCommand
 }
 
 sealed interface GlassesCommandDecodeResult {
@@ -39,6 +42,103 @@ sealed interface GlassesCommandDecodeResult {
 }
 
 object GlassesCommandCodec {
+    fun encode(command: GlassesCommand): String = JsonObject().apply {
+        when (command) {
+            is GlassesCommand.UserInput -> {
+                addProperty("type", "user_input")
+                addProperty("text", command.text)
+                command.clientMessageId?.let { addProperty("id", it) }
+            }
+            GlassesCommand.StartVoice -> addProperty("type", "start_voice")
+            GlassesCommand.CancelVoice -> addProperty("type", "cancel_voice")
+            is GlassesCommand.ListSessions -> {
+                addProperty("type", "list_sessions")
+                addProperty("offset", command.offset)
+            }
+            is GlassesCommand.SwitchSession -> {
+                addProperty("type", "switch_session")
+                addProperty("sessionKey", command.sessionKey)
+            }
+            GlassesCommand.CreateSession -> addProperty("type", "create_session")
+            GlassesCommand.ListAgents -> addProperty("type", "list_agents")
+            is GlassesCommand.SwitchAgent -> {
+                addProperty("type", "switch_agent")
+                addProperty("agentId", command.agentId)
+                command.agentName?.let { addProperty("agentName", it) }
+            }
+            is GlassesCommand.ListModels -> {
+                addProperty("type", "list_models")
+                addProperty("offset", command.offset)
+            }
+            is GlassesCommand.SelectModel -> {
+                addProperty("type", "select_model")
+                addProperty("sessionKey", command.sessionKey)
+                addProperty("catalog", command.catalog)
+                addProperty("index", command.index)
+            }
+            GlassesCommand.AbortRun -> addProperty("type", "abort_run")
+            is GlassesCommand.Slash -> {
+                addProperty("type", "slash_command")
+                addProperty("command", command.command)
+            }
+            is GlassesCommand.RequestState -> {
+                addProperty("type", "request_state")
+                command.versionCode?.let { addProperty("versionCode", it) }
+                command.versionName?.let { addProperty("versionName", it) }
+                command.protocolVersion?.let { addProperty("protocolVersion", it) }
+                if (command.capabilities.isNotEmpty()) {
+                    add("capabilities", JsonArray().apply {
+                        command.capabilities.sorted().forEach(::add)
+                    })
+                }
+            }
+            is GlassesCommand.TtsToggle -> {
+                addProperty("type", "tts_toggle")
+                addProperty("enabled", command.enabled)
+            }
+            is GlassesCommand.TtsControl -> {
+                addProperty("type", "tts_control")
+                addProperty("action", command.action)
+            }
+            is GlassesCommand.TalkModeToggle -> {
+                addProperty("type", "talk_mode_toggle")
+                addProperty("enabled", command.enabled)
+            }
+            is GlassesCommand.LiveCaptionToggle -> {
+                addProperty("type", "live_caption_toggle")
+                addProperty("enabled", command.enabled)
+            }
+            is GlassesCommand.HudCardAction -> {
+                addProperty("type", "hud_card_action")
+                addProperty("cardId", command.cardId)
+                addProperty("actionId", command.actionId)
+            }
+            is GlassesCommand.TakePhoto -> {
+                addProperty("type", "take_photo")
+                addProperty("sendAfterCapture", command.sendAfterCapture)
+                command.visionPrompt?.let { addProperty("visionPrompt", it) }
+            }
+            is GlassesCommand.RemovePhoto -> {
+                addProperty("type", "remove_photo")
+                addProperty("all", command.all)
+                command.index?.let { addProperty("index", it) }
+            }
+            is GlassesCommand.RequestMoreHistory -> {
+                addProperty("type", "request_more_history")
+                command.beforeMessageId?.let { addProperty("beforeMessageId", it) }
+            }
+            is GlassesCommand.TransportAck -> {
+                addProperty("type", "transport_ack")
+                addProperty("tx", command.transactionId)
+            }
+            is GlassesCommand.WakeAck -> {
+                addProperty("type", "wake_ack")
+                addProperty("ready", command.ready)
+                addProperty("timestamp", command.timestamp)
+            }
+        }
+    }.toString()
+
     fun decode(raw: String): GlassesCommandDecodeResult {
         val json = try {
             JsonParser.parseString(raw).asJsonObject
@@ -113,6 +213,13 @@ object GlassesCommandCodec {
         "request_more_history" -> success(
             GlassesCommand.RequestMoreHistory(json.stringOrNull("beforeMessageId")),
         )
+        "transport_ack" -> success(GlassesCommand.TransportAck(json.nonBlankString("tx")))
+        "wake_ack" -> success(
+            GlassesCommand.WakeAck(
+                ready = json.booleanOrDefault("ready", true),
+                timestamp = json.longOrDefault("timestamp", 0L),
+            ),
+        )
         else -> GlassesCommandDecodeResult.UnknownType(type)
     }
 
@@ -150,6 +257,13 @@ object GlassesCommandCodec {
 
     private fun JsonObject.intOrDefault(name: String, default: Int): Int =
         if (element(name) == null) default else requiredInt(name)
+
+    private fun JsonObject.longOrDefault(name: String, default: Long): Long =
+        if (element(name) == null) default else {
+            element(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+                ?.let { runCatching { it.asLong }.getOrNull() }
+                ?: throw IllegalArgumentException("$name must be a long")
+        }
 
     private fun JsonObject.requiredBoolean(name: String): Boolean =
         element(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean

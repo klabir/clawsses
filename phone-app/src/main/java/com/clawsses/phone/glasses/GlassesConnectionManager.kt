@@ -159,9 +159,7 @@ class GlassesConnectionManager(private val context: Context) {
             _connectionState.value = ConnectionState.Connected(name)
             outboundTransport.setConnected(true)
             // Reset reconnect state on successful connection
-            reconnectAttempts = 0
-            currentReconnectDelayMs = RECONNECT_BASE_DELAY_MS
-            reconnectJob?.cancel()
+            resetReconnectState()
             RokidSdkManager.setScreenOffTimeout(30)
             RokidSdkManager.syncAssistantInput()
             // Notify wake signal manager that glasses is connected
@@ -265,6 +263,9 @@ class GlassesConnectionManager(private val context: Context) {
             Log.d(TAG, "SDK: AI scene exited")
             wakeSignalManager.handleGlassesActivity()
             onAiExit?.invoke()
+        }
+        RokidSdkManager.onAudioTransportActivity = {
+            wakeSignalManager.handleGlassesAudioActivity()
         }
     }
 
@@ -384,6 +385,7 @@ class GlassesConnectionManager(private val context: Context) {
      */
     fun connectToDevice(device: DiscoveredDevice) {
         stopScanning()
+        resetReconnectState()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.Connecting
         Log.d(TAG, "Connecting to selected Rokid device")
@@ -397,6 +399,7 @@ class GlassesConnectionManager(private val context: Context) {
      * Requires both socketUuid and macAddress from previous connection.
      */
     fun connectWithSavedInfo(socketUuid: String, macAddress: String) {
+        resetReconnectState()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.Connecting
         Log.d(TAG, "Reconnecting with saved device identifiers")
@@ -408,6 +411,7 @@ class GlassesConnectionManager(private val context: Context) {
      * Attempt to reconnect using saved connection info
      */
     fun reconnect(): Boolean {
+        resetReconnectState()
         userInitiatedDisconnect = false
         _connectionState.value = ConnectionState.Connecting
         return RokidSdkManager.reconnect()
@@ -627,7 +631,7 @@ class GlassesConnectionManager(private val context: Context) {
         }
 
         _connectionState.value = ConnectionState.Connecting
-        reconnectScope.launch {
+        reconnectJob = reconnectScope.launch {
             if (RokidSdkManager.reconnect(1)) {
                 Log.i(TAG, "Immediate retry initiated")
                 delay(RECONNECT_TIMEOUT_MS)

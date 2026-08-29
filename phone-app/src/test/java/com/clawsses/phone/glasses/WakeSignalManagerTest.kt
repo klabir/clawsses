@@ -100,6 +100,62 @@ class WakeSignalManagerTest {
         manager.cleanup()
     }
 
+    @Test
+    fun `direct audio activity prevents false standby and refreshes hardware wake`() = runBlocking {
+        var nowMs = 10_000L
+        var hardwareWakeCount = 0
+        val manager = WakeSignalManager(
+            enqueueToGlasses = { _, _ -> },
+            setDeliveryAllowed = { },
+            wakeHardwareDisplay = {
+                hardwareWakeCount += 1
+                true
+            },
+            scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+            logger = { _, _ -> },
+            monotonicClock = { nowMs },
+            standbyDetectionMs = 40L,
+        )
+
+        manager.handleGlassesConnected()
+        delay(25L)
+        nowMs += 6_000L
+        manager.handleGlassesAudioActivity()
+        delay(25L)
+
+        assertTrue(manager.wakeState.value is WakeSignalManager.WakeState.Awake)
+        assertEquals(1, hardwareWakeCount)
+        manager.cleanup()
+    }
+
+    @Test
+    fun `persistent glasses wake prevents standby and refreshes hardware timeout`() = runBlocking {
+        var nowMs = 10_000L
+        var hardwareWakeCount = 0
+        val manager = WakeSignalManager(
+            enqueueToGlasses = { _, _ -> },
+            setDeliveryAllowed = { },
+            wakeHardwareDisplay = {
+                hardwareWakeCount += 1
+                nowMs += 10L
+                true
+            },
+            scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+            logger = { _, _ -> },
+            monotonicClock = { nowMs },
+            standbyDetectionMs = 20L,
+            persistentWakeIntervalMs = 10L,
+        )
+
+        manager.setPersistentWakeEnabled(true)
+        manager.handleGlassesConnected()
+        delay(55L)
+
+        assertTrue(manager.wakeState.value is WakeSignalManager.WakeState.Awake)
+        assertTrue(hardwareWakeCount >= 3)
+        manager.cleanup()
+    }
+
     private class Harness {
         val enqueued = mutableListOf<Pair<String, Boolean>>()
         val gates = mutableListOf<Boolean>()

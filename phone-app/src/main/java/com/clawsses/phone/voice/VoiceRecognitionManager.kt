@@ -1,8 +1,10 @@
 package com.clawsses.phone.voice
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
-import com.clawsses.phone.glasses.RokidSdkManager
+import com.clawsses.phone.glasses.RokidDeviceFacade
+import com.clawsses.phone.glasses.ProductionRokidDeviceFacade
 import com.clawsses.phone.util.SecurePreferences
 import com.clawsses.shared.TtsVoiceCommands
 import com.clawsses.shared.VisionCommands
@@ -26,7 +28,10 @@ internal class RecognitionAttemptGate {
  * Provides a unified interface for voice recognition with automatic fallback when OpenAI is
  * unavailable (no API key, network error, etc.).
  */
-class VoiceRecognitionManager(private val context: Context) {
+class VoiceRecognitionManager(
+    private val context: Context,
+    private val rokidDevice: RokidDeviceFacade = ProductionRokidDeviceFacade,
+) {
 
     companion object {
         private const val TAG = "VoiceRecognitionMgr"
@@ -61,7 +66,16 @@ class VoiceRecognitionManager(private val context: Context) {
     private val openAIClient = OpenAIRealtimeClient()
     private val fallbackHandler = VoiceCommandHandler(context)
     private val attemptGate = RecognitionAttemptGate()
+    private val directAudioCircuitBreaker = DirectAudioCircuitBreaker()
     @Volatile private var directGlassesAudioActive = false
+    @Volatile private var activeDirectAttempt: DirectAttempt? = null
+    @Volatile private var fallbackAttemptId: Long? = null
+
+    private data class DirectAttempt(
+        val id: Long,
+        val languageTag: String?,
+        val onResult: (VoiceCommandHandler.VoiceResult) -> Unit,
+    )
 
     private val _activeMode = MutableStateFlow(RecognitionMode.NONE)
     val activeMode: StateFlow<RecognitionMode> = _activeMode.asStateFlow()
@@ -137,6 +151,8 @@ class VoiceRecognitionManager(private val context: Context) {
         }
 
         val attemptId = attemptGate.begin()
+        activeDirectAttempt = null
+        fallbackAttemptId = null
 
         _isListening.value = true
         _lastError.value = null
@@ -163,23 +179,27 @@ class VoiceRecognitionManager(private val context: Context) {
         _activeMode.value = RecognitionMode.OPENAI
         _fallbackReason.value = FallbackReason.NONE
 
-        val useDirectGlassesAudio = RokidSdkManager.isConnected()
+        val useDirectGlassesAudio = rokidDevice.isConnected() &&
+            directAudioCircuitBreaker.canStart(SystemClock.elapsedRealtime())
         if (useDirectGlassesAudio) {
-            RokidSdkManager.onAudioStreamStarted = { codec, originCodec, channels, _ ->
+            rokidDevice.onAudioStreamStarted = { codec, originCodec, channels, _ ->
                 Log.i(
                     TAG,
                     "Direct glasses audio format: codec=$codec, originCodec=$originCodec, channels=$channels",
                 )
             }
-            RokidSdkManager.onAudioStreamData = { data, offset, length ->
+            rokidDevice.onAudioStreamData = { data, offset, length ->
                 openAIClient.appendExternalAudio(data, offset, length)
             }
-            RokidSdkManager.onAudioStreamFinished = {
+            rokidDevice.onAudioStreamFinished = {
                 Log.d(TAG, "Direct glasses audio source finished")
             }
-            directGlassesAudioActive = RokidSdkManager.startMicrophoneStream()
+            directGlassesAudioActive = rokidDevice.startMicrophoneStream()
+            if (directGlassesAudioActive) {
+                activeDirectAttempt = DirectAttempt(attemptId, languageTag, onResult)
+            }
             if (!directGlassesAudioActive) {
-                RokidSdkManager.clearMicrophoneStreamCallbacks()
+                rokidDevice.clearMicrophoneStreamCallbacks()
                 Log.w(TAG, "Direct glasses audio request failed; using Android capture")
             }
         }
@@ -198,9 +218,19 @@ class VoiceRecognitionManager(private val context: Context) {
                 }
             },
             onFinal = { finalText ->
-                if (!attemptGate.complete(attemptId)) return@startListening
+                if (!attemptGate.isCurrent(attemptId)) return@startListening
+                val usedDirectGlassesAudio = activeDirectAttempt?.id == attemptId
                 stopDirectGlassesAudio()
                 Log.i(TAG, "OpenAI transcription completed (${finalText.length} chars)")
+                if (directCaptureNeedsPhoneFallback(usedDirectGlassesAudio, finalText)) {
+                    Log.w(TAG, "Direct glasses capture was empty; retrying once with phone microphone")
+                    activeDirectAttempt = null
+                    rokidDevice.clearCommunicationDevice()
+                    startFallbackRecognition(languageTag, onResult, attemptId)
+                    return@startListening
+                }
+                if (!attemptGate.complete(attemptId)) return@startListening
+                activeDirectAttempt = null
                 _isListening.value = false
                 _activeMode.value = RecognitionMode.NONE
 
@@ -214,17 +244,16 @@ class VoiceRecognitionManager(private val context: Context) {
             },
             onError = { errorMessage ->
                 if (!attemptGate.isCurrent(attemptId)) return@startListening
-                val directCaptureFailed = directGlassesAudioActive
+                val directCaptureFailed = activeDirectAttempt?.id == attemptId
                 stopDirectGlassesAudio()
                 Log.w(TAG, "OpenAI error: $errorMessage, falling back to Android")
                 _lastError.value = errorMessage
                 _fallbackReason.value = FallbackReason.API_ERROR
 
                 if (directCaptureFailed) {
-                    if (!attemptGate.complete(attemptId)) return@startListening
-                    _isListening.value = false
-                    _activeMode.value = RecognitionMode.NONE
-                    onResult(VoiceCommandHandler.VoiceResult.Error(errorMessage))
+                    activeDirectAttempt = null
+                    rokidDevice.clearCommunicationDevice()
+                    startFallbackRecognition(languageTag, onResult, attemptId)
                     return@startListening
                 }
 
@@ -239,7 +268,8 @@ class VoiceRecognitionManager(private val context: Context) {
         onResult: (VoiceCommandHandler.VoiceResult) -> Unit,
         attemptId: Long,
     ) {
-        if (!attemptGate.isCurrent(attemptId)) return
+        if (!attemptGate.isCurrent(attemptId) || fallbackAttemptId == attemptId) return
+        fallbackAttemptId = attemptId
         Log.i(TAG, "Starting fallback (Android) voice recognition")
         _activeMode.value = RecognitionMode.FALLBACK
 
@@ -249,6 +279,7 @@ class VoiceRecognitionManager(private val context: Context) {
 
         fallbackHandler.startListening(languageTag = languageTag) { result ->
             if (!attemptGate.complete(attemptId)) return@startListening
+            fallbackAttemptId = null
             _isListening.value = false
             _activeMode.value = RecognitionMode.NONE
             onResult(result)
@@ -318,6 +349,8 @@ class VoiceRecognitionManager(private val context: Context) {
     fun cancelListening() {
         attemptGate.cancel()
         stopDirectGlassesAudio()
+        activeDirectAttempt = null
+        fallbackAttemptId = null
         when (_activeMode.value) {
             RecognitionMode.OPENAI -> {
                 openAIClient.cancelListening()
@@ -331,6 +364,33 @@ class VoiceRecognitionManager(private val context: Context) {
         }
         _isListening.value = false
         _activeMode.value = RecognitionMode.NONE
+    }
+
+    /** Arm the direct-audio grace period after a connection that previously failed mid-capture. */
+    fun onGlassesConnected() {
+        directAudioCircuitBreaker.onConnected(SystemClock.elapsedRealtime())
+    }
+
+    /**
+     * Move an in-flight direct CXR capture to the phone microphone before reconnect processing.
+     * Returns true when the current recognition attempt continues on the phone.
+     */
+    fun onGlassesDisconnected(): Boolean {
+        val directAttempt = activeDirectAttempt
+        directAudioCircuitBreaker.onDisconnect(duringDirectAttempt = directAttempt != null)
+        if (directAttempt == null || !attemptGate.isCurrent(directAttempt.id)) return false
+
+        Log.w(TAG, "CXR disconnected during direct capture; switching to phone microphone")
+        activeDirectAttempt = null
+        stopDirectGlassesAudio()
+        openAIClient.cancelListening()
+        rokidDevice.clearCommunicationDevice()
+        startFallbackRecognition(
+            directAttempt.languageTag,
+            directAttempt.onResult,
+            directAttempt.id,
+        )
+        return fallbackAttemptId == directAttempt.id
     }
 
     /**
@@ -364,8 +424,8 @@ class VoiceRecognitionManager(private val context: Context) {
     private fun stopDirectGlassesAudio() {
         if (directGlassesAudioActive) {
             directGlassesAudioActive = false
-            RokidSdkManager.stopMicrophoneStream()
+            rokidDevice.stopMicrophoneStream()
         }
-        RokidSdkManager.clearMicrophoneStreamCallbacks()
+        rokidDevice.clearMicrophoneStreamCallbacks()
     }
 }
