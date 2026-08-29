@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 1.3.96 (build 105)
+
+### Added
+
+- Add privacy-safe HUD runtime counters for commands, gestures, inbound packets, malformed packets, duplicate transactions, reconnect syncs, and stream publications.
+- Add a 10,000-event soak regression that verifies exact counters and the bounded 64-entry transport acknowledgment window.
+
+### Changed
+
+- Isolate transaction replay retention behind a synchronized bounded tracker instead of Activity-owned deque mutation.
+
 ## 1.3.95 (build 104)
 
 ### Changed

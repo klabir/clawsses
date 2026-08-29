@@ -38,6 +38,8 @@ import com.clawsses.glasses.orchestration.HudGestureRouter
 import com.clawsses.glasses.orchestration.HudGestureTarget
 import com.clawsses.glasses.orchestration.HudKeyRouter
 import com.clawsses.glasses.orchestration.HudLifecycleRouter
+import com.clawsses.glasses.orchestration.HudRuntimeMetrics
+import com.clawsses.glasses.orchestration.HudTransportTransactionTracker
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.state.HudStateEvent
 import com.clawsses.glasses.state.HudHistorySnapshotAssembler
@@ -84,7 +86,6 @@ import org.json.JSONObject
 import android.os.BatteryManager
 import com.clawsses.glasses.BuildConfig
 import java.text.SimpleDateFormat
-import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import com.clawsses.shared.TechnicalJankMonitor
@@ -149,7 +150,8 @@ class HudActivity : ComponentActivity() {
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
     // from visible HUD state and swap it in only after the matching end marker arrives.
     private val historySnapshotAssembler = HudHistorySnapshotAssembler()
-    private val processedTransportTransactions = ArrayDeque<String>()
+    private val processedTransportTransactions = HudTransportTransactionTracker()
+    private val runtimeMetrics = HudRuntimeMetrics()
 
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
@@ -336,6 +338,7 @@ class HudActivity : ComponentActivity() {
                     hudState.value = current.copy(isConnected = transition.connected)
                 }
                 if (transition.requestPhoneState) {
+                    runtimeMetrics.recordReconnectStateRequest()
                     requestCurrentPhoneState()
                 }
             }
@@ -402,6 +405,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun sendCommand(command: GlassesCommand) {
+        runtimeMetrics.recordCommand()
         commandDispatcher.send(command)
     }
 
@@ -513,6 +517,7 @@ class HudActivity : ComponentActivity() {
     // ============== Simplified 3-Area Gesture Handling ==============
 
     private fun handleGesture(gesture: Gesture) {
+        runtimeMetrics.recordGesture()
         val current = hudState.value
         val isVoiceActive = voiceHandler.isListening()
 
@@ -1507,12 +1512,14 @@ class HudActivity : ComponentActivity() {
     // ============== Phone Message Handling ==============
 
     private fun handlePhoneMessage(json: String) {
+        runtimeMetrics.recordPhoneMessage()
         try {
             Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
             when (val decoded = PhoneHudMessageCodec.decode(json)) {
                 is PhoneHudDecodeResult.Success -> {
                     val transactionId = decoded.envelope.transactionId
                     if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
+                        runtimeMetrics.recordDuplicateTransaction()
                         acknowledgeTransport(transactionId)
                         return
                     }
@@ -1521,6 +1528,7 @@ class HudActivity : ComponentActivity() {
                     return
                 }
                 is PhoneHudDecodeResult.Malformed -> {
+                    runtimeMetrics.recordMalformedMessage()
                     Log.w(
                         GlassesApp.TAG,
                         "Rejected malformed phone message type=${decoded.type}: ${decoded.reason}",
@@ -1534,6 +1542,7 @@ class HudActivity : ComponentActivity() {
             val type = msg.optString("type", "")
             val transactionId = msg.optString("_tx").takeIf { it.isNotBlank() }
             if (transactionId != null && processedTransportTransactions.contains(transactionId)) {
+                runtimeMetrics.recordDuplicateTransaction()
                 acknowledgeTransport(transactionId)
                 return
             }
@@ -2336,8 +2345,7 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun recordAndAcknowledgeTransport(transactionId: String) {
-        processedTransportTransactions.addLast(transactionId)
-        while (processedTransportTransactions.size > 64) processedTransportTransactions.removeFirst()
+        processedTransportTransactions.record(transactionId)
         acknowledgeTransport(transactionId)
     }
 
@@ -2361,7 +2369,10 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun publishStreamingMessage() {
-        streamingAccumulator.snapshotIfChanged()?.let { streamingMessage.value = it }
+        streamingAccumulator.snapshotIfChanged()?.let {
+            runtimeMetrics.recordStreamPublication()
+            streamingMessage.value = it
+        }
     }
 
     private fun clearStreamingMessage(id: String? = null) {
@@ -2424,6 +2435,7 @@ class HudActivity : ComponentActivity() {
             aiStartReceiverRegistered = false
         }
         streamPublishJob?.cancel()
+        Log.i(GlassesApp.TAG, runtimeMetrics.snapshot().toLogLine())
         jankMonitor.close()
         super.onDestroy()
         saveHudPreferences()
