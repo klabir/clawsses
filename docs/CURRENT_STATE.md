@@ -8,7 +8,7 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.120` / Build `129` source release; Build `127` remains paired-device verified
+- Version: `1.3.120` / Build `129`, source-published and paired-device verified
 - Release commits: Build 128 `c8d3a1a`; Build 129 `96a8192`; main integration merge `602f484`
 - Base main before integration: `d06ed1d`
 - Release branch: `build/129-orchestrator-boundaries`, integrated into local and remote `main`
@@ -38,16 +38,18 @@ Last verified: 2026-08-30
 
 ## Verified hardware state
 
-- The connected Pixel phone runs private hardware-test build `1.3.118` / Build `127`; data-preserving
+- The connected Pixel phone runs private hardware-test build `1.3.120` / Build `129`; data-preserving
   installation, resumed Activity, live process, and restored OpenClaw connection are verified.
-- The official Hi Rokid/CXR-L installer completed the Build-127 HUD upload, installation, and
-  launch. After the known deep-sleep beacon was cleared, Clawsses verified the fresh matching
-  `127/127` runtime handshake.
+- After a full firmware reboot, the standalone `com.rokidapks` helper completed the Build-129 HUD
+  upload and installation through the official Hi Rokid/CXR-L CUSTOMAPP path. The successful run
+  formed a fresh Wi-Fi Direct group, completed DHCP DISCOVER/OFFER/REQUEST/ACK, and returned a true
+  install callback.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 129 source is merged and pushed on `main`; private APKs remain unpublished. The installed
-  paired runtime remains Build 127 because no Build-129 device mutation was authorized.
+- Build 129 source is merged and pushed on `main`; private APKs remain unpublished. Build 129 Phone
+  and HUD are installed. After Clawsses reclaimed ownership, the HUD foreground package was
+  `com.clawsses.glasses` and a fresh `129/129` state handshake plus SDK compatibility check passed.
 - The Build-119–129 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
@@ -188,14 +190,14 @@ with `adb devices -l` and collect a fresh version handshake.
 - Reduce `HudActivity.kt` from 1,513 to 1,470 lines, raise checked-in coverage to 343 tests, and
   measure 1,297 covered of 1,794 selected deterministic lines, or 72.3 percent.
 - The full 265-task public paired-release source gate passes with 231 Phone debug tests, 229 Phone
-  release tests, 85 HUD release tests, and 10 shared release tests. Build 129 has not been installed
-  or paired-device verified.
+  release tests, 85 HUD release tests, and 10 shared release tests. Build 129 is now installed and
+  paired-device verified; no new runtime-performance claim is made without a same-device benchmark.
 
 ## Current code rating
 
-- Overall: **9.2/10** for the paired-device-verified Build 127. Active-session reconciliation and
-  HUD catalog interactions now have dedicated tested owners, with 331 checked-in tests and a
-  matching live `127/127` deployment.
+- Overall: **9.2/10** from the latest detailed assessment. Build 129 is now paired-device verified;
+  its active-session, HUD catalog, and stream orchestration boundaries have dedicated tested owners,
+  with 343 checked-in tests and a matching live `129/129` deployment.
 - Architecture: **9.0/10**. Session subscription, history reconciliation, and HUD picker decisions
   now live in tested coordinators; `HudActivity` and `OpenClawClient` remain the principal, but
   substantially smaller, orchestration hotspots.
@@ -256,8 +258,11 @@ the official CXR-L HUD installation, launch, Clawsses ownership restoration, and
 handshake are verified. Hi Rokid is restored to disabled and Tailscale remains active. Build `128`
 passes the expanded 265-task public source gate and its 70-percent deterministic-logic coverage
 threshold; it has not been installed or paired-device verified. Build `129` also passes the
-expanded gate with 72.3-percent selected coverage; no same-device benchmark or paired install is
-claimed because this source-only candidate has not mutated the connected devices.
+expanded gate with 72.3-percent selected coverage. Its matching private Phone/HUD artifacts passed
+version, v2-signer, and embedded-HUD hash checks. Both apps are installed, the official CXR-L path
+returned a successful install callback after a full glasses reboot, and a fresh matching `129/129`
+runtime handshake is verified. No runtime-performance improvement is claimed without a same-device
+benchmark.
 
 ## New-session resume prompt
 
