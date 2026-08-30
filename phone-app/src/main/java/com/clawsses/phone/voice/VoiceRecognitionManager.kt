@@ -11,6 +11,7 @@ import com.clawsses.shared.VisionCommands
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 internal class RecognitionAttemptGate {
@@ -38,6 +39,7 @@ class VoiceRecognitionManager(
         private const val PREFS_NAME = "clawsses"
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_OPENAI_VOICE_ENABLED = "openai_voice_enabled"
+        private const val KEY_LONG_DICTATION_ENABLED = "long_dictation_enabled"
     }
 
     /**
@@ -46,6 +48,8 @@ class VoiceRecognitionManager(
     enum class RecognitionMode {
         NONE,           // Not currently listening
         OPENAI,         // Using OpenAI Realtime API
+        LONG_DICTATION, // Recording a bounded Phone-microphone dictation
+        TRANSCRIBING,   // Uploading the completed dictation
         FALLBACK        // Using Android's SpeechRecognizer
     }
 
@@ -64,6 +68,9 @@ class VoiceRecognitionManager(
     private val prefs = SecurePreferences.create(context, PREFS_NAME)
 
     private val openAIClient = OpenAIRealtimeClient()
+    private val batchClient = OpenAiBatchTranscriptionClient(
+        File(context.cacheDir, "voice-dictation"),
+    )
     private val fallbackHandler = VoiceCommandHandler(context)
     private val attemptGate = RecognitionAttemptGate()
     private val directAudioCircuitBreaker = DirectAudioCircuitBreaker()
@@ -135,6 +142,18 @@ class VoiceRecognitionManager(
         Log.i(TAG, "OpenAI voice recognition ${if (enabled) "enabled" else "disabled"}")
     }
 
+    fun isLongDictationEnabled(): Boolean = prefs.getBoolean(KEY_LONG_DICTATION_ENABLED, false)
+
+    fun setLongDictationEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LONG_DICTATION_ENABLED, enabled).apply()
+        Log.i(TAG, "Manual long dictation ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    fun manualInputMode(): VoiceInputMode = manualVoiceInputMode(
+        longDictationEnabled = isLongDictationEnabled(),
+        openAiAvailable = isOpenAIAvailable(),
+    )
+
     /**
      * Start voice recognition. Will use OpenAI if available, otherwise falls back to Android.
      *
@@ -143,6 +162,7 @@ class VoiceRecognitionManager(
      */
     fun startListening(
         languageTag: String? = null,
+        inputMode: VoiceInputMode = VoiceInputMode.REALTIME,
         onResult: (VoiceCommandHandler.VoiceResult) -> Unit
     ) {
         if (_isListening.value) {
@@ -171,6 +191,11 @@ class VoiceRecognitionManager(
             Log.i(TAG, "OpenAI voice disabled, using fallback")
             _fallbackReason.value = FallbackReason.DISABLED
             startFallbackRecognition(languageTag, onResult, attemptId)
+            return
+        }
+
+        if (inputMode == VoiceInputMode.LONG_DICTATION) {
+            startLongDictation(apiKey, languageTag, onResult, attemptId)
             return
         }
 
@@ -263,6 +288,47 @@ class VoiceRecognitionManager(
         )
     }
 
+    private fun startLongDictation(
+        apiKey: String,
+        languageTag: String?,
+        onResult: (VoiceCommandHandler.VoiceResult) -> Unit,
+        attemptId: Long,
+    ) {
+        Log.i(TAG, "Starting bounded long dictation on Phone microphone")
+        stopDirectGlassesAudio()
+        _activeMode.value = RecognitionMode.LONG_DICTATION
+        _fallbackReason.value = FallbackReason.NONE
+        batchClient.startListening(
+            apiKey = apiKey,
+            languageTag = languageTag,
+            onSpeechStopped = {
+                if (attemptGate.isCurrent(attemptId)) {
+                    _activeMode.value = RecognitionMode.TRANSCRIBING
+                    onSpeechStopped?.invoke()
+                }
+            },
+            onFinal = { finalText ->
+                if (!attemptGate.complete(attemptId)) return@startListening
+                _isListening.value = false
+                _activeMode.value = RecognitionMode.NONE
+                onResult(
+                    if (finalText.isBlank()) {
+                        VoiceCommandHandler.VoiceResult.Text("")
+                    } else {
+                        processText(finalText)
+                    },
+                )
+            },
+            onError = { message ->
+                if (!attemptGate.complete(attemptId)) return@startListening
+                _lastError.value = message
+                _isListening.value = false
+                _activeMode.value = RecognitionMode.NONE
+                onResult(VoiceCommandHandler.VoiceResult.Error(message))
+            },
+        )
+    }
+
     private fun startFallbackRecognition(
         languageTag: String?,
         onResult: (VoiceCommandHandler.VoiceResult) -> Unit,
@@ -342,7 +408,11 @@ class VoiceRecognitionManager(
      * Stop any active voice recognition.
      */
     fun stopListening() {
-        cancelListening()
+        if (_activeMode.value == RecognitionMode.LONG_DICTATION) {
+            batchClient.stopListening()
+        } else {
+            cancelListening()
+        }
     }
 
     /** Cancel recognition and invalidate every callback from the previous attempt. */
@@ -354,6 +424,10 @@ class VoiceRecognitionManager(
         when (_activeMode.value) {
             RecognitionMode.OPENAI -> {
                 openAIClient.cancelListening()
+            }
+            RecognitionMode.LONG_DICTATION,
+            RecognitionMode.TRANSCRIBING -> {
+                batchClient.cancelListening()
             }
             RecognitionMode.FALLBACK -> {
                 fallbackHandler.cancelListening()
@@ -399,6 +473,8 @@ class VoiceRecognitionManager(
     fun getModeDescription(): String {
         return when (_activeMode.value) {
             RecognitionMode.OPENAI -> "OpenAI"
+            RecognitionMode.LONG_DICTATION -> "Long dictation"
+            RecognitionMode.TRANSCRIBING -> "Transcribing"
             RecognitionMode.FALLBACK -> {
                 when (_fallbackReason.value) {
                     FallbackReason.NO_API_KEY -> "Device (no API key)"
@@ -416,8 +492,9 @@ class VoiceRecognitionManager(
      * Clean up resources.
      */
     fun cleanup() {
-        stopListening()
+        cancelListening()
         openAIClient.destroy()
+        batchClient.destroy()
         fallbackHandler.cleanup()
     }
 

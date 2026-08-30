@@ -9,6 +9,8 @@ Last verified: 2026-08-30
 ## Current release
 
 - Version: `1.3.120` / Build `129`, source-published and paired-device verified
+- Current uncommitted candidate: `1.3.121` / Build `130` on
+  `build/130-dictation-kws-spike`; source-gated but not installed or hardware verified
 - Release commits: Build 128 `c8d3a1a`; Build 129 `96a8192`; main integration merge `602f484`
 - Base main before integration: `d06ed1d`
 - Release branch: `build/129-orchestrator-boundaries`, integrated into local and remote `main`
@@ -193,6 +195,22 @@ with `adb devices -l` and collect a fresh version handshake.
   release tests, 85 HUD release tests, and 10 shared release tests. Build 129 is now installed and
   paired-device verified; no new runtime-performance claim is made without a same-device benchmark.
 
+## Build 130 candidate changes
+
+- Add an explicit Phone-microphone long-dictation mode behind the existing OpenAI Voice setting;
+  Talk Mode, live captions, and direct Rokid audio retain their established realtime path.
+- Bound recordings to five minutes and 9.6 MB of PCM, stream capture to an app-cache WAV file,
+  upload from disk, and remove temporary audio on all terminal paths.
+- Keep mode selection and WAV framing as deterministic tested policy, while microphone, lifecycle,
+  secure-key access, and network ownership stay in their existing Android runtime boundaries.
+- Advance both applications to `1.3.121` / Build `130`. The complete 265-task public paired-release
+  source gate passes, including lint, JVM tests, the 70-percent selected-logic coverage threshold,
+  public-artifact isolation, matching embedded HUD, and shared version evidence.
+- A separate Apache-2.0 sherpa-onnx wake-word spike validates dependency provenance, an arm64-only
+  package, the compiled model-construction path, and a standalone APK build. It remains outside
+  production because runtime construction, device accuracy, false-accept rate, microphone
+  coexistence, and power cost are not yet measured.
+
 ## Current code rating
 
 - Overall: **9.2/10** from the latest detailed assessment. Build 129 is now paired-device verified;
@@ -262,7 +280,9 @@ expanded gate with 72.3-percent selected coverage. Its matching private Phone/HU
 version, v2-signer, and embedded-HUD hash checks. Both apps are installed, the official CXR-L path
 returned a successful install callback after a full glasses reboot, and a fresh matching `129/129`
 runtime handshake is verified. No runtime-performance improvement is claimed without a same-device
-benchmark.
+benchmark. Build `130` passes the 265-task public source gate with matching `130` / `1.3.121`
+Phone/HUD evidence and a byte-identical embedded HUD artifact; it is not committed, installed, or
+paired-device verified.
 
 ## New-session resume prompt
 

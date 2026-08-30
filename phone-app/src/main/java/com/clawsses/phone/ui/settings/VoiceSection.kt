@@ -308,6 +308,9 @@ private fun OpenAIVoiceSettings(
     var apiKey by remember { mutableStateOf(voiceRecognitionManager.getOpenAIApiKey()) }
     var showApiKey by remember { mutableStateOf(false) }
     var isEnabled by remember { mutableStateOf(voiceRecognitionManager.isOpenAIVoiceEnabled()) }
+    var longDictationEnabled by remember {
+        mutableStateOf(voiceRecognitionManager.isLongDictationEnabled())
+    }
 
     val hasApiKey = apiKey.isNotEmpty()
     val isConfigured = hasApiKey && isEnabled
@@ -427,6 +430,40 @@ private fun OpenAIVoiceSettings(
             Text(
                 "OpenAI provides higher accuracy voice recognition using GPT-4o. " +
                     "Falls back to device recognition if unavailable.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider(thickness = 0.5.dp)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Long dictation", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Phone mic button only · tap once to record, tap again to transcribe · " +
+                            "maximum 5 minutes",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = longDictationEnabled,
+                    onCheckedChange = { enabled ->
+                        longDictationEnabled = enabled
+                        voiceRecognitionManager.setLongDictationEnabled(enabled)
+                    },
+                    enabled = isConfigured,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Talk Mode, live captions, and direct Rokid audio remain on the existing " +
+                    "Realtime path.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

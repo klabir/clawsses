@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.121 (build 130)
+
+### Added
+
+- Add an optional, bounded Phone-only long-dictation mode that records to a temporary WAV file and
+  submits it to OpenAI transcription without buffering the full recording in memory.
+- Add direct tests for the five-minute audio bound, WAV framing, language normalization, and
+  explicit mode-selection policy.
+
+### Changed
+
+- Advance the shared Phone/HUD candidate version to `1.3.121` / Build `130`.
+- Keep Talk Mode, live captions, and direct Rokid voice input on the existing realtime path; long
+  dictation remains an explicit manual Phone-microphone setting.
+
 ## 1.3.120 (build 129)
 
 ### Changed
