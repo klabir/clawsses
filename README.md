@@ -6,7 +6,10 @@ Connect to your [OpenClaw](https://github.com/openclaw/openclaw) server 🦞 wit
   <img src="docs/images/clawsses-hero.jpg" width="700" alt="Clawsses - wearable AI on Rokid Glasses">
 </p>
 
-> **Current source release:** Clawsses 1.3.98 / Build 107. Builds 106–107 suppress credential-bearing vendor INFO logs before SDK initialization and harden Android local-hotspot request cleanup across API 29–36. Public releases contain source only; APKs built with Rokid credentials are private device artifacts.
+> **Current source release:** Clawsses 1.3.99 / Build 108. Builds 106–108 suppress credential-bearing vendor INFO logs before SDK initialization, harden Android local-hotspot request cleanup across API 29–36, and unify the verified HUD installation routes behind a durable transaction. Public releases contain source only; APKs built with Rokid credentials are private device artifacts.
+
+For the current verified engineering checkpoint and new-session handoff, see
+[`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 
 <p align="center">
   <img src="docs/images/rokid-display.jpg" width="340" alt="Dual-eye monochrome display">

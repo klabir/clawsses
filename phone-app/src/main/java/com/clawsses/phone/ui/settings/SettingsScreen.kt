@@ -71,9 +71,7 @@ fun SettingsScreen(
     onRestartGlasses: () -> Boolean = { false },
     // Software Update
     installState: ApkInstaller.InstallState,
-    sdkConnected: Boolean,
     onInstall: () -> Unit,
-    onInstallViaHiRokid: () -> Unit,
     onVerifyInstall: () -> Unit,
     onCancelInstall: () -> Unit,
     // Voice
@@ -168,9 +166,7 @@ fun SettingsScreen(
             item {
                 SoftwareUpdateSection(
                     installState = installState,
-                    sdkConnected = sdkConnected,
                     onInstall = onInstall,
-                    onInstallViaHiRokid = onInstallViaHiRokid,
                     onVerifyInstall = onVerifyInstall,
                     onCancel = onCancelInstall,
                 )

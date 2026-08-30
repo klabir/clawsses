@@ -30,9 +30,7 @@ import com.clawsses.phone.glasses.ApkInstaller
 @Composable
 fun SoftwareUpdateSection(
     installState: ApkInstaller.InstallState,
-    sdkConnected: Boolean,
     onInstall: () -> Unit,
-    onInstallViaHiRokid: () -> Unit,
     onVerifyInstall: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
@@ -43,7 +41,7 @@ fun SoftwareUpdateSection(
 
         when (installState) {
             is ApkInstaller.InstallState.Idle ->
-                IdleContent(sdkConnected, onInstall, onInstallViaHiRokid)
+                IdleContent(onInstall)
 
             is ApkInstaller.InstallState.CheckingConnection ->
                 ProgressContent("Checking connection...", -1, null, onCancel = null)
@@ -77,7 +75,7 @@ fun SoftwareUpdateSection(
                 )
 
             is ApkInstaller.InstallState.InstalledPendingVerification ->
-                PendingVerificationContent(installState, onVerifyInstall, onInstallViaHiRokid)
+                PendingVerificationContent(installState, onVerifyInstall, onInstall)
 
             is ApkInstaller.InstallState.PreparingApk ->
                 ProgressContent("Preparing APK...", -1, null, onCancel = null)
@@ -89,10 +87,10 @@ fun SoftwareUpdateSection(
                 ProgressContent(installState.message, -1, "Do not disconnect the glasses", onCancel = null)
 
             is ApkInstaller.InstallState.Success ->
-                SuccessContent(installState.message, onInstallViaHiRokid)
+                SuccessContent(installState.message, onInstall)
 
             is ApkInstaller.InstallState.Error ->
-                ErrorContent(installState.message, installState.canRetry, onInstall, onInstallViaHiRokid)
+                ErrorContent(installState.message, installState.canRetry, onInstall)
         }
     }
 }
@@ -141,16 +139,15 @@ private fun VersionContent() {
 
 @Composable
 private fun IdleContent(
-    sdkConnected: Boolean,
     onInstall: () -> Unit,
-    onInstallViaHiRokid: () -> Unit,
 ) {
     Text(
         "Glasses App",
         style = MaterialTheme.typography.bodyLarge,
     )
     Text(
-        "Use CXR-M, or the official Hi Rokid bridge when the Wi-Fi transfer is unavailable.",
+        "Clawsses uses the official Hi Rokid installer when available and automatically falls " +
+            "back to the connected CXR-M transport.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -159,21 +156,11 @@ private fun IdleContent(
 
     Button(
         onClick = onInstall,
-        enabled = sdkConnected,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
-        Text(if (sdkConnected) "Install via CXR-M" else "Connect Glasses for CXR-M")
-    }
-    Spacer(Modifier.height(8.dp))
-    OutlinedButton(
-        onClick = onInstallViaHiRokid,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("Install via Hi Rokid")
+        Text("Install or update Glasses App")
     }
 }
 
@@ -287,7 +274,6 @@ private fun ErrorContent(
     message: String,
     canRetry: Boolean,
     onRetry: () -> Unit,
-    onInstallViaHiRokid: () -> Unit,
 ) {
     Row(
         verticalAlignment = Alignment.Top,
@@ -322,13 +308,6 @@ private fun ErrorContent(
             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text("Try Again")
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onInstallViaHiRokid,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Use Hi Rokid Bridge")
         }
     }
 }

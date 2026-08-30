@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## 1.3.99 (build 108)
+
+### Added
+
+- Add a durable installer transaction record that restores an explicit interrupted phase after
+  process death without persisting authorization tokens or hotspot credentials.
+- Require a live matching HUD build handshake after either production installation route.
+
+### Changed
+
+- Replace separate CXR-M and Hi Rokid update controls with one production install action that
+  prefers the official Hi Rokid bridge and automatically falls back to a connected CXR-M route.
+- Route both production methods through one tested transport-selection policy and generic
+  post-install verification state.
+
+### Fixed
+
+- Dispose installer jobs and vendor callbacks with the process-scoped runtime.
+
 ## 1.3.98 (build 107)
 
 ### Changed

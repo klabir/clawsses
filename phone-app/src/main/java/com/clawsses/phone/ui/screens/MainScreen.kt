@@ -435,9 +435,6 @@ fun MainScreen() {
         var hasCachedSn by remember { mutableStateOf(RokidSdkManager.hasCachedSn()) }
         var cachedSn by remember { mutableStateOf(RokidSdkManager.getCachedSn()) }
         var cachedDeviceName by remember { mutableStateOf(RokidSdkManager.getCachedDeviceName()) }
-        val sdkConnected =
-            glassesState is GlassesConnectionManager.ConnectionState.Connected && !debugModeEnabled
-
         SettingsScreen(
             // Server
             openClawHost = openClawHost,
@@ -498,9 +495,7 @@ fun MainScreen() {
             },
             // Software Update
             installState = installState,
-            sdkConnected = sdkConnected,
-            onInstall = { apkInstaller.installViaSdk() },
-            onInstallViaHiRokid = { apkInstaller.installViaHiRokid() },
+            onInstall = { apkInstaller.installOrUpdate() },
             onVerifyInstall = { apkInstaller.retryPendingVerification() },
             onCancelInstall = { apkInstaller.cancelInstallation() },
             // Voice

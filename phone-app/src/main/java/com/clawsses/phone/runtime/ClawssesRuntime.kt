@@ -106,6 +106,7 @@ class ClawssesRuntime(context: Context) {
     }
 
     fun cleanup() {
+        apkInstaller.cleanup()
         phoneGlassesBridge.cleanup()
         talkCoordinator.cleanup()
         glassesManager.dispose()

@@ -3,6 +3,17 @@
 These instructions are the authoritative agent guidance for this repository. They apply to
 OpenClaw/Codex, Gemini in Android Studio, Claude Code, and other coding agents.
 
+## Session startup and handoff
+
+- Before answering about the current release or changing code, read `docs/CURRENT_STATE.md`, then
+  verify mutable facts with `git status --short --branch` and the latest Git history.
+- Treat committed source, current Git state, and fresh device evidence as authoritative over
+  semantic memory, compacted conversations, old daily notes, or prior model conclusions.
+- If `docs/CURRENT_STATE.md` disagrees with Git or hardware, stop and report the mismatch before
+  changing source or devices.
+- Update `docs/CURRENT_STATE.md` after a verified release, hardware gate, merge, or newly confirmed
+  blocker. Do not put credentials, device serials, private endpoints, or unsanitized logs in it.
+
 ## Agent roles
 
 - The primary coding agent is OpenClaw using the current approved latest OpenAI Codex model.
@@ -147,6 +158,7 @@ Common commands:
 
 - `README.md` is user-facing documentation.
 - `AGENTS.md` is the canonical coding-agent instruction file.
+- `docs/CURRENT_STATE.md` is the canonical cross-session engineering handoff.
 - `CLAUDE.md` is only a compatibility pointer to this file and must not duplicate instructions.
 - Update `VERSIONING.md` and the existing changelog structure when a distributable release changes.
 - Do not alter released changelog sections retroactively.
