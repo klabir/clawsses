@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## 1.3.103 (build 112)
+
+### Changed
+
+- Decode every production Phone-to-HUD message into a sealed typed message before Activity state
+  or effects are touched.
+- Replace the duplicate legacy `JSONObject` switch in `HudActivity` with one exhaustive typed
+  dispatcher while retaining transport acknowledgements for unknown future messages.
+
+### Security
+
+- Reject malformed catalog, voice, photo, wake, TTS, card, and caption fields at the protocol
+  boundary instead of silently coercing wrong primitive types inside the Activity.
+
 ## 1.3.102 (build 111)
 
 ### Added
