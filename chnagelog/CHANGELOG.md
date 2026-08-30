@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.101 (build 110)
+
+### Added
+
+- Generate a manifest for the exact HUD APK bundled into every Phone variant.
+- Verify the HUD hash, package, version, and signer against that manifest and the running Phone
+  before either production installer can transfer the APK.
+
+### Security
+
+- Reject missing, tampered, unsigned, differently signed, or version-mismatched HUD artifacts
+  before handing them to CXR-M or Hi Rokid.
+
 ## 1.3.100 (build 109)
 
 ### Changed

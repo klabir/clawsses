@@ -81,6 +81,7 @@ class ApkInstaller(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var installJob: Job? = null
     private val hiRokidInstaller = HiRokidInstaller(context, glassesManager)
+    private val hudArtifactVerifier = HudArtifactVerifier(context)
 
     init {
         scope.launch {
@@ -265,6 +266,7 @@ class ApkInstaller(
                 _installState.value = InstallState.PreparingApk
                 val apkFile = withContext(Dispatchers.IO) {
                     extractApkFromAssets()
+                        ?.also(hudArtifactVerifier::verify)
                         ?: throw IllegalStateException("Bundled glasses APK is missing.")
                 }
                 val receipt = hiRokidInstaller.install(apkFile, token) { message ->
@@ -353,6 +355,7 @@ class ApkInstaller(
         // Step 1: Prepare APK
         val apkFile = extractApkFromAssets()
             ?: throw Exception("No APK found. Ensure glasses-app-release.apk is bundled.")
+        hudArtifactVerifier.verify(apkFile)
 
         Log.d(TAG, "APK prepared: ${apkFile.absolutePath} (${apkFile.length() / 1024} KB)")
 
@@ -583,7 +586,7 @@ class ApkInstaller(
     private fun extractApkFromAssets(): File? {
         return try {
             val cacheDir = context.cacheDir
-            val apkFile = File(cacheDir, "glasses-app.apk")
+            val apkFile = File(cacheDir, GLASSES_APP_ASSET)
 
             // Check if we have a bundled APK in assets
             val assetManager = context.assets
@@ -623,7 +626,7 @@ class ApkInstaller(
 
     private fun cleanupTempApk() {
         try {
-            File(context.cacheDir, "glasses-app.apk").delete()
+            File(context.cacheDir, GLASSES_APP_ASSET).delete()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to clean up cached APK", e)
         }
