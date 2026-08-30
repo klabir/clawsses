@@ -25,9 +25,8 @@ import kotlinx.coroutines.delay
 /**
  * Handles APK installation on Rokid glasses.
  *
- * Supports two installation methods:
- * 1. SDK Method: Uses CXR-M SDK's WiFi P2P transfer (requires SDK initialization + Bluetooth connection)
- * 2. ADB Method: Uses ADB over WiFi (requires glasses to have ADB enabled and be on same network)
+ * Production installs prefer the official Hi Rokid bridge and automatically fall back to the
+ * connected CXR-M transport. The debug-only ADB entry points remain available for development.
  *
  * The ADB method is more reliable for development and doesn't require the full SDK setup.
  */
@@ -80,11 +79,14 @@ class ApkInstaller(
         "clawsses_installer_state",
         Context.MODE_PRIVATE,
     )
+    private val transactionStore = InstallerTransactionStore(context)
     private val restoredPendingBuild = installerPreferences
         .getInt(KEY_PENDING_PEER_BUILD, 0)
         .takeIf { it > 0 }
     private val _installState = MutableStateFlow<InstallState>(
-        restoredPendingBuild?.let(::pendingVerificationState) ?: InstallState.Idle,
+        restoredPendingBuild?.let(::pendingVerificationState)
+            ?: transactionStore.active()?.let(::interruptedInstallState)
+            ?: InstallState.Idle,
     )
     val installState: StateFlow<InstallState> = _installState.asStateFlow()
 
@@ -109,6 +111,39 @@ class ApkInstaller(
 
     /** Activity-owned launcher; the authorization token is returned directly and never persisted. */
     var launchHiRokidAuthorization: ((Intent) -> Unit)? = null
+
+    /** One production entry point. Transport choice is deterministic and tested. */
+    fun installOrUpdate() {
+        if (!canStartInstall()) return
+        val hiRokidAvailable = hiRokidInstaller.isAvailable()
+        val authorizationLauncherAvailable = launchHiRokidAuthorization != null
+        val cxrReady = RokidSdkManager.isReady()
+        val cxrConnected = RokidSdkManager.isConnected()
+        when (
+            InstallerTransportPolicy.select(
+                InstallerAvailability(
+                    hiRokidAvailable = hiRokidAvailable,
+                    authorizationLauncherAvailable = authorizationLauncherAvailable,
+                    cxrReady = cxrReady,
+                    cxrConnected = cxrConnected,
+                ),
+            )
+        ) {
+            InstallerRoute.HI_ROKID -> installViaHiRokid()
+            InstallerRoute.CXR_M -> installViaSdk()
+            null -> {
+                transactionStore.clear()
+                _installState.value = InstallState.Error(
+                    unavailableRouteMessage(
+                        hiRokidAvailable = hiRokidAvailable,
+                        authorizationLauncherAvailable = authorizationLauncherAvailable,
+                        cxrReady = cxrReady,
+                    ),
+                    canRetry = true,
+                )
+            }
+        }
+    }
 
     // ADB connection settings
     private var adbHost: String = ""
@@ -247,7 +282,12 @@ class ApkInstaller(
             return
         }
 
-        Log.i(TAG, "Starting SDK installation via WiFi P2P")
+        transactionStore.start(
+            InstallerRoute.CXR_M,
+            InstallerPhase.PREPARING_APK,
+            BuildConfig.VERSION_CODE,
+        )
+        Log.i(TAG, "Starting SDK installation via the automatic CXR-M transport policy")
         _installState.value = InstallState.PreparingApk
         GlassesConnectionService.holdWakeLock(
             context,
@@ -260,17 +300,23 @@ class ApkInstaller(
                 withTimeout(ApkInstallerTimeoutPolicy.TOTAL_OPERATION_MS) {
                     doSdkInstall()
                 }
+                persistPendingPeerBuild(BuildConfig.VERSION_CODE)
+                transactionStore.advance(InstallerPhase.VERIFYING)
+                verifyPendingPeerBuild()
             } catch (e: TimeoutCancellationException) {
                 Log.e(TAG, "SDK installation phase timed out")
                 RokidSdkManager.stopUploadApk()
                 _installState.value = InstallState.Error("Installation timed out. Check glasses connection.")
+                transactionStore.clear()
             } catch (e: CancellationException) {
                 Log.d(TAG, "SDK installation cancelled")
                 _installState.value = InstallState.Idle
+                transactionStore.clear()
             } catch (e: Exception) {
                 Log.e(TAG, "SDK installation failed", e)
                 RokidSdkManager.stopUploadApk()
                 _installState.value = InstallState.Error(formatError(e))
+                transactionStore.clear()
             } finally {
                 GlassesConnectionService.releaseWakeLock(context, WakeLockReason.APK_TRANSFER)
                 RokidSdkManager.deinitWifiHotspot()
@@ -300,6 +346,11 @@ class ApkInstaller(
             )
             return
         }
+        transactionStore.start(
+            InstallerRoute.HI_ROKID,
+            InstallerPhase.AWAITING_AUTHORIZATION,
+            BuildConfig.VERSION_CODE,
+        )
         _installState.value = InstallState.AwaitingHiRokidAuthorization
         runCatching { launcher(hiRokidInstaller.authorizationIntent()) }
             .onFailure { error ->
@@ -307,6 +358,7 @@ class ApkInstaller(
                     "Could not open Hi Rokid authorization: ${error.message ?: error.javaClass.simpleName}",
                     canRetry = true,
                 )
+                transactionStore.clear()
             }
     }
 
@@ -314,6 +366,7 @@ class ApkInstaller(
         if (_installState.value !is InstallState.AwaitingHiRokidAuthorization) return
         val token = hiRokidInstaller.parseAuthorizationResult(resultCode, data)
         if (token == null) {
+            transactionStore.clear()
             _installState.value = pendingPeerBuild()?.let(::pendingVerificationState)
                 ?: InstallState.Error(
                     "Hi Rokid authorization was cancelled or denied.",
@@ -331,16 +384,19 @@ class ApkInstaller(
         )
         installJob = scope.launch {
             try {
+                transactionStore.advance(InstallerPhase.PREPARING_APK)
                 _installState.value = InstallState.PreparingApk
                 val apkFile = withContext(Dispatchers.IO) {
                     extractApkFromAssets()
                         ?: throw IllegalStateException("Bundled glasses APK is missing.")
                 }
                 val receipt = hiRokidInstaller.install(apkFile, token) { message ->
+                    transactionStore.advance(InstallerPhase.CONNECTING)
                     _installState.value = InstallState.ConnectingHiRokid(message)
                 }
                 check(receipt.installed && receipt.opened)
                 persistPendingPeerBuild(BuildConfig.VERSION_CODE)
+                transactionStore.advance(InstallerPhase.VERIFYING)
                 _installState.value = InstallState.AwaitingPeerOwnership(BuildConfig.VERSION_CODE)
                 verifyPendingPeerBuild()
             } catch (error: TimeoutCancellationException) {
@@ -348,12 +404,15 @@ class ApkInstaller(
                     "Hi Rokid did not complete the APK installation within its time limit.",
                     canRetry = true,
                 )
+                transactionStore.clear()
             } catch (error: CancellationException) {
                 _installState.value = pendingPeerBuild()?.let(::pendingVerificationState)
                     ?: InstallState.Idle
+                if (pendingPeerBuild() == null) transactionStore.clear()
             } catch (error: Exception) {
                 Log.e(TAG, "Hi Rokid installation failed", error)
                 _installState.value = InstallState.Error(formatError(error), canRetry = true)
+                transactionStore.clear()
             } finally {
                 hiRokidInstaller.cancel()
                 GlassesConnectionService.releaseWakeLock(context, WakeLockReason.APK_TRANSFER)
@@ -405,12 +464,15 @@ class ApkInstaller(
     private fun markPeerVerified(expectedBuild: Int) {
         if (pendingPeerBuild() != expectedBuild) return
         clearPendingPeerBuild()
+        val route = transactionStore.active()?.route?.label ?: "installer"
+        transactionStore.clear()
         _installState.value = InstallState.Success(
-            "Glasses Build $expectedBuild installed and verified via Hi Rokid.",
+            "Glasses Build $expectedBuild installed and verified via $route.",
         )
     }
 
     private suspend fun doSdkInstall() = withContext(Dispatchers.IO) {
+        transactionStore.advance(InstallerPhase.PREPARING_APK)
         // Step 1: Prepare APK
         val apkFile = extractApkFromAssets()
             ?: throw Exception("No APK found. Ensure glasses-app-release.apk is bundled.")
@@ -423,6 +485,7 @@ class ApkInstaller(
         RokidSdkManager.onApkUploadSucceed = {
             Log.d(TAG, "SDK: APK upload succeeded")
             _installState.value = InstallState.Installing("Installing on glasses...")
+            transactionStore.advance(InstallerPhase.INSTALLING)
         }
 
         RokidSdkManager.onApkUploadFailed = {
@@ -559,6 +622,7 @@ class ApkInstaller(
         _installState.value = InstallState.Uploading(
             "Uploading ${apkFile.length() / 1024} KB via $transportName..."
         )
+        transactionStore.advance(InstallerPhase.UPLOADING)
 
         val started = withContext(Dispatchers.Main) {
             uploadIp?.let { RokidSdkManager.startUploadApk(apkFile.absolutePath, it) }
@@ -574,8 +638,6 @@ class ApkInstaller(
         }
 
         Log.i(TAG, "SDK APK installation successful!")
-        _installState.value = InstallState.Success("Glasses app installed successfully via SDK!")
-
         // Disconnect WiFi P2P to save battery — Bluetooth remains for communication.
         // Must switch to Main thread since SDK methods require it.
         withContext(Dispatchers.Main) {
@@ -672,6 +734,7 @@ class ApkInstaller(
         hiRokidInstaller.cancel()
         installJob?.cancel()
         installJob = null
+        if (pendingPeerBuild() == null) transactionStore.clear()
         _installState.value = pendingPeerBuild()?.let(::pendingVerificationState)
             ?: InstallState.Idle
     }
@@ -778,7 +841,38 @@ class ApkInstaller(
     private fun pendingVerificationState(expectedBuild: Int) =
         InstallState.InstalledPendingVerification(
             expectedBuild = expectedBuild,
-            message = "Hi Rokid installed the HUD. Reconnect the glasses to verify Build $expectedBuild.",
+            message = "The HUD was installed. Reconnect the glasses to verify Build $expectedBuild.",
         )
+
+    private fun interruptedInstallState(transaction: InstallerTransaction) = InstallState.Error(
+        "The previous ${transaction.route.label} installation was interrupted during " +
+            "${transaction.phase.displayName()}. Start the update again; no authorization token " +
+            "or hotspot credential was stored.",
+        canRetry = true,
+    )
+
+    private fun InstallerPhase.displayName(): String = name
+        .lowercase()
+        .replace('_', ' ')
+
+    private fun unavailableRouteMessage(
+        hiRokidAvailable: Boolean,
+        authorizationLauncherAvailable: Boolean,
+        cxrReady: Boolean,
+    ): String = when {
+        !hiRokidAvailable && cxrReady ->
+            "Hi Rokid is disabled or unavailable, and CXR-M is disconnected. Press the glasses " +
+                "button 3× until the blue LED blinks, reconnect Clawsses, then try again."
+
+        hiRokidAvailable && !authorizationLauncherAvailable ->
+            "Open Clawsses in the foreground so Android can request Hi Rokid authorization."
+
+        !cxrReady ->
+            "The private Rokid installer is unavailable in this build. Use an authorized paired " +
+                "hardware build, or enable Hi Rokid and try again."
+
+        else ->
+            "No installer route is ready. Enable Hi Rokid or reconnect the glasses through CXR-M."
+    }
 
 }
