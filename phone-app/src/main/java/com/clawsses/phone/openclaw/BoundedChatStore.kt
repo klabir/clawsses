@@ -13,6 +13,7 @@ internal class BoundedChatStore(
     private val maxAttachmentsPerMessage: Int = DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE,
     private val onMessagesChanged: (List<ChatMessage>) -> Unit = {},
 ) {
+    data class ReconcileResult(val changed: Boolean, val messages: List<ChatMessage>)
     init {
         require(maxMessages > 0)
         require(maxAttachmentBytes >= 0)
@@ -61,6 +62,24 @@ internal class BoundedChatStore(
         completed = applyBudgets(completed)
         publish()
         return _messages.value
+    }
+
+    @Synchronized
+    fun reconcileCanonical(message: ChatMessage, replacingId: String?): ReconcileResult {
+        val before = _messages.value
+        streamingTail = streamingTail?.takeUnless {
+            it.id == message.id || (replacingId != null && it.id == replacingId)
+        }
+        val mutable = completed.toMutableList()
+        val replacementIndex = replacingId
+            ?.let { id -> mutable.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+        mutable.removeAll { it.id == message.id || (replacingId != null && it.id == replacingId) }
+        val insertionIndex = replacementIndex?.coerceAtMost(mutable.size) ?: mutable.size
+        mutable.add(insertionIndex, message)
+        completed = applyBudgets(mutable)
+        publish()
+        return ReconcileResult(before != _messages.value, _messages.value)
     }
 
     @Synchronized

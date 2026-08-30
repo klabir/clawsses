@@ -8,12 +8,12 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.113` / Build `122`
-- Release commit: `c269283`
+- Version: `1.3.114` / Build `123` candidate
+- Release commit: none; Build 123 source is intentionally uncommitted pending final hardware verification
 - Base main: `f472f28`
-- Release branch: `build/122-openclaw-request-coordinator` (local only)
+- Release branch: `build/123-cross-client-session-sync` (local only)
 - Publication status: Builds `119`–`122` are committed locally but are not pushed or merged;
-  private APKs remain unpublished.
+  Build 123 is an uncommitted local candidate and all private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
@@ -21,22 +21,25 @@ Last verified: 2026-08-30
 
 - Builds `119`–`122` are cumulative release commits: `277f4f7`, `d87cfb2`, `a9885b5`,
   `c269283`.
-- The complete 220-task public paired-release gate passed at every candidate stage. Final private
-  Phone/HUD artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the
-  standalone private HUD APK.
-- The final official CXR-L install callbacks, HUD launch, and fresh matching `122/122` runtime
-  handshake are verified. The release branch remains local and unmerged.
+- The complete 220-task public paired-release gate passed for Build 123. Its private Phone/HUD
+  artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the standalone
+  private HUD APK.
+- The official Build-123 CXR-L install callback returned success and launched the HUD. Final
+  release verification is still pending a fresh matching `123/123` runtime handshake after the
+  known firmware deep-sleep state is physically cleared.
 
 ## Verified hardware state
 
-- The connected Pixel phone and Rokid HUD both run private hardware-test build `1.3.113` / Build
-  `122` from local commit `c269283`.
-- The Phone installation, cold launch, resumed Activity, live process, official Hi Rokid/CXR-L HUD
-  upload, install, launch, and fresh matching `122/122` peer handshake were verified.
+- The connected Pixel phone runs private hardware-test build `1.3.114` / Build `123`; installation,
+  cold launch, resumed Activity, and live process are verified.
+- The official Hi Rokid/CXR-L HUD upload and install returned `onInstallAppResult:true`, and the
+  installer launched the bundled Build-123 HUD. The subsequent Clawsses ownership handoff is
+  blocked on the glasses' known deep-sleep beacon state, so the fresh `123/123` handshake is not
+  yet verified.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 122 source is committed locally but not pushed or merged; private APKs remain unpublished.
+- Build 123 source is uncommitted, local, and unpublished; private APKs remain unpublished.
 - The Build-119–122 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
@@ -108,15 +111,27 @@ with `adb devices -l` and collect a fresh version handshake.
 - These builds are structural refactors with behavior gates; no runtime performance improvement is
   claimed without a same-device benchmark.
 
+## Build 123 candidate changes
+
+- Advertise session-scoped event support, subscribe to broad session changes, and subscribe to the
+  active session transcript before taking an authoritative history snapshot.
+- Reconcile live messages by canonical ID, idempotency key, and monotonic message sequence; stale
+  sessions are rejected and identical text with distinct IDs remains distinct.
+- Refresh authoritative history after terminal runs, sequence gaps, reconnects, and identity-only
+  transcript invalidations while coalescing duplicate refresh triggers.
+- The repository has 312 checked-in `@Test` cases across JVM and instrumentation sources.
+
 ## Current code rating
 
-- Overall: **8.8/10**. Correctness and release safety are strong: typed protocol boundaries,
-  deterministic planners, public/private artifact isolation, 310 tests, the complete paired gate,
-  and a verified physical `122/122` deployment.
-- Architecture: **8.6/10**. The new planners and coordinator reduce mixed UI/transport state, but
-  `HudActivity` and `OpenClawClient` remain the principal orchestration hotspots.
-- Maintainability: **8.5/10**. Compose and interaction responsibilities are materially smaller and
-  directly testable; remaining risk is concentrated in lifecycle-heavy Activity and client flows.
+- Overall: **9.0/10** for the Build-123 source candidate. The confirmed cross-client correctness
+  gap is closed behind typed protocol and reconciliation boundaries, with 312 tests and the full
+  public paired gate green. Deployment confidence remains provisional until the fresh `123/123`
+  handshake is observed.
+- Architecture: **8.7/10**. Session subscription, message identity, and refresh coalescing now live
+  in a tested coordinator, but `HudActivity` and the 1,480-line `OpenClawClient` remain the principal
+  orchestration hotspots.
+- Maintainability: **8.6/10**. Cross-client edge cases are explicit and directly tested; remaining
+  risk is concentrated in lifecycle-heavy Activity and client orchestration.
 - Performance confidence: **8.4/10**. Hot-path allocations and invalidation boundaries have
   improved over earlier releases, but Builds 119–122 were not followed by a fresh Macrobenchmark.
 - Security/release discipline: **9.4/10**. Public artifacts remain credential-free, private
@@ -164,8 +179,9 @@ For source changes, run the narrowest modified tests and then:
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
 
-Build `122` has passed the final official CXR-L HUD installation and fresh matching `122/122`
-runtime handshake. Its release branch is committed locally but is not pushed or merged.
+Build `123` has passed the full public gate, private artifact checks, Phone deployment, and official
+CXR-L HUD installation callback. A fresh matching `123/123` runtime handshake remains required
+after physically waking the known deep-sleep CXR beacon. The candidate is uncommitted and local.
 
 ## New-session resume prompt
 

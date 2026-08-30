@@ -61,6 +61,23 @@ class BoundedChatStoreTest {
         assertFalse(store.value().any { it.id == "stale" })
     }
 
+    @Test
+    fun `canonical reconciliation replaces optimistic id without reordering`() {
+        val store = BoundedChatStore()
+        store.replace(listOf(message("before"), message("local"), message("after")))
+        val result = store.reconcileCanonical(message("canonical"), replacingId = "local")
+        assertTrue(result.changed)
+        assertEquals(listOf("before", "canonical", "after"), result.messages.map(ChatMessage::id))
+    }
+
+    @Test
+    fun `identical text with distinct canonical ids is retained`() {
+        val store = BoundedChatStore()
+        store.reconcileCanonical(message("one", "same"), replacingId = null)
+        store.reconcileCanonical(message("two", "same"), replacingId = null)
+        assertEquals(listOf("one", "two"), store.value().map(ChatMessage::id))
+    }
+
     private fun message(
         id: String,
         content: String = id,

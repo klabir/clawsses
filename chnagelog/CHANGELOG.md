@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 1.3.114 (build 123)
+
+### Added
+
+- Subscribe to active-session transcript events and broad session metadata changes exposed by the
+  OpenClaw gateway.
+- Reconcile cross-client messages by canonical message ID, idempotency key, and message sequence.
+
+### Fixed
+
+- Refresh the active transcript after foreign terminal runs, reconnect gaps, and identity-only
+  transcript invalidations so WebChat and Clawsses converge on one authoritative history.
+- Reject stale-session events while preserving distinct messages that happen to have identical
+  text.
+
 ## 1.3.113 (build 122)
 
 ### Changed

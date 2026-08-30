@@ -57,6 +57,7 @@ class OpenClawClient(
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val chatRun = OpenClawChatRunComponent(attachmentFileStore)
+    private val sessionSync = OpenClawSessionSyncCoordinator()
     private val chatStore get() = chatRun.chatStore
     val chatMessages: StateFlow<List<ChatMessage>> = chatStore.messages
 
@@ -216,6 +217,7 @@ class OpenClawClient(
             generation = connectionEpoch.begin()
             challengeNonce = null
         }
+        sessionSync.resetConnection()
         if (previousSocket != null) {
             previousSocket.close(1000, "Connection replaced")
             failAllPending("Connection replaced")
@@ -304,6 +306,7 @@ class OpenClawClient(
             challengeNonce = null
             webSocket.also { webSocket = null }
         }
+        sessionSync.resetConnection()
         socket?.close(1000, "User disconnected")
         _connectionState.value = ConnectionState.Disconnected
         notifyConnectionUpdate(false)
@@ -328,7 +331,10 @@ class OpenClawClient(
         clearAgentProgress(force = true)
         scope.launch {
             try {
-                // Add user message to local chat
+                val idempotencyKey = UUID.randomUUID().toString()
+                val sessionKey = _currentSessionKey.value ?: "main"
+
+                // Add user message to local chat and remember its canonical echo key.
                 val userMsgId = clientMessageId?.takeIf { it.isNotBlank() }
                     ?: UUID.randomUUID().toString()
                 val localAttachments = images.orEmpty().mapNotNull { base64 ->
@@ -343,12 +349,11 @@ class OpenClawClient(
                     content = text,
                     attachments = localAttachments
                 )
+                sessionSync.registerOptimistic(sessionKey, idempotencyKey, userMsgId)
                 addChatMessage(userMsg)
                 onChatMessage?.invoke(userMsg)
 
                 // Send to OpenClaw as chat.send
-                val idempotencyKey = UUID.randomUUID().toString()
-                val sessionKey = _currentSessionKey.value ?: "main"
                 val params = JsonObject().apply {
                     addProperty("sessionKey", sessionKey)
                     addProperty("idempotencyKey", idempotencyKey)
@@ -623,7 +628,7 @@ class OpenClawClient(
 
         scope.launch {
             val key = "agent:$normalizedId:main"
-            activateSession(key)
+            val operation = activateSession(key)
             onConnectionUpdate?.invoke(
                 ConnectionUpdate(
                     connected = true,
@@ -632,7 +637,7 @@ class OpenClawClient(
                         ?: normalizedId
                 )
             )
-            loadSessionHistory(key)
+            synchronizeActiveSession(key, operation)
             requestModels()
         }
     }
@@ -670,9 +675,9 @@ class OpenClawClient(
                         return@launch
                     }
                     Log.i(TAG, "Session creation completed")
-                    activateSession(newKey)
+                    val operation = activateSession(newKey)
                     notifyConnectionUpdate(true, newKey)
-                    onChatHistory?.invoke(emptyList())
+                    synchronizeActiveSession(newKey, operation)
                     onSessionOperation?.invoke(
                         SessionOperationUpdate(operation = "create", state = "success")
                     )
@@ -717,9 +722,9 @@ class OpenClawClient(
     fun switchSession(sessionKey: String) {
         scope.launch {
             Log.d(TAG, "Switching session")
-            activateSession(sessionKey)
+            val operation = activateSession(sessionKey)
             notifyConnectionUpdate(true, sessionKey)
-            loadSessionHistory(sessionKey)
+            synchronizeActiveSession(sessionKey, operation)
             requestModels()
         }
     }
@@ -736,45 +741,101 @@ class OpenClawClient(
         } else {
             activateSession(key)
         }
-        scope.launch {
-            try {
-                val params = JsonObject().apply {
-                    addProperty("sessionKey", key)
-                    addProperty("limit", 50)
-                }
-                Log.d(TAG, "Requesting chat history for session $key")
-                val response = sendRequest(OpenClawMethods.CHAT_HISTORY, params)
-                if (response.ok) {
-                    val messagesArray = response.payload?.getAsJsonArray("messages")
-                    Log.d(TAG, "Chat history response: payload keys=${response.payload?.keySet()}, messages count=${messagesArray?.size() ?: "null"}")
-                    val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
+        scope.launch { loadSessionHistoryNow(key, operation) }
+    }
 
-                    if (!isCurrentSessionOperation(key, operation)) {
-                        Log.d(TAG, "Discarded stale history response for session $key")
-                        return@launch
-                    }
-                    val hasMore = parsedHistory.rawCount >= 50
-                    Log.d(TAG, "Loaded ${parsedHistory.messages.size} history messages for session $key")
-                    val boundedHistory = chatStore.replace(
-                        attachmentFileStore.materialize(parsedHistory.messages),
-                    )
-                    _hasMoreHistory.value = hasMore
-                    onChatHistory?.invoke(boundedHistory)
-                } else {
-                    if (!isCurrentSessionOperation(key, operation)) return@launch
-                    Log.e(TAG, "Chat history request failed: ${response.error}")
-                    // Still notify with empty list so glasses clear stale messages
-                    chatStore.clear()
-                    _hasMoreHistory.value = false
-                    onChatHistory?.invoke(emptyList())
+    private suspend fun loadSessionHistoryNow(key: String, operation: Long) {
+        try {
+            val params = JsonObject().apply {
+                addProperty("sessionKey", key)
+                addProperty("limit", 50)
+            }
+            Log.d(TAG, "Requesting chat history for session $key")
+            val response = sendRequest(OpenClawMethods.CHAT_HISTORY, params)
+            if (response.ok) {
+                val messagesArray = response.payload?.getAsJsonArray("messages")
+                val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
+                if (!isCurrentSessionOperation(key, operation)) {
+                    Log.d(TAG, "Discarded stale history response for session $key")
+                    return
                 }
-            } catch (e: Exception) {
-                if (!isCurrentSessionOperation(key, operation)) return@launch
-                Log.e(TAG, "Error loading session history for $key", e)
-                // Still notify with empty list so glasses clear stale messages
+                val boundedHistory = chatStore.replace(
+                    attachmentFileStore.materialize(parsedHistory.messages),
+                )
+                _hasMoreHistory.value = parsedHistory.rawCount >= 50
+                Log.d(TAG, "Loaded ${boundedHistory.size} history messages for session $key")
+                onChatHistory?.invoke(boundedHistory)
+            } else {
+                if (!isCurrentSessionOperation(key, operation)) return
+                Log.e(TAG, "Chat history request failed: ${response.error}")
                 chatStore.clear()
                 _hasMoreHistory.value = false
                 onChatHistory?.invoke(emptyList())
+            }
+        } catch (e: Exception) {
+            if (!isCurrentSessionOperation(key, operation)) return
+            Log.e(TAG, "Error loading session history for $key", e)
+            chatStore.clear()
+            _hasMoreHistory.value = false
+            onChatHistory?.invoke(emptyList())
+        }
+    }
+
+    private suspend fun synchronizeActiveSession(
+        key: String,
+        operation: Long,
+        requiredGeneration: Long? = null,
+    ) {
+        var previousKey: String? = null
+        try {
+            val response = sendRequest(
+                OpenClawMethods.SESSION_MESSAGES_SUBSCRIBE,
+                JsonObject().apply { addProperty("key", key) },
+                requiredGeneration = requiredGeneration,
+            )
+            if (response.ok && isCurrentSessionOperation(key, operation)) {
+                previousKey = sessionSync.confirmSubscription(key)
+            } else if (response.ok) {
+                runCatching {
+                    sendRequest(
+                        OpenClawMethods.SESSION_MESSAGES_UNSUBSCRIBE,
+                        JsonObject().apply { addProperty("key", key) },
+                        requiredGeneration = requiredGeneration,
+                    )
+                }
+            } else if (!response.ok) {
+                Log.w(TAG, "Session message subscription failed for $key")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not subscribe to session messages for $key", e)
+        }
+
+        if (!isCurrentSessionOperation(key, operation)) return
+        loadSessionHistoryNow(key, operation)
+
+        previousKey?.let { oldKey ->
+            try {
+                sendRequest(
+                    OpenClawMethods.SESSION_MESSAGES_UNSUBSCRIBE,
+                    JsonObject().apply { addProperty("key", oldKey) },
+                    requiredGeneration = requiredGeneration,
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not unsubscribe stale session $oldKey", e)
+            }
+        }
+    }
+
+    private fun refreshActiveHistory(reason: String) {
+        val key = _currentSessionKey.value ?: return
+        if (!sessionSync.claimHistoryRefresh()) return
+        val operation = sessionOperationEpoch.current()
+        scope.launch {
+            try {
+                Log.d(TAG, "Reconciling active session history ($reason)")
+                loadSessionHistoryNow(key, operation)
+            } finally {
+                sessionSync.completeHistoryRefresh()
             }
         }
     }
@@ -927,6 +988,12 @@ class OpenClawClient(
             OpenClawEvents.CHAT -> {
                 handleChatEvent(payload)
             }
+            OpenClawEvents.SESSION_MESSAGE -> {
+                handleSessionMessageEvent(payload)
+            }
+            OpenClawEvents.SESSIONS_CHANGED -> {
+                handleSessionsChangedEvent(payload)
+            }
             OpenClawEvents.AGENT -> {
                 handleAgentEvent(payload)
             }
@@ -1021,19 +1088,41 @@ class OpenClawClient(
                     val snapshot = response.payload?.getAsJsonObject("snapshot")
                     val sessionDefaults = snapshot?.getAsJsonObject("sessionDefaults")
                     val mainSessionKey = sessionDefaults?.get("mainSessionKey")?.asString
+                    var sessionOperation: Long? = null
                     if (mainSessionKey != null) {
                         homeSessionKey = mainSessionKey
-                        activateSession(mainSessionKey)
+                        sessionOperation = activateSession(mainSessionKey)
                         Log.d(TAG, "Default session selected from gateway snapshot")
                     } else {
                         Log.w(TAG, "No default session in connect response")
+                        if (_currentSessionKey.value == null) {
+                            sessionOperation = activateSession("main")
+                        }
                     }
 
                     _connectionState.value = ConnectionState.Connected
                     notifyConnectionUpdate(true, _currentSessionKey.value)
 
-                    // Load history for the current session on connect
-                    loadSessionHistory()
+                    try {
+                        val broadSubscription = sendRequest(
+                            OpenClawMethods.SESSIONS_SUBSCRIBE,
+                            JsonObject(),
+                            requiredGeneration = generation,
+                        )
+                        if (!broadSubscription.ok) {
+                            Log.w(TAG, "Broad session subscription was rejected")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not subscribe to broad session changes", e)
+                    }
+                    val activeKey = _currentSessionKey.value
+                    if (activeKey != null) {
+                        synchronizeActiveSession(
+                            key = activeKey,
+                            operation = sessionOperation ?: sessionOperationEpoch.current(),
+                            requiredGeneration = generation,
+                        )
+                    }
                 } else {
                     val errorMsg = response.error?.get("message")?.asString ?: "Authentication failed"
                     val errorCode = response.error?.get("code")?.asString ?: ""
@@ -1100,6 +1189,62 @@ class OpenClawClient(
                 finalizeStreaming(plan.state, plan.errorMessage)
             }
         }
+        if (event.state in setOf("final", "aborted", "error") &&
+            (event.sessionKey == null || event.sessionKey == _currentSessionKey.value)
+        ) {
+            refreshActiveHistory("terminal run")
+        }
+    }
+
+    private fun handleSessionMessageEvent(payload: JsonObject?) {
+        val event = SessionMessageEventParser.parse(payload) ?: return
+        if (event.sessionKey != _currentSessionKey.value) {
+            _unreadSessions.value = _unreadSessions.value + event.sessionKey
+            scheduleCatalogRefresh()
+            return
+        }
+        val decision = sessionSync.acceptMessage(event)
+        if (decision !is OpenClawSessionSyncCoordinator.MessageDecision.Accept) return
+        if (decision.sequenceGap) refreshActiveHistory("message sequence gap")
+
+        // The local chat event stream owns its assistant tail until terminal reconciliation.
+        if (event.message.role == "assistant" && activeRunId != null) return
+
+        val canonical = attachmentFileStore.materialize(listOf(event.message)).single()
+        val existed = chatStore.value().firstOrNull { it.id == canonical.id }
+        val result = chatStore.reconcileCanonical(canonical, decision.replacingLocalId)
+        if (!result.changed) return
+        if (decision.replacingLocalId != null || existed != null) {
+            onChatHistory?.invoke(result.messages)
+        } else {
+            onChatMessage?.invoke(canonical)
+        }
+    }
+
+    private fun handleSessionsChangedEvent(payload: JsonObject?) {
+        val event = SessionsChangedEventParser.parse(payload) ?: return
+        val currentKey = _currentSessionKey.value
+        if (event.sessionKey != currentKey) {
+            if (event.phase == "message") {
+                _unreadSessions.value = _unreadSessions.value + event.sessionKey
+            }
+        } else if (event.phase == "message") {
+            refreshActiveHistory("session transcript invalidated")
+        }
+        scheduleCatalogRefresh(refreshModels = event.sessionKey == currentKey && event.reason != null)
+    }
+
+    private fun scheduleCatalogRefresh(refreshModels: Boolean = false) {
+        if (!sessionSync.claimCatalogRefresh()) return
+        scope.launch {
+            try {
+                delay(150)
+                requestSessions()
+                if (refreshModels) requestModels()
+            } finally {
+                sessionSync.completeCatalogRefresh()
+            }
+        }
     }
 
     private fun enqueueStreamingUpdate(messageId: String, fullText: String, chunk: String) {
@@ -1160,6 +1305,7 @@ class OpenClawClient(
 
     private fun activateSession(sessionKey: String): Long {
         val operation = catalogSession.activateSession(sessionKey)
+        sessionSync.activate(sessionKey)
         chatStore.clear()
         return operation
     }
@@ -1226,6 +1372,7 @@ class OpenClawClient(
             else -> Log.d(TAG, reason)
         }
         _connectionState.value = state
+        sessionSync.resetConnection()
         notifyConnectionUpdate(false)
         failAllPending("Connection lost")
         if (reconnect) scheduleReconnect(generation)
@@ -1281,6 +1428,7 @@ class OpenClawClient(
             }
         }
         if (!available) {
+            sessionSync.resetConnection()
             socketToCancel?.cancel()
             failAllPending("Network unavailable")
             _connectionState.value = ConnectionState.Disconnected

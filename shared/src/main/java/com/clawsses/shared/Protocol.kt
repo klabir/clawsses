@@ -75,6 +75,10 @@ object OpenClawMethods {
     const val AGENTS_LIST = "agents.list"
     const val MODELS_LIST = "models.list"
     const val SESSION_MODEL_SELECT = "sessions.model.select"
+    const val SESSIONS_SUBSCRIBE = "sessions.subscribe"
+    const val SESSIONS_UNSUBSCRIBE = "sessions.unsubscribe"
+    const val SESSION_MESSAGES_SUBSCRIBE = "sessions.messages.subscribe"
+    const val SESSION_MESSAGES_UNSUBSCRIBE = "sessions.messages.unsubscribe"
     const val SYSTEM_PRESENCE = "system-presence"
 }
 
@@ -83,6 +87,8 @@ object OpenClawEvents {
     const val CONNECT_CHALLENGE = "connect.challenge"
     const val AGENT = "agent"
     const val CHAT = "chat"
+    const val SESSION_MESSAGE = "session.message"
+    const val SESSIONS_CHANGED = "sessions.changed"
     const val PRESENCE = "presence"
     const val HEARTBEAT = "heartbeat"
 }

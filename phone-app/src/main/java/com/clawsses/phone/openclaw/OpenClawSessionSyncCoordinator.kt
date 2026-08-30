@@ -1,0 +1,168 @@
+package com.clawsses.phone.openclaw
+
+import com.clawsses.shared.ChatMessage
+import com.google.gson.JsonObject
+import java.util.LinkedHashMap
+
+/** Pure state holder for session-scoped subscriptions and transcript reconciliation. */
+internal class OpenClawSessionSyncCoordinator {
+    data class SubscriptionTarget(
+        val sessionKey: String,
+        val previousSubscribedKey: String?,
+    )
+
+    sealed interface MessageDecision {
+        data object Ignore : MessageDecision
+        data class Accept(
+            val replacingLocalId: String?,
+            val sequenceGap: Boolean,
+        ) : MessageDecision
+    }
+
+    private data class OptimisticMessage(val sessionKey: String, val localId: String)
+
+    private var activeSessionKey: String? = null
+    private var subscribedSessionKey: String? = null
+    private var lastMessageSeq: Long? = null
+    private var historyRefreshClaimed = false
+    private var catalogRefreshClaimed = false
+    private val optimisticMessages = LinkedHashMap<String, OptimisticMessage>()
+
+    @Synchronized
+    fun resetConnection() {
+        subscribedSessionKey = null
+        lastMessageSeq = null
+        historyRefreshClaimed = false
+        catalogRefreshClaimed = false
+    }
+
+    @Synchronized
+    fun activate(sessionKey: String): SubscriptionTarget {
+        activeSessionKey = sessionKey
+        lastMessageSeq = null
+        historyRefreshClaimed = false
+        optimisticMessages.entries.removeAll { it.value.sessionKey != sessionKey }
+        return SubscriptionTarget(sessionKey, subscribedSessionKey?.takeIf { it != sessionKey })
+    }
+
+    @Synchronized
+    fun confirmSubscription(sessionKey: String): String? {
+        if (sessionKey != activeSessionKey) return null
+        val previous = subscribedSessionKey?.takeIf { it != sessionKey }
+        subscribedSessionKey = sessionKey
+        return previous
+    }
+
+    @Synchronized
+    fun registerOptimistic(sessionKey: String, idempotencyKey: String, localId: String) {
+        optimisticMessages[idempotencyKey] = OptimisticMessage(sessionKey, localId)
+        while (optimisticMessages.size > MAX_OPTIMISTIC_MESSAGES) {
+            optimisticMessages.remove(optimisticMessages.keys.first())
+        }
+    }
+
+    @Synchronized
+    fun acceptMessage(event: ParsedSessionMessage): MessageDecision {
+        if (event.sessionKey != activeSessionKey || event.sessionKey != subscribedSessionKey) {
+            return MessageDecision.Ignore
+        }
+        val previousSeq = lastMessageSeq
+        val gap = previousSeq != null && event.messageSeq != null && event.messageSeq > previousSeq + 1
+        if (event.messageSeq != null) {
+            if (previousSeq != null && event.messageSeq <= previousSeq) return MessageDecision.Ignore
+            lastMessageSeq = event.messageSeq
+        }
+        val replacement = event.idempotencyKey
+            ?.let(optimisticMessages::remove)
+            ?.takeIf { it.sessionKey == event.sessionKey }
+            ?.localId
+        return MessageDecision.Accept(replacement, gap)
+    }
+
+    @Synchronized
+    fun claimHistoryRefresh(): Boolean {
+        if (historyRefreshClaimed) return false
+        historyRefreshClaimed = true
+        return true
+    }
+
+    @Synchronized
+    fun completeHistoryRefresh() {
+        historyRefreshClaimed = false
+    }
+
+    @Synchronized
+    fun claimCatalogRefresh(): Boolean {
+        if (catalogRefreshClaimed) return false
+        catalogRefreshClaimed = true
+        return true
+    }
+
+    @Synchronized
+    fun completeCatalogRefresh() {
+        catalogRefreshClaimed = false
+    }
+
+    private companion object {
+        const val MAX_OPTIMISTIC_MESSAGES = 64
+    }
+}
+
+internal data class ParsedSessionMessage(
+    val sessionKey: String,
+    val message: ChatMessage,
+    val idempotencyKey: String?,
+    val messageSeq: Long?,
+)
+
+internal object SessionMessageEventParser {
+    fun parse(payload: JsonObject?): ParsedSessionMessage? {
+        payload ?: return null
+        val sessionKey = payload.primitiveString("sessionKey")?.takeIf(String::isNotBlank)
+            ?: return null
+        val rawMessage = payload.get("message")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?: return null
+        val message = OpenClawChatHistoryParser.parseMessage(
+            sessionKey = sessionKey,
+            message = rawMessage,
+            explicitId = payload.primitiveString("messageId"),
+        ) ?: return null
+        return ParsedSessionMessage(
+            sessionKey = sessionKey,
+            message = message,
+            idempotencyKey = rawMessage.primitiveString("idempotencyKey")
+                ?: payload.primitiveString("idempotencyKey"),
+            messageSeq = payload.primitiveLong("messageSeq") ?: rawMessage.primitiveLong("seq"),
+        )
+    }
+
+    private fun JsonObject.primitiveString(name: String): String? =
+        get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+
+    private fun JsonObject.primitiveLong(name: String): Long? =
+        get(name)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+            ?.let { runCatching { it.asLong }.getOrNull() }
+}
+
+internal data class ParsedSessionsChanged(
+    val sessionKey: String,
+    val phase: String?,
+    val reason: String?,
+)
+
+internal object SessionsChangedEventParser {
+    fun parse(payload: JsonObject?): ParsedSessionsChanged? {
+        payload ?: return null
+        val sessionKey = payload.get("sessionKey")
+            ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+            ?.asString
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        fun string(name: String) = payload.get(name)
+            ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+            ?.asString
+        return ParsedSessionsChanged(sessionKey, string("phase"), string("reason"))
+    }
+}
