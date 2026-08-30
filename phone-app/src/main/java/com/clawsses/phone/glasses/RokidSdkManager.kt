@@ -5,9 +5,6 @@ import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.net.wifi.WifiNetworkSpecifier
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -112,7 +109,8 @@ object RokidSdkManager {
     // Connection state
     private var isBluetoothConnectedState = false
     private var isWifiP2PConnectedState = false
-    private var hotspotNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var hotspotNetworkLease:
+        HotspotNetworkLease<ConnectivityManager.NetworkCallback, Network>? = null
     private val hotspotAttemptGate = HotspotAttemptGate()
     private val hotspotAttemptLock = Any()
     private val hotspotScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -421,9 +419,11 @@ object RokidSdkManager {
 
         val connectivityManager =
             context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        hotspotNetworkCallback?.let { callback ->
-            runCatching { connectivityManager.unregisterNetworkCallback(callback) }
-        }
+        val networkLease = hotspotNetworkLease
+            ?: HotspotNetworkLease<ConnectivityManager.NetworkCallback, Network>(
+                bindProcess = connectivityManager::bindProcessToNetwork,
+                unregister = connectivityManager::unregisterNetworkCallback,
+            ).also { hotspotNetworkLease = it }
         synchronized(hotspotAttemptLock) {
             activeHotspotAttempt
                 ?.takeIf { it.id == attemptId }
@@ -434,24 +434,13 @@ object RokidSdkManager {
                 }
         }
 
-        val specifier = WifiNetworkSpecifier.Builder()
-            .setSsid(ssid)
-            .setWpa2Passphrase(password)
-            .build()
-        val requestBuilder = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .setNetworkSpecifier(specifier)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            requestBuilder.addCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK)
-        }
-        val request = requestBuilder.build()
+        val request = HotspotNetworkRequestFactory.create(ssid, password)
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (!hotspotAttemptGate.isActive(attemptId)) return
                 Log.i(TAG, "Android hotspot network available for attempt=$attemptId; probing upload service")
-                probeHotspotUploadService(attemptId, connectivityManager, network, ip)
+                probeHotspotUploadService(attemptId, this, networkLease, network, ip)
             }
 
             override fun onLost(network: Network) {
@@ -465,17 +454,19 @@ object RokidSdkManager {
                 failHotspotAttempt(attemptId, "Glasses hotspot connection unavailable")
             }
         }
-        hotspotNetworkCallback = callback
+        networkLease.replace(callback)
         runCatching {
             connectivityManager.requestNetwork(request, callback, HOTSPOT_CONNECT_TIMEOUT_MS)
         }.onFailure { error ->
+            networkLease.release(callback)
             failHotspotAttempt(attemptId, "Could not request glasses hotspot network: ${error.message}")
         }
     }
 
     private fun probeHotspotUploadService(
         attemptId: Long,
-        connectivityManager: ConnectivityManager,
+        callback: ConnectivityManager.NetworkCallback,
+        networkLease: HotspotNetworkLease<ConnectivityManager.NetworkCallback, Network>,
         network: Network,
         ipAddress: String,
     ) {
@@ -502,7 +493,7 @@ object RokidSdkManager {
                     }
                 }.isSuccess
                 if (reachable) {
-                    if (!connectivityManager.bindProcessToNetwork(network)) {
+                    if (!networkLease.bind(callback, network)) {
                         failHotspotAttempt(attemptId, "Could not bind APK upload to glasses hotspot")
                         return@launch
                     }
@@ -535,6 +526,7 @@ object RokidSdkManager {
                 ?.completion
         }
         if (completion?.completeExceptionally(IllegalStateException(message)) == true) {
+            hotspotNetworkLease?.release()
             Log.e(TAG, "$message (attempt=$attemptId)")
         }
     }
@@ -1261,10 +1253,12 @@ object RokidSdkManager {
             active
         }
 
+        var connected = false
         return try {
             withTimeout(timeoutMs) { attempt.completion.await() }
+                .also { connected = true }
         } finally {
-            if (!attempt.completion.isCompleted) {
+            if (!connected) {
                 withContext(NonCancellable + Dispatchers.Main.immediate) {
                     cancelHotspotAttempt(attempt.id)
                 }
@@ -1280,22 +1274,15 @@ object RokidSdkManager {
             hotspotAttemptGate.end(attemptId)
             active.completion
         }
+        hotspotNetworkLease?.release()
         completion.cancel()
     }
 
     fun deinitWifiHotspot() {
         val activeAttemptId = synchronized(hotspotAttemptLock) { activeHotspotAttempt?.id }
         if (activeAttemptId != null) cancelHotspotAttempt(activeAttemptId)
-        val context = appContext
-        if (context != null) {
-            val connectivityManager =
-                context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            connectivityManager.bindProcessToNetwork(null)
-            hotspotNetworkCallback?.let { callback ->
-                runCatching { connectivityManager.unregisterNetworkCallback(callback) }
-            }
-        }
-        hotspotNetworkCallback = null
+        hotspotNetworkLease?.release()
+        hotspotNetworkLease = null
         runCatching { cxrApi?.deinitWifiHot() }
         Log.i(TAG, "Glasses hotspot transport released")
     }
