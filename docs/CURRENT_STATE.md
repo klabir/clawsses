@@ -10,20 +10,20 @@ Last verified: 2026-08-30
 
 - Version: `1.3.109` / Build `118`
 - Release commit: `6d67977`
-- Working branch: `build/118-hud-ui-components` (local, not pushed or merged)
-- Main baseline: `c912c90`; Build `118` integration into `main` is still pending explicit approval.
-- Publication status: source remains local; private APKs remain unpublished.
+- Main merge: `2a6851c`
+- Release branch: `build/118-hud-ui-components` (pushed)
+- Publication status: source pushed and merged into `main`; private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
 ## Release commit stack
 
-- Builds `114`–`118` are cumulative local commits: `6af1bf9`, `0f32553`, `ac4949f`,
+- Builds `114`–`118` are cumulative release commits: `6af1bf9`, `0f32553`, `ac4949f`,
   `1b2f137`, `6d67977`.
 - The complete public paired-release gate is green. Private Phone/HUD artifacts have matching
   signers, and the embedded HUD APK is byte-identical to the standalone private HUD APK.
 - The final official CXR-L install, HUD launch, and fresh matching `118/118` runtime handshake are
-  verified. Source push and merge remain separate, unapproved integration steps.
+  verified. The release branch and merged `main` source are pushed.
 
 ## Verified hardware state
 
@@ -34,7 +34,7 @@ Last verified: 2026-08-30
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 118 source is local and unmerged; private APKs remain unpublished.
+- Build 118 source is pushed and merged into `main`; private APKs remain unpublished.
 - The Build-118 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
@@ -132,7 +132,7 @@ For a paired release, additionally require matching Phone/HUD versions, signatur
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
 
 Build `118` has passed the final official CXR-L HUD installation and fresh matching `118/118`
-runtime handshake. Push and merge require separate explicit approval.
+runtime handshake. Its release branch and `main` integration are pushed.
 
 ## New-session resume prompt
 
