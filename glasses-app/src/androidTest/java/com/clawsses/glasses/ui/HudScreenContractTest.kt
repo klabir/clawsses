@@ -68,6 +68,23 @@ class HudScreenContractTest {
         composeTestRule.onNodeWithText("Bugl").assertIsDisplayed()
     }
 
+    @Test
+    fun stagedInputAndTelemetryRemainVisibleAfterSurfaceSplit() {
+        setHud(
+            ChatHudState(
+                inputText = "Draft",
+                stagingText = "Draft",
+                showInputStaging = true,
+                focusedArea = ChatFocusArea.INPUT,
+            ),
+        )
+
+        composeTestRule.onNodeWithText("Draft").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Clear").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Send").assertIsDisplayed()
+        composeTestRule.onNodeWithText("12:34").assertIsDisplayed()
+    }
+
     private fun setHud(state: ChatHudState) {
         composeTestRule.setContent {
             HudScreen(

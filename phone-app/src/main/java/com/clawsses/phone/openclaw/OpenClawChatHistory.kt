@@ -20,34 +20,48 @@ internal object OpenClawChatHistoryParser {
             runCatching {
                 val message = element.takeIf { it.isJsonObject }?.asJsonObject
                     ?: return@runCatching null
-                val role = message.primitiveString("role")
-                    ?.takeIf { it == "user" || it == "assistant" }
-                    ?: return@runCatching null
-                val (content, attachments) = parseContent(message.get("content"))
-                if (content.isEmpty() && attachments.isEmpty()) return@runCatching null
-                val timestamp = message.get("timestamp")
-                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
-                    ?.asLong ?: 0L
-                val explicitId = listOf("id", "messageId", "clientMessageId")
-                    .firstNotNullOfOrNull { name -> message.primitiveString(name) }
-                    ?.takeIf(String::isNotBlank)
-                ChatMessage(
-                    id = stableHistoryMessageId(
-                        sessionKey = sessionKey,
-                        explicitId = explicitId,
-                        role = role,
-                        content = content,
-                        timestamp = timestamp,
-                        tailIndex = source.size() - rawIndex - 1,
-                    ),
-                    role = role,
-                    content = content,
-                    timestamp = timestamp,
-                    attachments = attachments,
+                parseMessage(
+                    sessionKey = sessionKey,
+                    message = message,
+                    tailIndex = source.size() - rawIndex - 1,
                 )
             }.getOrNull()
         }
         return ParsedChatHistory(messages, source.size())
+    }
+
+    fun parseMessage(
+        sessionKey: String,
+        message: JsonObject,
+        explicitId: String? = null,
+        tailIndex: Int = 0,
+    ): ChatMessage? {
+        val role = message.primitiveString("role")
+            ?.takeIf { it == "user" || it == "assistant" }
+            ?: return null
+        val (content, attachments) = parseContent(message.get("content"))
+        if (content.isEmpty() && attachments.isEmpty()) return null
+        val timestamp = message.get("timestamp")
+            ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+            ?.asLong ?: 0L
+        val messageId = explicitId?.takeIf(String::isNotBlank)
+            ?: listOf("id", "messageId", "clientMessageId")
+                .firstNotNullOfOrNull { name -> message.primitiveString(name) }
+                ?.takeIf(String::isNotBlank)
+        return ChatMessage(
+            id = stableHistoryMessageId(
+                sessionKey = sessionKey,
+                explicitId = messageId,
+                role = role,
+                content = content,
+                timestamp = timestamp,
+                tailIndex = tailIndex,
+            ),
+            role = role,
+            content = content,
+            timestamp = timestamp,
+            attachments = attachments,
+        )
     }
 
     private fun parseContent(content: com.google.gson.JsonElement?): Pair<String, List<ChatAttachment>> =

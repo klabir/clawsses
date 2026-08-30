@@ -111,6 +111,7 @@ internal object OpenClawAuthRequestFactory {
         })
         addProperty("role", ROLE)
         add("scopes", JsonArray().apply { SCOPES.forEach(::add) })
+        add("caps", JsonArray().apply { add("session-scoped-events") })
         add("auth", JsonObject().apply { addProperty("token", token) })
         add("device", JsonObject().apply {
             addProperty("id", deviceIdentity.deviceId)

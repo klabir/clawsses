@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## 1.3.114 (build 123)
+
+### Added
+
+- Subscribe to active-session transcript events and broad session metadata changes exposed by the
+  OpenClaw gateway.
+- Reconcile cross-client messages by canonical message ID, idempotency key, and message sequence.
+
+### Fixed
+
+- Refresh the active transcript after foreign terminal runs, reconnect gaps, and identity-only
+  transcript invalidations so WebChat and Clawsses converge on one authoritative history.
+- Reject stale-session events while preserving distinct messages that happen to have identical
+  text.
+
+## 1.3.113 (build 122)
+
+### Changed
+
+- Move gateway request IDs, pending-response correlation, late-response rejection, and
+  disconnect failure into a dedicated request coordinator behind `OpenClawClient`.
+- Preserve wire methods and timeouts while directly testing duplicate, stale, and failed request
+  lifecycles.
+
+## 1.3.112 (build 121)
+
+### Changed
+
+- Move primary HUD content, staged-input, and menu gesture decisions into a pure interaction
+  planner while keeping scrolling, voice, transport, and menu side effects in `HudActivity`.
+- Cover focus push-through, photo removal, clear behavior, scroll decisions, and bounded menu
+  navigation with local unit tests.
+
+## 1.3.111 (build 120)
+
+### Changed
+
+- Move HUD thumbnails, staged input actions, menu navigation, clock, and battery telemetry into a
+  dedicated Compose input-surface file.
+- Preserve visible staging and menu semantics with API-35 instrumentation coverage while reducing
+  the primary `HudScreen` source below 1,250 lines.
+
+## 1.3.110 (build 119)
+
+### Changed
+
+- Plan deterministic Phone-to-HUD state effects outside `HudActivity` while retaining streaming,
+  voice, camera, wake, and lifecycle work in the Activity.
+- Preserve transport ACK and replay behavior while directly testing session, model, card, and
+  runtime-owned message decisions.
+
 ## 1.3.109 (build 118)
 
 ### Changed

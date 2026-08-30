@@ -34,9 +34,15 @@ import com.clawsses.glasses.orchestration.HudCommandDispatcher
 import com.clawsses.glasses.orchestration.HudGestureContext
 import com.clawsses.glasses.orchestration.HudGestureRouter
 import com.clawsses.glasses.orchestration.HudGestureTarget
+import com.clawsses.glasses.orchestration.HudInteractionAction
+import com.clawsses.glasses.orchestration.HudInteractionDecision
+import com.clawsses.glasses.orchestration.HudInteractionPlanner
 import com.clawsses.glasses.orchestration.HudKeyRouter
 import com.clawsses.glasses.orchestration.HudLifecycleRouter
 import com.clawsses.glasses.orchestration.HudPhoneMessageController
+import com.clawsses.glasses.orchestration.HudPhoneMessageEffect
+import com.clawsses.glasses.orchestration.HudPhoneMessageEffectContext
+import com.clawsses.glasses.orchestration.HudPhoneMessageEffectPlanner
 import com.clawsses.glasses.orchestration.HudPhoneMessageResult
 import com.clawsses.glasses.orchestration.HudRuntimeMetrics
 import com.clawsses.glasses.service.PhoneConnectionService
@@ -149,6 +155,10 @@ class HudActivity : ComponentActivity() {
     // from visible HUD state and swap it in only after the matching end marker arrives.
     private val historySnapshotAssembler = HudHistorySnapshotAssembler()
     private val runtimeMetrics = HudRuntimeMetrics()
+    private val phoneMessageEffectPlanner = HudPhoneMessageEffectPlanner(
+        newSessionKey = NEW_SESSION_KEY,
+        moreSessionsKey = MORE_SESSIONS_KEY,
+    )
     private val phoneMessageController by lazy {
         HudPhoneMessageController(
             metrics = runtimeMetrics,
@@ -557,188 +567,30 @@ class HudActivity : ComponentActivity() {
             HudGestureTarget.AGENT_PICKER -> handleAgentPickerGesture(gesture)
             HudGestureTarget.MODEL_PICKER -> handleModelPickerGesture(gesture)
             HudGestureTarget.CANCEL_VOICE -> voiceHandler.cancel()
-            HudGestureTarget.CONTENT -> handleContentGesture(gesture)
-            HudGestureTarget.INPUT -> handleInputGesture(gesture)
-            HudGestureTarget.MENU -> handleMenuGesture(gesture)
+            HudGestureTarget.CONTENT,
+            HudGestureTarget.INPUT,
+            HudGestureTarget.MENU,
+            -> applyInteractionDecision(HudInteractionPlanner.plan(current, target, gesture))
         }
     }
 
-    // CONTENT area gestures
-    private fun handleContentGesture(gesture: Gesture) {
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> scrollUp()
-            Gesture.SWIPE_BACKWARD -> {
-                val current = hudState.value
-                if (current.pageIndex >= current.pageCount - 1 && current.isScrolledToEnd) {
-                    // Push through: CONTENT → INPUT (if staging or photos) → MENU
-                    if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                        // Default focus on last visible item in combined row
-                        val lastIndex = current.photoThumbnails.size + 1 // Send button
-                        hudState.value = current.copy(
-                            focusedArea = ChatFocusArea.INPUT,
-                            inputActionIndex = lastIndex
-                        )
-                    } else {
-                        hudState.value = current.copy(
-                            focusedArea = ChatFocusArea.MENU,
-                            menuBarIndex = 0
-                        )
-                    }
-                } else {
-                    scrollDown()
-                }
+    private fun applyInteractionDecision(decision: HudInteractionDecision) {
+        hudState.value = decision.state
+        decision.actions.forEach { action ->
+            when (action) {
+                HudInteractionAction.ScrollUp -> scrollUp()
+                HudInteractionAction.ScrollDown -> scrollDown()
+                HudInteractionAction.ScrollToBottom -> scrollToBottom()
+                HudInteractionAction.StartVoice -> startVoice()
+                is HudInteractionAction.ExecuteMenuItem -> executeMenuItem(action.item)
+                is HudInteractionAction.RemovePhoto -> sendCommand(
+                    GlassesCommand.RemovePhoto(all = false, index = action.index),
+                )
+                HudInteractionAction.RemoveAllPhotos -> sendCommand(
+                    GlassesCommand.RemovePhoto(all = true, index = null),
+                )
+                HudInteractionAction.SubmitInput -> submitInput()
             }
-            Gesture.TAP -> scrollToBottom()
-            Gesture.DOUBLE_TAP -> {
-                val current = hudState.value
-                if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                    val lastIndex = current.photoThumbnails.size + 1 // Send button
-                    hudState.value = current.copy(
-                        focusedArea = ChatFocusArea.INPUT,
-                        inputActionIndex = lastIndex
-                    )
-                } else {
-                    hudState.value = current.copy(
-                        focusedArea = ChatFocusArea.MENU,
-                        menuBarIndex = 0
-                    )
-                }
-            }
-            Gesture.LONG_PRESS -> startVoice()
-        }
-    }
-
-    // INPUT staging area gestures
-    // Combined row: [photo0..N-1, CLEAR, SEND] for text, photos, or both.
-    // inputActionIndex maps into this combined row.
-    private fun handleInputGesture(gesture: Gesture) {
-        val current = hudState.value
-        val photoCount = current.photoThumbnails.size
-        val clearIndex = photoCount       // CLEAR is right after photos
-        val sendIndex = photoCount + 1    // SEND is rightmost
-        val totalItems = photoCount + 2
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                if (current.inputActionIndex == 0) {
-                    // Push through: INPUT → CONTENT
-                    hudState.value = current.copy(focusedArea = ChatFocusArea.CONTENT)
-                } else {
-                    hudState.value = current.copy(inputActionIndex = current.inputActionIndex - 1)
-                }
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                if (current.inputActionIndex >= totalItems - 1) {
-                    // Push through: INPUT → MENU
-                    hudState.value = current.copy(
-                        focusedArea = ChatFocusArea.MENU,
-                        menuBarIndex = 0
-                    )
-                } else {
-                    hudState.value = current.copy(inputActionIndex = current.inputActionIndex + 1)
-                }
-            }
-            Gesture.TAP -> {
-                val idx = current.inputActionIndex
-                when {
-                    idx < photoCount -> {
-                        // Tap on photo — remove it
-                        val newThumbnails = current.photoThumbnails.toMutableList().apply { removeAt(idx) }
-                        val newPhotoCount = newThumbnails.size
-                        // After removal, keep focus on same position but clamp
-                        val newIndex = if (newThumbnails.isEmpty() && !current.showInputStaging) {
-                            // No photos left and no staging text — go to MENU
-                            hudState.value = current.copy(
-                                photoThumbnails = emptyList(),
-                                inputActionIndex = 0,
-                                focusedArea = ChatFocusArea.MENU,
-                                menuBarIndex = 0
-                            )
-                            sendCommand(GlassesCommand.RemovePhoto(all = false, index = idx))
-                            return
-                        } else {
-                            // Keep the primary action focused after removing a photo.
-                            newPhotoCount + 1
-                        }
-                        hudState.value = current.copy(
-                            photoThumbnails = newThumbnails,
-                            inputActionIndex = newIndex
-                        )
-                        sendCommand(GlassesCommand.RemovePhoto(all = false, index = idx))
-                    }
-                    idx == clearIndex -> {
-                        // Clear all staged content and dismiss.
-                        hudState.value = current.copy(
-                            showInputStaging = false,
-                            stagingText = "",
-                            photoThumbnails = emptyList(),
-                            inputActionIndex = 0,
-                            focusedArea = ChatFocusArea.CONTENT
-                        )
-                        if (current.photoThumbnails.isNotEmpty()) {
-                            sendCommand(GlassesCommand.RemovePhoto(all = true, index = null))
-                        }
-                    }
-                    idx == sendIndex -> {
-                        // Submit staged text and/or photos, then dismiss.
-                        val text = current.stagingText.trim()
-                        if (text.isNotEmpty() || current.photoThumbnails.isNotEmpty()) {
-                            hudState.value = current.copy(inputText = text)
-                            submitInput()
-                        }
-                        hudState.value = hudState.value.copy(
-                            showInputStaging = false,
-                            stagingText = "",
-                            inputActionIndex = 0
-                        )
-                    }
-                }
-            }
-            Gesture.DOUBLE_TAP -> {
-                // Go back to CONTENT
-                hudState.value = current.copy(focusedArea = ChatFocusArea.CONTENT)
-            }
-            Gesture.LONG_PRESS -> startVoice()
-        }
-    }
-
-    // MENU area gestures
-    private fun handleMenuGesture(gesture: Gesture) {
-        val current = hudState.value
-        val items = MenuBarItem.entries
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                if (current.menuBarIndex == 0) {
-                    // Push through: MENU → INPUT (if staging or photos) → CONTENT
-                    if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                        // Focus on last visible item in combined row
-                        val lastIndex = current.photoThumbnails.size + 1 // Send button
-                        hudState.value = current.copy(
-                            focusedArea = ChatFocusArea.INPUT,
-                            inputActionIndex = lastIndex
-                        )
-                    } else {
-                        hudState.value = current.copy(focusedArea = ChatFocusArea.CONTENT)
-                    }
-                } else {
-                    hudState.value = current.copy(menuBarIndex = current.menuBarIndex - 1)
-                }
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                // Next menu item
-                val newIndex = minOf(items.size - 1, current.menuBarIndex + 1)
-                hudState.value = current.copy(menuBarIndex = newIndex)
-            }
-            Gesture.TAP -> {
-                // Execute selected menu item
-                executeMenuItem(items[current.menuBarIndex])
-            }
-            Gesture.DOUBLE_TAP -> {
-                // Show exit confirmation dialog
-                hudState.value = current.copy(showExitConfirm = true)
-            }
-            Gesture.LONG_PRESS -> startVoice()
         }
     }
 
@@ -1538,6 +1390,22 @@ class HudActivity : ComponentActivity() {
     }
 
     private fun handleTypedPhoneMessage(message: PhoneHudMessage) {
+        when (val effect = phoneMessageEffectPlanner.plan(
+            current = hudState.value,
+            message = message,
+            context = HudPhoneMessageEffectContext(
+                sessionPickerRequested = sessionPickerRequested,
+                modelPickerRequested = modelPickerRequested,
+                agentPickerRequested = agentPickerRequested,
+                pendingModelPageSelection = pendingModelPageSelection,
+            ),
+        )) {
+            is HudPhoneMessageEffect.Apply -> {
+                applyPhoneMessageEffect(effect)
+                return
+            }
+            HudPhoneMessageEffect.RuntimeOwned -> Unit
+        }
         when (message) {
             is PhoneHudMessage.CompletedMessage -> {
                 clearStreamingMessage(message.id)
@@ -1595,23 +1463,6 @@ class HudActivity : ComponentActivity() {
                     applyTypedHistory(messages, snapshot.isLoadMore, snapshot.hasMore)
                 }
             }
-            is PhoneHudMessage.AgentPhase -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.AgentPhaseChanged(message.phase),
-                ).state
-            }
-            is PhoneHudMessage.AgentProgress -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.AgentProgressChanged(
-                        message.id,
-                        message.kind,
-                        message.label,
-                        message.state,
-                    ),
-                ).state
-            }
             is PhoneHudMessage.Stream -> {
                 val current = hudState.value
                 val startedNewMessage = streamingAccumulator.append(message.id, message.chunk)
@@ -1641,157 +1492,6 @@ class HudActivity : ComponentActivity() {
                         completedStream?.content?.let(::unwrapContent),
                     ),
                 ).state
-            }
-            is PhoneHudMessage.Connection -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.ConnectionChanged(
-                        message.connected,
-                        message.sessionId,
-                        message.sessionName,
-                    ),
-                ).state
-            }
-            is PhoneHudMessage.SessionList -> {
-                sessionNextOffset = message.nextOffset
-                val sessions = listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) +
-                    message.sessions.map { session ->
-                        SessionPickerInfo(
-                            key = session.key,
-                            name = session.name,
-                            kind = session.kind,
-                            hasUnread = session.hasUnread,
-                            updatedAt = session.updatedAt,
-                        )
-                    } + if (message.nextOffset != null) {
-                        listOf(SessionPickerInfo(MORE_SESSIONS_KEY, "More..."))
-                    } else {
-                        emptyList()
-                    }
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.SessionsLoaded(sessions, message.currentSessionKey),
-                ).state
-                sessionPickerRequested = false
-            }
-            is PhoneHudMessage.SessionOperation -> {
-                hudState.update { current ->
-                    when (message.state) {
-                        "loading" -> current.copy(
-                            showSessionPicker = true,
-                            isSessionOperationPending = true,
-                            sessionOperationMessage = if (message.operation == "create") {
-                                "Creating session..."
-                            } else {
-                                "Loading sessions..."
-                            },
-                            sessionOperationError = null,
-                        )
-                        "success" -> current.copy(
-                            showSessionPicker = if (message.operation == "create") {
-                                false
-                            } else {
-                                current.showSessionPicker
-                            },
-                            isSessionOperationPending = false,
-                            sessionOperationMessage = null,
-                            sessionOperationError = null,
-                        )
-                        "error" -> {
-                            val options = if (current.availableSessions.any { it.key == NEW_SESSION_KEY }) {
-                                current.availableSessions
-                            } else {
-                                listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session")) +
-                                    current.availableSessions
-                            }
-                            current.copy(
-                                showSessionPicker = true,
-                                availableSessions = options,
-                                selectedSessionIndex = current.selectedSessionIndex.coerceIn(options.indices),
-                                isSessionOperationPending = false,
-                                sessionOperationMessage = null,
-                                sessionOperationError = message.error ?: "Session operation failed",
-                            )
-                        }
-                        else -> current
-                    }
-                }
-                if (message.state != "loading") sessionPickerRequested = false
-            }
-            is PhoneHudMessage.ModelPage -> {
-                val models = message.models.map { model ->
-                    ModelPickerInfo(
-                        index = model.index,
-                        name = model.name,
-                        provider = model.provider,
-                        available = model.available,
-                    )
-                }
-                val currentIndexOnPage = models.indexOfFirst { it.index == message.currentIndex }
-                    .takeIf { it >= 0 }
-                val selectedIndex = ModelPickerNavigation.initialIndex(
-                    itemCount = models.size,
-                    currentIndexOnPage = currentIndexOnPage,
-                    pageSelection = pendingModelPageSelection,
-                )
-                hudState.update { current ->
-                    current.copy(
-                        showModelPicker = current.showModelPicker || modelPickerRequested,
-                        availableModels = models,
-                        modelCatalogId = message.catalogId,
-                        currentModelIndex = message.currentIndex,
-                        selectedModelIndex = selectedIndex,
-                        modelPageOffset = message.offset,
-                        modelNextOffset = message.nextOffset,
-                        modelPageIndex = message.pageIndex,
-                        modelPageCount = message.pageCount,
-                        isModelOperationPending = false,
-                        modelOperationMessage = null,
-                        modelOperationError = message.error,
-                    )
-                }
-                modelPickerRequested = false
-                pendingModelPageSelection = ModelPageSelection.CURRENT
-            }
-            is PhoneHudMessage.ModelOperation -> {
-                hudState.update { current ->
-                    when (message.state) {
-                        "loading" -> current.copy(
-                            showModelPicker = true,
-                            isModelOperationPending = true,
-                            modelOperationMessage = "Changing model...",
-                            modelOperationError = null,
-                        )
-                        "success" -> current.copy(
-                            showModelPicker = false,
-                            currentModelIndex = message.currentIndex ?: current.currentModelIndex,
-                            isModelOperationPending = false,
-                            modelOperationMessage = null,
-                            modelOperationError = null,
-                        )
-                        "error" -> current.copy(
-                            showModelPicker = true,
-                            isModelOperationPending = false,
-                            modelOperationMessage = null,
-                            modelOperationError = message.error ?: "Could not change model",
-                        )
-                        else -> current
-                    }
-                }
-                if (message.state != "loading") modelPickerRequested = false
-            }
-            is PhoneHudMessage.AgentList -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.AgentsLoaded(
-                        agents = message.agents.map { agent ->
-                            AgentPickerInfo(agent.id, agent.name, agent.model)
-                        },
-                        currentAgentId = message.currentAgentId,
-                        showPicker = agentPickerRequested,
-                    ),
-                ).state
-                agentPickerRequested = false
             }
             is PhoneHudMessage.VoiceState -> {
                 voiceHandler.handleVoiceState(message.state, message.text, message.mode)
@@ -1842,71 +1542,19 @@ class HudActivity : ComponentActivity() {
                     ),
                 )
             }
-            is PhoneHudMessage.TtsState -> {
-                hudState.update { current ->
-                    current.copy(
-                        ttsEnabled = message.enabled,
-                        ttsPlaybackState = message.playbackState,
-                        ttsCanReplay = message.canReplay,
-                    )
-                }
-            }
-            is PhoneHudMessage.RunState -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.RunChanged(message.state, message.canAbort),
-                ).state
-            }
-            is PhoneHudMessage.TalkModeState -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.TalkModeChanged(message.enabled, message.phase),
-                ).state
-            }
-            is PhoneHudMessage.HudCard -> {
-                val card = HudCardDisplay(
-                    id = message.id,
-                    source = message.source,
-                    title = message.title,
-                    body = message.body,
-                    priority = message.priority,
-                    expiresAt = message.expiresAt,
-                    actions = message.actions.map { HudCardActionDisplay(it.id, it.label) },
-                )
-                if (card.id.isNotBlank() && card.body.isNotBlank()) {
-                    hudState.update { current ->
-                        current.copy(
-                            hudCards = (current.hudCards.filterNot { it.id == card.id } + card).takeLast(5),
-                            selectedHudCardActionIndex = 0,
-                        )
-                    }
-                    scheduleActiveCardExpiry()
-                }
-            }
-            is PhoneHudMessage.LiveCaption -> {
-                hudState.value = HudStateReducer.reduce(
-                    hudState.value,
-                    HudStateEvent.LiveCaptionChanged(
-                        message.enabled,
-                        LiveCaptionDisplay(
-                            sourceText = message.sourceText,
-                            translatedText = message.translatedText,
-                            sourceLanguage = message.sourceLanguage,
-                            targetLanguage = message.targetLanguage,
-                            error = message.error,
-                        ),
-                    ),
-                ).state
-            }
-            is PhoneHudMessage.PeerState -> {
-                Log.i(
-                    GlassesApp.TAG,
-                    "Phone peer build=${message.versionCode}, protocol=${message.protocolVersion}, " +
-                        "compatibility=${PeerProtocol.compatibility(message.protocolVersion)}, " +
-                        "capabilities=${message.capabilities.sorted().joinToString()}",
-                )
-            }
+            else -> error("Deterministic phone message effect was not applied: ${message::class.simpleName}")
         }
+    }
+
+    private fun applyPhoneMessageEffect(effect: HudPhoneMessageEffect.Apply) {
+        hudState.value = effect.state
+        if (effect.sessionOffsetChanged) sessionNextOffset = effect.sessionNextOffset
+        if (effect.sessionRequestCompleted) sessionPickerRequested = false
+        if (effect.modelRequestCompleted) modelPickerRequested = false
+        if (effect.agentRequestCompleted) agentPickerRequested = false
+        if (effect.resetModelPageSelection) pendingModelPageSelection = ModelPageSelection.CURRENT
+        if (effect.scheduleCardExpiry) scheduleActiveCardExpiry()
+        effect.logMessage?.let { Log.i(GlassesApp.TAG, it) }
     }
 
     private fun applyTypedHistory(

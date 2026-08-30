@@ -10,8 +10,51 @@ import java.nio.file.Files
 import com.google.gson.JsonParser
 import com.clawsses.shared.AgentInfo
 import com.clawsses.shared.ModelInfo
+import com.clawsses.shared.OpenClawResponse
+import kotlinx.coroutines.runBlocking
 
 class OpenClawComponentsTest {
+    @Test
+    fun `request coordinator resolves a response exactly once`() {
+        val coordinator = OpenClawRequestCoordinator()
+        val pending = coordinator.register("chat.send")
+        val response = OpenClawResponse(id = pending.id, ok = true)
+
+        assertTrue(coordinator.resolve(response))
+        assertFalse(coordinator.resolve(response))
+        assertEquals(response, runBlocking { pending.response.await() })
+        assertEquals(0, coordinator.pendingCount())
+    }
+
+    @Test
+    fun `cancelled request rejects a late response without affecting current work`() {
+        val coordinator = OpenClawRequestCoordinator()
+        val stale = coordinator.register("sessions.list")
+        assertTrue(coordinator.cancel(stale))
+        val current = coordinator.register("sessions.list")
+
+        assertFalse(coordinator.resolve(OpenClawResponse(id = stale.id, ok = true)))
+        assertTrue(coordinator.resolve(OpenClawResponse(id = current.id, ok = true)))
+        assertFalse(stale.response.isCompleted)
+        assertTrue(current.response.isCompleted)
+    }
+
+    @Test
+    fun `connection loss fails every pending request and permits later registration`() {
+        val coordinator = OpenClawRequestCoordinator()
+        val first = coordinator.register("chat.history")
+        val second = coordinator.register("agents.list")
+
+        assertEquals(2, coordinator.failAll("Connection lost"))
+        assertTrue(first.response.isCompleted)
+        assertTrue(second.response.isCompleted)
+        assertEquals(0, coordinator.pendingCount())
+
+        val later = coordinator.register("models.list")
+        assertFalse(later.response.isCompleted)
+        assertEquals(1, coordinator.pendingCount())
+    }
+
     @Test
     fun `catalog session activation invalidates old work and resets paging`() {
         val component = OpenClawCatalogSessionComponent()

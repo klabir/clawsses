@@ -139,8 +139,8 @@ Common commands:
   direct glasses ADB or mirroring as optional and firmware-dependent.
 - Inspect filtered Logcat after device crashes, disconnects, installer failures, audio failures, or
   unexpected lifecycle transitions.
-- The GitHub `phone-instrumentation` job is the baseline emulator gate. It validates phone Compose
-  instrumentation tests only; paired Pixel/Rokid behavior still requires controlled hardware
+- The GitHub `phone-instrumentation` job is the baseline emulator gate. It validates Phone and HUD
+  Compose instrumentation tests; paired Pixel/Rokid behavior still requires controlled hardware
   verification.
 
 ## Git and concurrent work
