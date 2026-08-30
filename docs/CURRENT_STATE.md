@@ -8,11 +8,11 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.99` / Build `108`
-- Release commit: `12b4a82`
-- Handoff commit: `48e55c7`
-- Main merge: `9837c415995215b4bc8fe10e2b6d8e84e8daf508`
-- Release branch: `build/108-unified-installer` (pushed)
+- Version: `1.3.104` / Build `113`
+- Release commit: `76e00ef`
+- Handoff commit: `32c81f6`
+- Main merge: `649cc06047ee3d93c965d248b762f3e8842bf0ed`
+- Release branch: `build/113-openclaw-components` (pushed)
 - Publication status: source pushed and merged into `main`; private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
@@ -25,9 +25,8 @@ Last verified: 2026-08-30
   upload, install, launch, and fresh matching `113/113` peer handshake were verified.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
-- Build 113 is a hardware-verified local cumulative candidate only. It is not pushed, merged, or
-  published, so Build 108 remains the current repository release until explicit integration.
-- The Build-108 commit contains no APKs or credentials.
+- Build 113 source is pushed and merged into `main`; private APKs remain unpublished.
+- The Build-113 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
 
@@ -47,7 +46,7 @@ with `adb devices -l` and collect a fresh version handshake.
   process death, and requires a matching live HUD handshake after installation.
 - Installer jobs and vendor callbacks are disposed with the process-scoped runtime.
 
-## Local Build 109–113 candidate
+## Build 109–113 changes
 
 - Build 109 moves DADB and the Wi-Fi ADB installer to debug-only source/dependency graphs, disables
   app-owned cleartext traffic, and adds a release APK isolation check.
@@ -60,7 +59,7 @@ with `adb devices -l` and collect a fresh version handshake.
   production dispatcher.
 - Build 113 keeps the `OpenClawClient` API stable while separating transport/auth, chat-run, and
   catalog/session state into tested internal components.
-- Local commits, in order: `0d0a60f`, `cf6ba5c`, `010bc9a`, `47c5fdc`, `76e00ef`.
+- Release commits, in order: `0d0a60f`, `cf6ba5c`, `010bc9a`, `47c5fdc`, `76e00ef`.
 - The private Build-113 Phone APK contains a HUD artifact whose SHA-256 matches the standalone
   private HUD APK, and its embedded manifest reports package `com.clawsses.glasses`, Build `113`,
   version `1.3.104`, with a match-host signer policy. The matching runtime handshake was confirmed
