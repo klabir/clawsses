@@ -8,8 +8,8 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.118` / Build `127` source candidate
-- Release commit: none; Build 127 remains local pending its full source and paired-device gates
+- Version: `1.3.118` / Build `127` paired-device verified
+- Release commit: `1fa8c14` (local only)
 - Base main: `68580c6`
 - Release branch: `build/127-hud-catalog-interactions` (local only), stacked on local Build-126
   source commit `9f7927f`
@@ -23,25 +23,22 @@ Last verified: 2026-08-30
 - Builds `119`–`123` are integrated on `main` by merge commit `7b6ec26`; the Build-123 source commit
   is `3243648` and includes the cumulative Builds 119–122 commits.
 - Builds `124`–`125` are integrated by source commit `ed9e605` and merge commit `f91cbd4`.
+- Build `126` is local source commit `9f7927f`; Build `127` is local source commit `1fa8c14`.
 - The complete 220-task public paired-release source gate passed for Build 125. No Build-125 APK
   was installed because device mutation was not authorized for this source release.
 - The complete 220-task public paired-release gate passed for Build 123. Its private Phone/HUD
   artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the standalone
   private HUD APK.
-- The official Build-123 CXR-L install callback returned success and launched the HUD. Final
-  release verification is still pending a fresh matching `123/123` runtime handshake after the
-  known firmware deep-sleep state is physically cleared.
+- Build 127 passed the complete 220-task source gate and both Pixel Startup Macrobenchmarks. Its
+  private Phone/HUD artifacts have matching v2 signers and a byte-identical embedded HUD APK.
 
 ## Verified hardware state
 
 - The connected Pixel phone runs private hardware-test build `1.3.118` / Build `127`; data-preserving
   installation, resumed Activity, live process, and restored OpenClaw connection are verified.
-- The Rokid HUD remains on Build `123`. Build-127 HUD installation is blocked until the known
-  deep-sleep beacon state is physically cleared with the three-press blue-blink sequence.
-- The official Hi Rokid/CXR-L HUD upload and install returned `onInstallAppResult:true`, and the
-  installer launched the bundled Build-123 HUD. The subsequent Clawsses ownership handoff is
-  blocked on the glasses' known deep-sleep beacon state, so the fresh `123/123` handshake is not
-  yet verified.
+- The official Hi Rokid/CXR-L installer completed the Build-127 HUD upload, installation, and
+  launch. After the known deep-sleep beacon was cleared, Clawsses verified the fresh matching
+  `127/127` runtime handshake.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
@@ -163,9 +160,9 @@ with `adb devices -l` and collect a fresh version handshake.
 
 ## Current code rating
 
-- Overall: **9.2/10** for the Build-127 source candidate. Active-session reconciliation and HUD
-  catalog interactions now have dedicated tested owners, with 331 checked-in tests. Deployment
-  confidence remains tied to Build 123 until the paired-device gate completes.
+- Overall: **9.2/10** for the paired-device-verified Build 127. Active-session reconciliation and
+  HUD catalog interactions now have dedicated tested owners, with 331 checked-in tests and a
+  matching live `127/127` deployment.
 - Architecture: **9.0/10**. Session subscription, history reconciliation, and HUD picker decisions
   now live in tested coordinators; `HudActivity` and `OpenClawClient` remain the principal, but
   substantially smaller, orchestration hotspots.
@@ -222,7 +219,8 @@ hash equality, install completion, fresh HUD launch, and a matching runtime stat
 Build `126` passed the full public source gate before local intermediate commit `9f7927f`. Build
 `127` passed the 220-task public source gate, both Startup Macrobenchmark tests, and private paired
 artifact version, v2 signer, and embedded-HUD hash checks. Its Phone APK is installed and running;
-the HUD install and matching `127/127` handshake remain blocked on physically waking the glasses.
+the official CXR-L HUD installation, launch, Clawsses ownership restoration, and matching `127/127`
+handshake are verified. Hi Rokid is restored to disabled and Tailscale remains active.
 
 ## New-session resume prompt
 
