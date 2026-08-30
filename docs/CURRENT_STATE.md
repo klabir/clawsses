@@ -77,8 +77,8 @@ with `adb devices -l` and collect a fresh version handshake.
 ## Build 114–118 candidate changes
 
 - Build 114 adds API-35 instrumentation regression coverage for both Phone and HUD and runs both
-  suites in the Android CI emulator job. The suites compile locally; execution awaits CI because
-  only the physical release-test phone is connected.
+  suites in the Android CI emulator job. Both suites pass on the API-35 CI emulator; locally they
+  compile, while only the physical release-test phone is connected.
 - Build 115 moves typed Phone-to-HUD decoding, replay detection, ACK policy, and malformed-message
   handling out of `HudActivity` into a tested `HudPhoneMessageController`.
 - Build 116 moves OpenClaw agent/model catalog and session-page projection into the tested
