@@ -9,11 +9,11 @@ Last verified: 2026-08-30
 ## Current release
 
 - Version: `1.3.118` / Build `127` paired-device verified
-- Release commit: `1fa8c14`; local main integration merge: `f1f8102`
+- Release commit: `1fa8c14`; main integration merge: `f1f8102`
 - Base main before integration: `68580c6`
 - Release branch: `build/127-hud-catalog-interactions`, integrated into local `main`
-- Publication status: Builds 126-127 are merged into local `main` but not pushed; all private APKs
-  remain unpublished.
+- Publication status: Builds 126-127 are merged and pushed on `main`; all private APKs remain
+  unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
@@ -42,7 +42,7 @@ Last verified: 2026-08-30
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 127 source is merged into local `main` but not pushed; private APKs remain unpublished.
+- Build 127 source is merged and pushed on `main`; private APKs remain unpublished.
 - The Build-119–127 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
