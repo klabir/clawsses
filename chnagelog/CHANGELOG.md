@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.111 (build 120)
+
+### Changed
+
+- Move HUD thumbnails, staged input actions, menu navigation, clock, and battery telemetry into a
+  dedicated Compose input-surface file.
+- Preserve visible staging and menu semantics with API-35 instrumentation coverage while reducing
+  the primary `HudScreen` source below 1,250 lines.
+
 ## 1.3.110 (build 119)
 
 ### Changed
