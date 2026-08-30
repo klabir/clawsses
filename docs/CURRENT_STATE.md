@@ -9,12 +9,11 @@ Last verified: 2026-08-30
 ## Current release
 
 - Version: `1.3.118` / Build `127` paired-device verified
-- Release commit: `1fa8c14` (local only)
-- Base main: `68580c6`
-- Release branch: `build/127-hud-catalog-interactions` (local only), stacked on local Build-126
-  source commit `9f7927f`
-- Publication status: Build 125 source is merged and pushed on `main`; Builds 126-127 remain local
-  and all private APKs remain unpublished.
+- Release commit: `1fa8c14`; local main integration merge: `f1f8102`
+- Base main before integration: `68580c6`
+- Release branch: `build/127-hud-catalog-interactions`, integrated into local `main`
+- Publication status: Builds 126-127 are merged into local `main` but not pushed; all private APKs
+  remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
@@ -23,7 +22,8 @@ Last verified: 2026-08-30
 - Builds `119`–`123` are integrated on `main` by merge commit `7b6ec26`; the Build-123 source commit
   is `3243648` and includes the cumulative Builds 119–122 commits.
 - Builds `124`–`125` are integrated by source commit `ed9e605` and merge commit `f91cbd4`.
-- Build `126` is local source commit `9f7927f`; Build `127` is local source commit `1fa8c14`.
+- Build `126` is source commit `9f7927f`; Build `127` is source commit `1fa8c14`; both are integrated
+  into local `main` by merge commit `f1f8102`.
 - The complete 220-task public paired-release source gate passed for Build 125. No Build-125 APK
   was installed because device mutation was not authorized for this source release.
 - The complete 220-task public paired-release gate passed for Build 123. Its private Phone/HUD
@@ -42,8 +42,8 @@ Last verified: 2026-08-30
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 125 source is merged and published on `main`; private APKs remain unpublished.
-- The Build-119–125 commits contain no APKs or credentials.
+- Build 127 source is merged into local `main` but not pushed; private APKs remain unpublished.
+- The Build-119–127 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
 
