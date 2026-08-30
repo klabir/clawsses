@@ -91,8 +91,7 @@ class OpenClawClient(
     )
     private var webSocket by transport::webSocket
     private val client get() = transport.client
-    private val requestSeq get() = transport.requestSeq
-    private val pendingRequests get() = transport.pendingRequests
+    private val requestCoordinator get() = transport.requestCoordinator
     private val connectionLock get() = transport.connectionLock
     private val connectionEpoch get() = transport.connectionEpoch
     private val reconnectBackoff get() = transport.reconnectBackoff
@@ -867,13 +866,11 @@ class OpenClawClient(
         params: JsonObject? = null,
         requiredGeneration: Long? = null,
     ): OpenClawResponse {
-        val id = "${method}-${requestSeq.getAndIncrement()}"
-        val request = OpenClawRequest(id = id, method = method, params = params)
-        val deferred = CompletableDeferred<OpenClawResponse>()
-        pendingRequests[id] = deferred
+        val pending = requestCoordinator.register(method)
+        val request = OpenClawRequest(id = pending.id, method = method, params = params)
 
         val json = request.toJson()
-        Log.d(TAG, "Sending request: method=$method id=$id bytes=${json.length}")
+        Log.d(TAG, "Sending request: method=$method id=${pending.id} bytes=${json.length}")
         val sent = synchronized(connectionLock) {
             if (requiredGeneration == null || connectionEpoch.isCurrent(requiredGeneration)) {
                 webSocket?.send(json) == true
@@ -882,16 +879,16 @@ class OpenClawClient(
             }
         }
         if (!sent) {
-            pendingRequests.remove(id, deferred)
+            requestCoordinator.cancel(pending)
             throw IllegalStateException("Not connected")
         }
 
         return try {
             withTimeout(30_000) {
-                deferred.await()
+                pending.response.await()
             }
         } finally {
-            pendingRequests.remove(id, deferred)
+            requestCoordinator.cancel(pending)
         }
     }
 
@@ -909,11 +906,7 @@ class OpenClawClient(
     }
 
     private fun handleResponse(response: OpenClawResponse) {
-        // Complete the pending request
-        val deferred = pendingRequests.remove(response.id)
-        if (deferred != null) {
-            deferred.complete(response)
-        } else {
+        if (!requestCoordinator.resolve(response)) {
             Log.d(TAG, "No pending request for id=${response.id} (may be agent completion)")
         }
     }
@@ -1305,10 +1298,7 @@ class OpenClawClient(
     }
 
     private fun failAllPending(reason: String) {
-        pendingRequests.forEach { (id, deferred) ->
-            deferred.completeExceptionally(Exception(reason))
-        }
-        pendingRequests.clear()
+        requestCoordinator.failAll(reason)
     }
 
     /** Detect image MIME type from base64 magic bytes. */

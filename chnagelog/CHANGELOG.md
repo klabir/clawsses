@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.113 (build 122)
+
+### Changed
+
+- Move gateway request IDs, pending-response correlation, late-response rejection, and
+  disconnect failure into a dedicated request coordinator behind `OpenClawClient`.
+- Preserve wire methods and timeouts while directly testing duplicate, stale, and failed request
+  lifecycles.
+
 ## 1.3.112 (build 121)
 
 ### Changed

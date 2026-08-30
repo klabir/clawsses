@@ -1,13 +1,9 @@
 package com.clawsses.phone.openclaw
 
-import com.clawsses.shared.OpenClawResponse
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import okhttp3.OkHttpClient
 import okhttp3.WebSocket
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 /** Owns mutable WebSocket/auth state while [OpenClawClient] remains the public facade. */
@@ -20,8 +16,7 @@ internal class OpenClawTransportAuthComponent(
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
-    val requestSeq = AtomicLong(1)
-    val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<OpenClawResponse>>()
+    val requestCoordinator = OpenClawRequestCoordinator()
     val connectionLock = Any()
     val connectionEpoch = ConnectionEpoch()
     val reconnectBackoff = ReconnectBackoff(reconnectBaseDelayMs, reconnectMaxDelayMs)
