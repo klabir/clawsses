@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.110 (build 119)
+
+### Changed
+
+- Plan deterministic Phone-to-HUD state effects outside `HudActivity` while retaining streaming,
+  voice, camera, wake, and lifecycle work in the Activity.
+- Preserve transport ACK and replay behavior while directly testing session, model, card, and
+  runtime-owned message decisions.
+
 ## 1.3.109 (build 118)
 
 ### Changed

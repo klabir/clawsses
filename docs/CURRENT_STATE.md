@@ -74,7 +74,7 @@ with `adb devices -l` and collect a fresh version handshake.
   version `1.3.104`, with a match-host signer policy. The matching runtime handshake was confirmed
   after the official CXR-L installation.
 
-## Build 114–118 candidate changes
+## Build 114–118 release changes
 
 - Build 114 adds API-35 instrumentation regression coverage for both Phone and HUD and runs both
   suites in the Android CI emulator job. Both suites pass on the API-35 CI emulator; locally they
