@@ -18,6 +18,15 @@ abstract class BundleGlassesApkTask : DefaultTask() {
     @get:InputFile
     abstract val sourceApk: RegularFileProperty
 
+    @get:Input
+    abstract val applicationId: Property<String>
+
+    @get:Input
+    abstract val versionCode: Property<Int>
+
+    @get:Input
+    abstract val versionName: Property<String>
+
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
 
@@ -26,6 +35,31 @@ abstract class BundleGlassesApkTask : DefaultTask() {
         val outputFile = outputDirectory.file("glasses-app-release.apk").get().asFile
         outputFile.parentFile.mkdirs()
         sourceApk.get().asFile.copyTo(outputFile, overwrite = true)
+        val artifactHash = outputFile.inputStream().use(::sha256)
+        outputDirectory.file("glasses-app-release-manifest.json").get().asFile.writeText(
+            """
+            {
+              "schemaVersion": 1,
+              "fileName": "${outputFile.name}",
+              "applicationId": "${applicationId.get()}",
+              "versionCode": ${versionCode.get()},
+              "versionName": "${versionName.get()}",
+              "sha256": "$artifactHash",
+              "signerPolicy": "match-host"
+            }
+            """.trimIndent() + "\n"
+        )
+    }
+
+    private fun sha256(input: java.io.InputStream): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
 }
 
@@ -38,6 +72,8 @@ abstract class VerifyReleaseExcludesDebugTransportTask : DefaultTask() {
         val forbiddenClassPaths = listOf(
             "com/clawsses/phone/debug/DebugGlassesServer",
             "com/clawsses/phone/benchmark/",
+            "com/clawsses/phone/glasses/DebugAdbHudInstaller",
+            "dadb/",
         )
         ZipFile(releaseApk.get().asFile).use { apk ->
             val leaked = apk.entries().asSequence()
@@ -118,11 +154,23 @@ abstract class GeneratePairedReleaseEvidenceTask : DefaultTask() {
         val glasses = glassesApk.get().asFile
         val phoneHash = phone.inputStream().use(::sha256)
         val glassesHash = glasses.inputStream().use(::sha256)
-        val embeddedHash = ZipFile(phone).use { apk ->
+        val embeddedEvidence = ZipFile(phone).use { apk ->
             val embedded = apk.getEntry("assets/glasses-app-release.apk")
                 ?: error("Phone release does not contain the paired HUD APK")
-            apk.getInputStream(embedded).use(::sha256)
+            val embeddedHash = apk.getInputStream(embedded).use(::sha256)
+            val manifestEntry = apk.getEntry("assets/glasses-app-release-manifest.json")
+                ?: error("Phone release does not contain the HUD artifact manifest")
+            val manifestBytes = apk.getInputStream(manifestEntry).use { it.readBytes() }
+            val manifest = manifestBytes.toString(Charsets.UTF_8)
+            check(jsonString(manifest, "fileName") == "glasses-app-release.apk")
+            check(jsonString(manifest, "applicationId") == "com.clawsses.glasses")
+            check(jsonLong(manifest, "versionCode") == versionCode.get().toLong())
+            check(jsonString(manifest, "versionName") == versionName.get())
+            check(jsonString(manifest, "sha256") == glassesHash)
+            check(jsonString(manifest, "signerPolicy") == "match-host")
+            embeddedHash to manifestBytes.inputStream().use(::sha256)
         }
+        val (embeddedHash, manifestHash) = embeddedEvidence
         check(embeddedHash == glassesHash) {
             "Phone release embeds HUD $embeddedHash but paired HUD is $glassesHash"
         }
@@ -148,7 +196,9 @@ abstract class GeneratePairedReleaseEvidenceTask : DefaultTask() {
                 "sizeBytes": ${glasses.length()},
                 "sha256": "$glassesHash",
                 "embeddedSha256": "$embeddedHash",
-                "embeddedMatches": true
+                "embeddedMatches": true,
+                "artifactManifestSha256": "$manifestHash",
+                "artifactManifestMatches": true
               }
             }
             """.trimIndent() + "\n"
@@ -165,6 +215,16 @@ abstract class GeneratePairedReleaseEvidenceTask : DefaultTask() {
         }
         return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
+
+    private fun jsonString(json: String, key: String): String =
+        Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+            .find(json)?.groupValues?.get(1)
+            ?: error("HUD artifact manifest is missing $key")
+
+    private fun jsonLong(json: String, key: String): Long =
+        Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(\\d+)")
+            .find(json)?.groupValues?.get(1)?.toLong()
+            ?: error("HUD artifact manifest is missing $key")
 }
 
 plugins {
@@ -300,6 +360,9 @@ androidComponents {
         val taskName = "bundle${variant.name.replaceFirstChar(Char::uppercaseChar)}GlassesApk"
         val bundleTask = tasks.register<BundleGlassesApkTask>(taskName) {
             dependsOn(":glasses-app:assemble${glassesBuildType.replaceFirstChar(Char::uppercaseChar)}")
+            applicationId.set("com.clawsses.glasses")
+            versionCode.set(clawssesVersionCode)
+            versionName.set(clawssesVersionName)
             val glassesApkName = if (glassesBuildType == "release") {
                 if (useDebugSigningForHardwareTest.get()) {
                     "glasses-app-release.apk"
@@ -358,8 +421,8 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // ADB over WiFi for APK installation on glasses
-    implementation("dev.mobile:dadb:1.2.10")
+    // ADB over WiFi is a development utility and must never enter a release runtime graph.
+    debugImplementation("dev.mobile:dadb:1.2.10")
 
     // Ed25519 signing (Android's bundled BouncyCastle doesn't include EdDSA)
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
@@ -407,7 +470,7 @@ tasks.matching { it.name == "copyReleaseBaselineProfileIntoSrc" }.configureEach 
 val verifyReleaseExcludesDebugTransport =
     tasks.register<VerifyReleaseExcludesDebugTransportTask>("verifyReleaseExcludesDebugTransport") {
         group = "verification"
-        description = "Fails if the unauthenticated emulator transport is packaged in the phone release APK."
+        description = "Fails if a development-only transport is packaged in the phone release APK."
         dependsOn("assembleRelease")
         releaseApk.set(
             layout.buildDirectory.file(

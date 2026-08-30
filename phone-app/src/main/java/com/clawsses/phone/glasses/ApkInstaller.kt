@@ -10,7 +10,6 @@ import androidx.core.content.ContextCompat
 import com.clawsses.phone.service.GlassesConnectionService
 import com.clawsses.phone.service.WakeLockReason
 import com.clawsses.phone.BuildConfig
-import dadb.Dadb
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,9 +25,8 @@ import kotlinx.coroutines.delay
  * Handles APK installation on Rokid glasses.
  *
  * Production installs prefer the official Hi Rokid bridge and automatically fall back to the
- * connected CXR-M transport. The debug-only ADB entry points remain available for development.
- *
- * The ADB method is more reliable for development and doesn't require the full SDK setup.
+ * connected CXR-M transport. Development-only ADB tooling lives in the debug source set and is
+ * intentionally absent from this production installer.
  */
 class ApkInstaller(
     private val context: Context,
@@ -38,26 +36,13 @@ class ApkInstaller(
     companion object {
         private const val TAG = "ApkInstaller"
         private const val GLASSES_APP_ASSET = "glasses-app-release.apk"
-        private const val DEFAULT_ADB_PORT = 5555
-        private const val ADB_OPERATION_TIMEOUT_MS = 60_000L
         private const val PEER_HANDSHAKE_TIMEOUT_MS = 60_000L
         private const val KEY_PENDING_PEER_BUILD = "pending_peer_build"
     }
 
-    /**
-     * Installation method
-     */
-    enum class InstallMethod {
-        SDK,    // Use Rokid CXR-M SDK (WiFi P2P)
-        ADB     // Use ADB over WiFi
-    }
-
-    /**
-     * Installation state machineIt
-     */
+    /** Installation state machine. */
     sealed class InstallState {
         object Idle : InstallState()
-        object CheckingConnection : InstallState()
         object InitializingWifiP2P : InstallState()
         object InitializingWifiHotspot : InstallState()
         object AwaitingHiRokidAuthorization : InstallState()
@@ -96,6 +81,10 @@ class ApkInstaller(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var installJob: Job? = null
     private val hiRokidInstaller = HiRokidInstaller(context, glassesManager)
+    private val hudArtifactVerifier = HudArtifactVerifier(context)
+    private val lastKnownGoodStore = HudLastKnownGoodStore(
+        File(context.filesDir, "hud-last-known-good"),
+    )
 
     init {
         scope.launch {
@@ -141,114 +130,6 @@ class ApkInstaller(
                     ),
                     canRetry = true,
                 )
-            }
-        }
-    }
-
-    // ADB connection settings
-    private var adbHost: String = ""
-    private var adbPort: Int = DEFAULT_ADB_PORT
-
-    /**
-     * Configure ADB connection for installation.
-     * Call this before using installViaAdb().
-     */
-    fun configureAdb(host: String, port: Int = DEFAULT_ADB_PORT) {
-        this.adbHost = host
-        this.adbPort = port
-        Log.d(TAG, "ADB configured: $host:$port")
-    }
-
-    /**
-     * Install the glasses app using ADB over WiFi.
-     * This is more reliable for development than the SDK method.
-     *
-     * Prerequisites on glasses:
-     * 1. Enable Developer Options (tap Build Number 7 times)
-     * 2. Enable USB debugging
-     * 3. Connect glasses to same WiFi network as phone
-     * 4. Find glasses IP: Settings > About > IP address
-     */
-    fun installViaAdb(host: String? = null, port: Int? = null) {
-        val targetHost = host ?: adbHost
-        val targetPort = port ?: adbPort
-
-        if (targetHost.isEmpty()) {
-            _installState.value = InstallState.Error(
-                "ADB host not configured. Go to Settings and enter the glasses IP address.",
-                canRetry = false
-            )
-            return
-        }
-
-        if (!canStartInstall()) return
-
-        Log.i(TAG, "Starting ADB installation to $targetHost:$targetPort")
-        _installState.value = InstallState.CheckingConnection
-
-        installJob = scope.launch {
-            try {
-                withTimeout(ADB_OPERATION_TIMEOUT_MS) {
-                    doAdbInstall(targetHost, targetPort)
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "Installation timed out after ${ADB_OPERATION_TIMEOUT_MS}ms")
-                _installState.value = InstallState.Error("Installation timed out. Check glasses connection.")
-            } catch (e: CancellationException) {
-                Log.d(TAG, "Installation cancelled")
-                _installState.value = InstallState.Idle
-            } catch (e: Exception) {
-                Log.e(TAG, "Installation failed", e)
-                _installState.value = InstallState.Error(formatError(e))
-            }
-        }
-    }
-
-    private suspend fun doAdbInstall(host: String, port: Int) = withContext(Dispatchers.IO) {
-        // Step 1: Test connection
-        Log.d(TAG, "Testing ADB connection to $host:$port...")
-        _installState.value = InstallState.CheckingConnection
-
-        val dadb = try {
-            Dadb.create(host, port)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to connect to ADB", e)
-            throw Exception("Cannot connect to glasses at $host:$port. " +
-                "Ensure ADB debugging is enabled and glasses are on the same network.")
-        }
-
-        dadb.use { adb ->
-            // Verify connection works
-            val testResult = adb.shell("echo connected")
-            if (testResult.exitCode != 0) {
-                throw Exception("ADB connection test failed. Check if glasses accepted the connection.")
-            }
-            Log.d(TAG, "ADB connection verified")
-
-            // Step 2: Prepare APK
-            _installState.value = InstallState.PreparingApk
-            val apkFile = extractApkFromAssets()
-                ?: throw Exception("No APK found. Ensure glasses-app-release.apk is bundled.")
-
-            Log.d(TAG, "APK prepared: ${apkFile.absolutePath} (${apkFile.length() / 1024} KB)")
-
-            // Step 3: Install APK
-            _installState.value = InstallState.Uploading("Uploading ${apkFile.length() / 1024} KB...")
-
-            try {
-                Log.d(TAG, "Installing APK via ADB...")
-                _installState.value = InstallState.Installing("Installing on glasses...")
-                adb.install(apkFile, "-r") // -r = replace existing
-
-                Log.i(TAG, "APK installation successful!")
-                _installState.value = InstallState.Success("Glasses app installed successfully!")
-
-            } catch (e: Exception) {
-                Log.e(TAG, "APK installation failed", e)
-                throw Exception("Installation failed: ${e.message}")
-            } finally {
-                // Cleanup temp file
-                cleanupTempApk()
             }
         }
     }
@@ -387,8 +268,7 @@ class ApkInstaller(
                 transactionStore.advance(InstallerPhase.PREPARING_APK)
                 _installState.value = InstallState.PreparingApk
                 val apkFile = withContext(Dispatchers.IO) {
-                    extractApkFromAssets()
-                        ?: throw IllegalStateException("Bundled glasses APK is missing.")
+                    prepareBundledApk()
                 }
                 val receipt = hiRokidInstaller.install(apkFile, token) { message ->
                     transactionStore.advance(InstallerPhase.CONNECTING)
@@ -461,8 +341,14 @@ class ApkInstaller(
         installerPreferences.edit().remove(KEY_PENDING_PEER_BUILD).apply()
     }
 
-    private fun markPeerVerified(expectedBuild: Int) {
+    private suspend fun markPeerVerified(expectedBuild: Int) {
         if (pendingPeerBuild() != expectedBuild) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                lastKnownGoodStore.promote(expectedBuild.toLong())
+            }
+        }
+            .onFailure { error -> Log.w(TAG, "Could not retain verified HUD recovery artifact", error) }
         clearPendingPeerBuild()
         val route = transactionStore.active()?.route?.label ?: "installer"
         transactionStore.clear()
@@ -474,8 +360,7 @@ class ApkInstaller(
     private suspend fun doSdkInstall() = withContext(Dispatchers.IO) {
         transactionStore.advance(InstallerPhase.PREPARING_APK)
         // Step 1: Prepare APK
-        val apkFile = extractApkFromAssets()
-            ?: throw Exception("No APK found. Ensure glasses-app-release.apk is bundled.")
+        val apkFile = prepareBundledApk()
 
         Log.d(TAG, "APK prepared: ${apkFile.absolutePath} (${apkFile.length() / 1024} KB)")
 
@@ -670,62 +555,6 @@ class ApkInstaller(
     }
 
     /**
-     * Legacy method for backwards compatibility.
-     * Tries SDK first, suggests ADB on failure.
-     */
-    fun installGlassesApp() {
-        if (!canStartInstall()) return
-
-        // Try to determine best method
-        if (adbHost.isNotEmpty()) {
-            // ADB is configured, use it
-            installViaAdb()
-        } else if (RokidSdkManager.isReady() && RokidSdkManager.isConnected()) {
-            // SDK available, try it
-            installViaSdk()
-        } else {
-            // Nothing configured - show helpful error
-            _installState.value = InstallState.Error(
-                "Configure installation method:\n\n" +
-                "ADB Method (recommended for development):\n" +
-                "1. Enable Developer Options on glasses\n" +
-                "2. Enable USB/ADB debugging\n" +
-                "3. Connect glasses to WiFi\n" +
-                "4. Enter glasses IP address below\n\n" +
-                "SDK Method:\n" +
-                "Requires Rokid SDK credentials and Bluetooth pairing.",
-                canRetry = false
-            )
-        }
-    }
-
-    /**
-     * Test ADB connection to glasses without installing.
-     */
-    fun testAdbConnection(host: String, port: Int = DEFAULT_ADB_PORT, onResult: (Boolean, String) -> Unit) {
-        scope.launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    Log.d(TAG, "Testing ADB connection to $host:$port")
-                    Dadb.create(host, port).use { adb ->
-                        val result = adb.shell("getprop ro.product.model")
-                        if (result.exitCode == 0) {
-                            val model = result.output.trim()
-                            Log.d(TAG, "ADB connection successful: $model")
-                            onResult(true, "Connected to: $model")
-                        } else {
-                            onResult(false, "Connection failed: ${result.output}")
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "ADB connection test failed", e)
-                onResult(false, formatError(e))
-            }
-        }
-    }
-
-    /**
      * Cancel the current installation.
      */
     fun cancelInstallation() {
@@ -762,7 +591,7 @@ class ApkInstaller(
     private fun extractApkFromAssets(): File? {
         return try {
             val cacheDir = context.cacheDir
-            val apkFile = File(cacheDir, "glasses-app.apk")
+            val apkFile = File(cacheDir, GLASSES_APP_ASSET)
 
             // Check if we have a bundled APK in assets
             val assetManager = context.assets
@@ -800,9 +629,17 @@ class ApkInstaller(
         }
     }
 
+    private fun prepareBundledApk(): File {
+        val apk = extractApkFromAssets()
+            ?: throw IllegalStateException("Bundled glasses APK is missing.")
+        val manifest = hudArtifactVerifier.verify(apk)
+        lastKnownGoodStore.stage(apk, manifest)
+        return apk
+    }
+
     private fun cleanupTempApk() {
         try {
-            File(context.cacheDir, "glasses-app.apk").delete()
+            File(context.cacheDir, GLASSES_APP_ASSET).delete()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to clean up cached APK", e)
         }
@@ -812,20 +649,14 @@ class ApkInstaller(
         val message = e.message ?: "Unknown error"
         return when {
             message.contains("Connection refused") ->
-                "Connection refused. Ensure:\n" +
-                "1. ADB debugging is enabled on glasses\n" +
-                "2. Glasses are on the same WiFi network\n" +
-                "3. IP address is correct"
+                "Connection refused. Check the glasses connection and try again."
             message.contains("timeout", ignoreCase = true) ->
-                "Connection timed out. Check:\n" +
-                "1. Glasses IP address\n" +
-                "2. WiFi connectivity\n" +
-                "3. Firewall settings"
+                "Connection timed out. Wake the glasses, reconnect, and try again."
             message.contains("INSTALL_FAILED") ->
                 "Installation failed: $message\n" +
                 "Try uninstalling the existing app first."
             message.contains("No route to host") ->
-                "Cannot reach glasses. Ensure they're on the same network."
+                "Cannot reach the glasses. Reconnect them and try again."
             else -> message
         }
     }

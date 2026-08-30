@@ -19,8 +19,14 @@ Last verified: 2026-08-30
 
 ## Verified hardware state
 
-- Phone and Rokid HUD both run `1.3.99` / Build `108`.
-- The glasses are connected after the paired installation and runtime verification.
+- The connected Pixel phone and Rokid HUD both run the private hardware-test build `1.3.104` /
+  Build `113` from local commit `76e00ef`.
+- The Phone installation, cold launch, resumed Activity, live process, official Hi Rokid/CXR-L HUD
+  upload, install, launch, and fresh matching `113/113` peer handshake were verified.
+- Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
+  connection and the HUD foreground package is `com.clawsses.glasses`.
+- Build 113 is a hardware-verified local cumulative candidate only. It is not pushed, merged, or
+  published, so Build 108 remains the current repository release until explicit integration.
 - The Build-108 commit contains no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
@@ -41,6 +47,25 @@ with `adb devices -l` and collect a fresh version handshake.
   process death, and requires a matching live HUD handshake after installation.
 - Installer jobs and vendor callbacks are disposed with the process-scoped runtime.
 
+## Local Build 109–113 candidate
+
+- Build 109 moves DADB and the Wi-Fi ADB installer to debug-only source/dependency graphs, disables
+  app-owned cleartext traffic, and adds a release APK isolation check.
+- Build 110 adds a bundled HUD manifest and rejects hash, package, version, or signer mismatches
+  before either production installer route transfers the artifact.
+- Build 111 retains one hash-verified last-known-good HUD artifact only after a matching live peer
+  handshake. Automatic rollback remains disabled because neither verified vendor API exposes a
+  safe downgrade contract.
+- Build 112 completes the sealed typed Phone-to-HUD decoder and removes the legacy `JSONObject`
+  production dispatcher.
+- Build 113 keeps the `OpenClawClient` API stable while separating transport/auth, chat-run, and
+  catalog/session state into tested internal components.
+- Local commits, in order: `0d0a60f`, `cf6ba5c`, `010bc9a`, `47c5fdc`, `76e00ef`.
+- The private Build-113 Phone APK contains a HUD artifact whose SHA-256 matches the standalone
+  private HUD APK, and its embedded manifest reports package `com.clawsses.glasses`, Build `113`,
+  version `1.3.104`, with a match-host signer policy. The matching runtime handshake was confirmed
+  after the official CXR-L installation.
+
 ## Platform contracts
 
 - Phone: compile SDK 35, target SDK 35, minimum SDK 28.
@@ -59,6 +84,8 @@ with `adb devices -l` and collect a fresh version handshake.
   fully solvable in Clawsses alone.
 - Hi Rokid must be enabled only for the verified CXR-L installer handoff and disabled again before
   Clawsses resumes ownership.
+- HUD rollback is intentionally unavailable until a vendor-supported signed downgrade contract is
+  verified; Clawsses does not use uninstall as a recovery shortcut.
 
 ## Parallel-work integration
 

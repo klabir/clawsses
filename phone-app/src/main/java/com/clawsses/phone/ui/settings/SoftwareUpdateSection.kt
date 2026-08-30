@@ -43,9 +43,6 @@ fun SoftwareUpdateSection(
             is ApkInstaller.InstallState.Idle ->
                 IdleContent(onInstall)
 
-            is ApkInstaller.InstallState.CheckingConnection ->
-                ProgressContent("Checking connection...", -1, null, onCancel = null)
-
             is ApkInstaller.InstallState.InitializingWifiP2P ->
                 ProgressContent("Establishing WiFi P2P...", -1, null, onCancel = null)
 

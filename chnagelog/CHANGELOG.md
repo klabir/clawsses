@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+## 1.3.104 (build 113)
+
+### Changed
+
+- Keep `OpenClawClient` as the stable public facade while moving mutable transport/auth,
+  chat-run, and catalog/session state into dedicated internal components.
+- Centralize active-run cleanup and session-operation invalidation in their owning components.
+
+### Security
+
+- Preserve the existing TLS-only endpoint policy, bounded reconnect state, and request correlation
+  while isolating transport credentials from chat and catalog state.
+
+## 1.3.103 (build 112)
+
+### Changed
+
+- Decode every production Phone-to-HUD message into a sealed typed message before Activity state
+  or effects are touched.
+- Replace the duplicate legacy `JSONObject` switch in `HudActivity` with one exhaustive typed
+  dispatcher while retaining transport acknowledgements for unknown future messages.
+
+### Security
+
+- Reject malformed catalog, voice, photo, wake, TTS, card, and caption fields at the protocol
+  boundary instead of silently coercing wrong primitive types inside the Activity.
+
+## 1.3.102 (build 111)
+
+### Added
+
+- Retain exactly one hash-verified HUD artifact only after its matching live build handshake.
+- Keep an independently bounded candidate across process restart until verification promotes it to
+  last-known-good state.
+
+### Security
+
+- Explicitly reject automatic rollback for both CXR-M and Hi Rokid because neither verified vendor
+  API exposes a safe downgrade contract. No uninstall-based fallback is attempted.
+
+## 1.3.101 (build 110)
+
+### Added
+
+- Generate a manifest for the exact HUD APK bundled into every Phone variant.
+- Verify the HUD hash, package, version, and signer against that manifest and the running Phone
+  before either production installer can transfer the APK.
+
+### Security
+
+- Reject missing, tampered, unsigned, differently signed, or version-mismatched HUD artifacts
+  before handing them to CXR-M or Hi Rokid.
+
+## 1.3.100 (build 109)
+
+### Changed
+
+- Move the unused Wi-Fi ADB HUD installer and its DADB dependency into the debug-only build graph.
+- Disable app-owned cleartext network traffic while retaining the vendor-managed CXR-M transport
+  and the bound Hi Rokid service route.
+
+### Security
+
+- Fail release verification if DADB or another development-only transport is packaged in the
+  production Phone APK.
+
 ## 1.3.99 (build 108)
 
 ### Added
