@@ -53,6 +53,7 @@ val releaseCoverageClassDirectories = files(
             "**/openclaw/StreamUpdateBuffer*",
             "**/openclaw/OpenClawRequestCoordinator*",
             "**/openclaw/OpenClawActiveSessionRuntime*",
+            "**/openclaw/OpenClawStreamPublisher*",
             "**/glasses/*Gate*",
             "**/glasses/*Policy*",
             "**/service/WakeLockLeaseRegistry*",
@@ -65,9 +66,11 @@ val releaseCoverageClassDirectories = files(
             "**/orchestration/HudCommandDispatcher*",
             "**/orchestration/HudInteractionPlanner*",
             "**/orchestration/HudPhoneMessageEffectPlanner*",
+            "**/orchestration/HudStreamController*",
             "**/state/HudStateReducer*",
             "**/ui/HudPaginationCache*",
             "**/ui/HudStreamingAccumulator*",
+            "**/ui/HudContentNormalizer*",
         )
     },
     project(":shared").fileTree("build/tmp/kotlin-classes/release") {

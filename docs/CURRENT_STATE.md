@@ -173,6 +173,21 @@ with `adb devices -l` and collect a fresh version handshake.
   gate passes 265 tasks and retains credential, debug-transport, HUD-isolation, and embedded-HUD
   hash verification.
 
+## Build 129 candidate changes
+
+- Move bounded-rate Phone stream scheduling and publication out of `OpenClawClient` into the
+  directly tested `OpenClawStreamPublisher`; the client retains its existing coroutine scope and
+  callback ownership.
+- Move HUD stream accumulation decisions out of `HudActivity` into `HudStreamController`; the
+  Activity still owns the delayed lifecycle job, visible stream flow, metrics, and state reducer.
+- Move model soft-wrap handling into `HudContentNormalizer` and preserve fenced Markdown code
+  blocks, closing an uncovered formatting edge case found by the new tests.
+- Reduce `HudActivity.kt` from 1,513 to 1,470 lines, raise checked-in coverage to 343 tests, and
+  measure 1,297 covered of 1,794 selected deterministic lines, or 72.3 percent.
+- The full 265-task public paired-release source gate passes with 231 Phone debug tests, 229 Phone
+  release tests, 85 HUD release tests, and 10 shared release tests. Build 129 has not been installed
+  or paired-device verified.
+
 ## Current code rating
 
 - Overall: **9.2/10** for the paired-device-verified Build 127. Active-session reconciliation and
@@ -237,7 +252,9 @@ artifact version, v2 signer, and embedded-HUD hash checks. Its Phone APK is inst
 the official CXR-L HUD installation, launch, Clawsses ownership restoration, and matching `127/127`
 handshake are verified. Hi Rokid is restored to disabled and Tailscale remains active. Build `128`
 passes the expanded 265-task public source gate and its 70-percent deterministic-logic coverage
-threshold; it has not been installed or paired-device verified.
+threshold; it has not been installed or paired-device verified. Build `129` also passes the
+expanded gate with 72.3-percent selected coverage; no same-device benchmark or paired install is
+claimed because this source-only candidate has not mutated the connected devices.
 
 ## New-session resume prompt
 

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## 1.3.120 (build 129)
+
+### Changed
+
+- Move bounded-rate Phone stream publication scheduling out of `OpenClawClient` into a directly
+  tested publisher while retaining coroutine ownership in the client.
+- Move HUD stream accumulation decisions and model soft-wrap normalization out of `HudActivity`
+  into deterministic tested controllers while retaining lifecycle jobs in the Activity.
+
+### Fixed
+
+- Preserve line breaks inside fenced Markdown code blocks instead of treating code lines as model
+  soft wraps.
+
 ## 1.3.119 (build 128)
 
 ### Added

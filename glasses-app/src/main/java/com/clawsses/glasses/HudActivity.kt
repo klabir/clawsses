@@ -46,6 +46,7 @@ import com.clawsses.glasses.orchestration.HudPhoneMessageEffectContext
 import com.clawsses.glasses.orchestration.HudPhoneMessageEffectPlanner
 import com.clawsses.glasses.orchestration.HudPhoneMessageResult
 import com.clawsses.glasses.orchestration.HudRuntimeMetrics
+import com.clawsses.glasses.orchestration.HudStreamController
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.state.HudStateEvent
 import com.clawsses.glasses.state.HudHistorySnapshotAssembler
@@ -62,7 +63,7 @@ import com.clawsses.glasses.ui.HudCardDisplay
 import com.clawsses.glasses.ui.HudPosition
 import com.clawsses.glasses.ui.HudScreen
 import com.clawsses.glasses.ui.toHudUiState
-import com.clawsses.glasses.ui.HudStreamingAccumulator
+import com.clawsses.glasses.ui.HudContentNormalizer
 import com.clawsses.glasses.ui.HudStreamingSnapshot
 import com.clawsses.glasses.ui.HudTelemetry
 import com.clawsses.glasses.ui.InputActionItem
@@ -111,7 +112,7 @@ class HudActivity : ComponentActivity() {
 
     private val hudState = MutableStateFlow(ChatHudState())
     private val hudTelemetry = MutableStateFlow(HudTelemetry())
-    private val streamingAccumulator = HudStreamingAccumulator()
+    private val streamController = HudStreamController()
     private val streamingMessage = MutableStateFlow<HudStreamingSnapshot?>(null)
     private var streamPublishJob: Job? = null
     private lateinit var gestureHandler: GestureHandler
@@ -1263,7 +1264,7 @@ class HudActivity : ComponentActivity() {
                         DisplayMessage(
                             id = assembled.id,
                             role = assembled.role,
-                            content = unwrapContent(assembled.content),
+                            content = HudContentNormalizer.unwrapSoftLineBreaks(assembled.content),
                             isStreaming = false,
                         )
                     }
@@ -1271,15 +1272,16 @@ class HudActivity : ComponentActivity() {
                 }
             }
             is PhoneHudMessage.Stream -> {
-                val current = hudState.value
-                val startedNewMessage = streamingAccumulator.append(message.id, message.chunk)
-                if (startedNewMessage || current.agentState != AgentState.STREAMING) {
-                    hudState.value = current.copy(
-                        agentState = AgentState.STREAMING,
-                        agentProgress = emptyList(),
-                    )
+                val decision = streamController.acceptChunk(
+                    state = hudState.value,
+                    messageId = message.id,
+                    chunk = message.chunk,
+                    publicationPending = streamPublishJob != null,
+                )
+                hudState.value = decision.state
+                if (decision.publishImmediately) {
                     publishStreamingMessage()
-                } else if (streamPublishJob == null && streamingAccumulator.hasUnpublishedChanges()) {
+                } else if (decision.schedulePublication) {
                     streamPublishJob = lifecycleScope.launch {
                         delay(STREAM_PUBLISH_INTERVAL_MS)
                         publishStreamingMessage()
@@ -1290,13 +1292,13 @@ class HudActivity : ComponentActivity() {
             is PhoneHudMessage.StreamEnd -> {
                 streamPublishJob?.cancel()
                 streamPublishJob = null
-                val completedStream = streamingAccumulator.finish(message.id)
+                val completedStream = streamController.finish(message.id)
                 streamingMessage.value = null
                 hudState.value = HudStateReducer.reduce(
                     hudState.value,
                     HudStateEvent.StreamCompleted(
                         message.id,
-                        completedStream?.content?.let(::unwrapContent),
+                        completedStream?.content?.let(HudContentNormalizer::unwrapSoftLineBreaks),
                     ),
                 ).state
             }
@@ -1386,7 +1388,7 @@ class HudActivity : ComponentActivity() {
     private fun PhoneHudMessage.CompletedMessage.toDisplayMessage() = DisplayMessage(
         id = id,
         role = role,
-        content = unwrapContent(content),
+        content = HudContentNormalizer.unwrapSoftLineBreaks(content),
         isStreaming = false,
         thumbnails = thumbnails.mapNotNull { thumbnail ->
             ThumbnailBitmapCache.decode(
@@ -1407,64 +1409,19 @@ class HudActivity : ComponentActivity() {
         )
 
     private fun publishStreamingMessage() {
-        streamingAccumulator.snapshotIfChanged()?.let {
+        streamController.snapshotIfChanged()?.let {
             runtimeMetrics.recordStreamPublication()
             streamingMessage.value = it
         }
     }
 
     private fun clearStreamingMessage(id: String? = null) {
-        streamingAccumulator.clear(id)
+        streamController.clear(id)
         if (id == null || streamingMessage.value?.id == id) {
             streamPublishJob?.cancel()
             streamPublishJob = null
             streamingMessage.value = null
         }
-    }
-
-    /**
-     * Unwrap soft line breaks from AI model output so Compose can re-wrap
-     * to the actual widget width. Preserves paragraph breaks (blank lines),
-     * list items, and other structural markdown.
-     *
-     * A single `\n` between two non-empty, non-structural lines is treated
-     * as a soft wrap inserted by the model and replaced with a space.
-     */
-    private fun unwrapContent(text: String): String {
-        val lines = text.split("\n")
-        if (lines.size <= 1) return text
-
-        val result = StringBuilder()
-        for (i in lines.indices) {
-            val line = lines[i]
-            result.append(line)
-            if (i < lines.lastIndex) {
-                val next = lines[i + 1]
-                // Keep newline (don't join) when:
-                // - current line is blank → paragraph break
-                // - next line is blank → paragraph break
-                // - next line starts with markdown structure (list, heading, code fence, blockquote)
-                val keepNewline = line.isBlank() ||
-                    next.isBlank() ||
-                    next.trimStart().let {
-                        it.startsWith("- ") ||
-                        it.startsWith("* ") ||
-                        it.startsWith("+ ") ||
-                        it.matches(Regex("^\\d+[.)].+")) ||
-                        it.startsWith("#") ||
-                        it.startsWith("```") ||
-                        it.startsWith("> ")
-                    }
-
-                if (keepNewline) {
-                    result.append("\n")
-                } else {
-                    // Join with space (soft wrap from model)
-                    if (line.isNotEmpty()) result.append(" ")
-                }
-            }
-        }
-        return result.toString()
     }
 
     override fun onDestroy() {
