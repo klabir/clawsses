@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.106 (build 115)
+
+### Changed
+
+- Move Phone-to-HUD decoding, bounded transaction replay detection, and transport
+  acknowledgments behind a tested ingress controller.
+- Keep typed HUD effects injected into the controller so failed effects remain replayable and are
+  never acknowledged as successfully applied.
+
 ## 1.3.105 (build 114)
 
 ### Added
