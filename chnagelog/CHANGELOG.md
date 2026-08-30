@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.112 (build 121)
+
+### Changed
+
+- Move primary HUD content, staged-input, and menu gesture decisions into a pure interaction
+  planner while keeping scrolling, voice, transport, and menu side effects in `HudActivity`.
+- Cover focus push-through, photo removal, clear behavior, scroll decisions, and bounded menu
+  navigation with local unit tests.
+
 ## 1.3.111 (build 120)
 
 ### Changed

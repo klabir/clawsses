@@ -34,6 +34,9 @@ import com.clawsses.glasses.orchestration.HudCommandDispatcher
 import com.clawsses.glasses.orchestration.HudGestureContext
 import com.clawsses.glasses.orchestration.HudGestureRouter
 import com.clawsses.glasses.orchestration.HudGestureTarget
+import com.clawsses.glasses.orchestration.HudInteractionAction
+import com.clawsses.glasses.orchestration.HudInteractionDecision
+import com.clawsses.glasses.orchestration.HudInteractionPlanner
 import com.clawsses.glasses.orchestration.HudKeyRouter
 import com.clawsses.glasses.orchestration.HudLifecycleRouter
 import com.clawsses.glasses.orchestration.HudPhoneMessageController
@@ -564,188 +567,30 @@ class HudActivity : ComponentActivity() {
             HudGestureTarget.AGENT_PICKER -> handleAgentPickerGesture(gesture)
             HudGestureTarget.MODEL_PICKER -> handleModelPickerGesture(gesture)
             HudGestureTarget.CANCEL_VOICE -> voiceHandler.cancel()
-            HudGestureTarget.CONTENT -> handleContentGesture(gesture)
-            HudGestureTarget.INPUT -> handleInputGesture(gesture)
-            HudGestureTarget.MENU -> handleMenuGesture(gesture)
+            HudGestureTarget.CONTENT,
+            HudGestureTarget.INPUT,
+            HudGestureTarget.MENU,
+            -> applyInteractionDecision(HudInteractionPlanner.plan(current, target, gesture))
         }
     }
 
-    // CONTENT area gestures
-    private fun handleContentGesture(gesture: Gesture) {
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> scrollUp()
-            Gesture.SWIPE_BACKWARD -> {
-                val current = hudState.value
-                if (current.pageIndex >= current.pageCount - 1 && current.isScrolledToEnd) {
-                    // Push through: CONTENT → INPUT (if staging or photos) → MENU
-                    if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                        // Default focus on last visible item in combined row
-                        val lastIndex = current.photoThumbnails.size + 1 // Send button
-                        hudState.value = current.copy(
-                            focusedArea = ChatFocusArea.INPUT,
-                            inputActionIndex = lastIndex
-                        )
-                    } else {
-                        hudState.value = current.copy(
-                            focusedArea = ChatFocusArea.MENU,
-                            menuBarIndex = 0
-                        )
-                    }
-                } else {
-                    scrollDown()
-                }
+    private fun applyInteractionDecision(decision: HudInteractionDecision) {
+        hudState.value = decision.state
+        decision.actions.forEach { action ->
+            when (action) {
+                HudInteractionAction.ScrollUp -> scrollUp()
+                HudInteractionAction.ScrollDown -> scrollDown()
+                HudInteractionAction.ScrollToBottom -> scrollToBottom()
+                HudInteractionAction.StartVoice -> startVoice()
+                is HudInteractionAction.ExecuteMenuItem -> executeMenuItem(action.item)
+                is HudInteractionAction.RemovePhoto -> sendCommand(
+                    GlassesCommand.RemovePhoto(all = false, index = action.index),
+                )
+                HudInteractionAction.RemoveAllPhotos -> sendCommand(
+                    GlassesCommand.RemovePhoto(all = true, index = null),
+                )
+                HudInteractionAction.SubmitInput -> submitInput()
             }
-            Gesture.TAP -> scrollToBottom()
-            Gesture.DOUBLE_TAP -> {
-                val current = hudState.value
-                if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                    val lastIndex = current.photoThumbnails.size + 1 // Send button
-                    hudState.value = current.copy(
-                        focusedArea = ChatFocusArea.INPUT,
-                        inputActionIndex = lastIndex
-                    )
-                } else {
-                    hudState.value = current.copy(
-                        focusedArea = ChatFocusArea.MENU,
-                        menuBarIndex = 0
-                    )
-                }
-            }
-            Gesture.LONG_PRESS -> startVoice()
-        }
-    }
-
-    // INPUT staging area gestures
-    // Combined row: [photo0..N-1, CLEAR, SEND] for text, photos, or both.
-    // inputActionIndex maps into this combined row.
-    private fun handleInputGesture(gesture: Gesture) {
-        val current = hudState.value
-        val photoCount = current.photoThumbnails.size
-        val clearIndex = photoCount       // CLEAR is right after photos
-        val sendIndex = photoCount + 1    // SEND is rightmost
-        val totalItems = photoCount + 2
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                if (current.inputActionIndex == 0) {
-                    // Push through: INPUT → CONTENT
-                    hudState.value = current.copy(focusedArea = ChatFocusArea.CONTENT)
-                } else {
-                    hudState.value = current.copy(inputActionIndex = current.inputActionIndex - 1)
-                }
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                if (current.inputActionIndex >= totalItems - 1) {
-                    // Push through: INPUT → MENU
-                    hudState.value = current.copy(
-                        focusedArea = ChatFocusArea.MENU,
-                        menuBarIndex = 0
-                    )
-                } else {
-                    hudState.value = current.copy(inputActionIndex = current.inputActionIndex + 1)
-                }
-            }
-            Gesture.TAP -> {
-                val idx = current.inputActionIndex
-                when {
-                    idx < photoCount -> {
-                        // Tap on photo — remove it
-                        val newThumbnails = current.photoThumbnails.toMutableList().apply { removeAt(idx) }
-                        val newPhotoCount = newThumbnails.size
-                        // After removal, keep focus on same position but clamp
-                        val newIndex = if (newThumbnails.isEmpty() && !current.showInputStaging) {
-                            // No photos left and no staging text — go to MENU
-                            hudState.value = current.copy(
-                                photoThumbnails = emptyList(),
-                                inputActionIndex = 0,
-                                focusedArea = ChatFocusArea.MENU,
-                                menuBarIndex = 0
-                            )
-                            sendCommand(GlassesCommand.RemovePhoto(all = false, index = idx))
-                            return
-                        } else {
-                            // Keep the primary action focused after removing a photo.
-                            newPhotoCount + 1
-                        }
-                        hudState.value = current.copy(
-                            photoThumbnails = newThumbnails,
-                            inputActionIndex = newIndex
-                        )
-                        sendCommand(GlassesCommand.RemovePhoto(all = false, index = idx))
-                    }
-                    idx == clearIndex -> {
-                        // Clear all staged content and dismiss.
-                        hudState.value = current.copy(
-                            showInputStaging = false,
-                            stagingText = "",
-                            photoThumbnails = emptyList(),
-                            inputActionIndex = 0,
-                            focusedArea = ChatFocusArea.CONTENT
-                        )
-                        if (current.photoThumbnails.isNotEmpty()) {
-                            sendCommand(GlassesCommand.RemovePhoto(all = true, index = null))
-                        }
-                    }
-                    idx == sendIndex -> {
-                        // Submit staged text and/or photos, then dismiss.
-                        val text = current.stagingText.trim()
-                        if (text.isNotEmpty() || current.photoThumbnails.isNotEmpty()) {
-                            hudState.value = current.copy(inputText = text)
-                            submitInput()
-                        }
-                        hudState.value = hudState.value.copy(
-                            showInputStaging = false,
-                            stagingText = "",
-                            inputActionIndex = 0
-                        )
-                    }
-                }
-            }
-            Gesture.DOUBLE_TAP -> {
-                // Go back to CONTENT
-                hudState.value = current.copy(focusedArea = ChatFocusArea.CONTENT)
-            }
-            Gesture.LONG_PRESS -> startVoice()
-        }
-    }
-
-    // MENU area gestures
-    private fun handleMenuGesture(gesture: Gesture) {
-        val current = hudState.value
-        val items = MenuBarItem.entries
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                if (current.menuBarIndex == 0) {
-                    // Push through: MENU → INPUT (if staging or photos) → CONTENT
-                    if (current.showInputStaging || current.photoThumbnails.isNotEmpty()) {
-                        // Focus on last visible item in combined row
-                        val lastIndex = current.photoThumbnails.size + 1 // Send button
-                        hudState.value = current.copy(
-                            focusedArea = ChatFocusArea.INPUT,
-                            inputActionIndex = lastIndex
-                        )
-                    } else {
-                        hudState.value = current.copy(focusedArea = ChatFocusArea.CONTENT)
-                    }
-                } else {
-                    hudState.value = current.copy(menuBarIndex = current.menuBarIndex - 1)
-                }
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                // Next menu item
-                val newIndex = minOf(items.size - 1, current.menuBarIndex + 1)
-                hudState.value = current.copy(menuBarIndex = newIndex)
-            }
-            Gesture.TAP -> {
-                // Execute selected menu item
-                executeMenuItem(items[current.menuBarIndex])
-            }
-            Gesture.DOUBLE_TAP -> {
-                // Show exit confirmation dialog
-                hudState.value = current.copy(showExitConfirm = true)
-            }
-            Gesture.LONG_PRESS -> startVoice()
         }
     }
 
