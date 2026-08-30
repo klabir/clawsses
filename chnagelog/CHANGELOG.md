@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.100 (build 109)
+
+### Changed
+
+- Move the unused Wi-Fi ADB HUD installer and its DADB dependency into the debug-only build graph.
+- Disable app-owned cleartext network traffic while retaining the vendor-managed CXR-M transport
+  and the bound Hi Rokid service route.
+
+### Security
+
+- Fail release verification if DADB or another development-only transport is packaged in the
+  production Phone APK.
+
 ## 1.3.99 (build 108)
 
 ### Added

@@ -38,6 +38,8 @@ abstract class VerifyReleaseExcludesDebugTransportTask : DefaultTask() {
         val forbiddenClassPaths = listOf(
             "com/clawsses/phone/debug/DebugGlassesServer",
             "com/clawsses/phone/benchmark/",
+            "com/clawsses/phone/glasses/DebugAdbHudInstaller",
+            "dadb/",
         )
         ZipFile(releaseApk.get().asFile).use { apk ->
             val leaked = apk.entries().asSequence()
@@ -358,8 +360,8 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // ADB over WiFi for APK installation on glasses
-    implementation("dev.mobile:dadb:1.2.10")
+    // ADB over WiFi is a development utility and must never enter a release runtime graph.
+    debugImplementation("dev.mobile:dadb:1.2.10")
 
     // Ed25519 signing (Android's bundled BouncyCastle doesn't include EdDSA)
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
@@ -407,7 +409,7 @@ tasks.matching { it.name == "copyReleaseBaselineProfileIntoSrc" }.configureEach 
 val verifyReleaseExcludesDebugTransport =
     tasks.register<VerifyReleaseExcludesDebugTransportTask>("verifyReleaseExcludesDebugTransport") {
         group = "verification"
-        description = "Fails if the unauthenticated emulator transport is packaged in the phone release APK."
+        description = "Fails if a development-only transport is packaged in the phone release APK."
         dependsOn("assembleRelease")
         releaseApk.set(
             layout.buildDirectory.file(
