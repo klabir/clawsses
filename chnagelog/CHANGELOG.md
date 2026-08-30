@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.104 (build 113)
+
+### Changed
+
+- Keep `OpenClawClient` as the stable public facade while moving mutable transport/auth,
+  chat-run, and catalog/session state into dedicated internal components.
+- Centralize active-run cleanup and session-operation invalidation in their owning components.
+
+### Security
+
+- Preserve the existing TLS-only endpoint policy, bounded reconnect state, and request correlation
+  while isolating transport credentials from chat and catalog state.
+
 ## 1.3.103 (build 112)
 
 ### Changed

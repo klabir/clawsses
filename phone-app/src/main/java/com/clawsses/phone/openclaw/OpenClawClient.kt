@@ -15,10 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.*
 import okio.ByteString
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.random.Random
 
 /**
  * WebSocket client for connecting to an OpenClaw Gateway.
@@ -60,16 +56,17 @@ class OpenClawClient(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val chatStore = BoundedChatStore(onMessagesChanged = attachmentFileStore::retainOnly)
+    private val chatRun = OpenClawChatRunComponent(attachmentFileStore)
+    private val chatStore get() = chatRun.chatStore
     val chatMessages: StateFlow<List<ChatMessage>> = chatStore.messages
 
     private val _events = MutableSharedFlow<OpenClawEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<OpenClawEvent> = _events.asSharedFlow()
 
-    private val _runState = MutableStateFlow(RunState.IDLE)
+    private val _runState get() = chatRun.runState
     val runState: StateFlow<RunState> = _runState.asStateFlow()
 
-    private val _runError = MutableStateFlow<String?>(null)
+    private val _runError get() = chatRun.runError
     val runError: StateFlow<String?> = _runError.asStateFlow()
 
     // Callbacks for forwarding to glasses
@@ -86,81 +83,80 @@ class OpenClawClient(
     /** Fired after loadMoreHistory completes. Args: (prependedCount, hasMore) */
     var onMoreHistoryLoaded: ((Int, Boolean) -> Unit)? = null
 
-    private var webSocket: WebSocket? = null
-    private val client = OkHttpClient.Builder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(30, TimeUnit.SECONDS)
-        .build()
-
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val requestSeq = AtomicLong(1)
-    private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<OpenClawResponse>>()
-    private val connectionLock = Any()
-    private val connectionEpoch = ConnectionEpoch()
-    private val reconnectBackoff = ReconnectBackoff(
-        baseDelayMs = RECONNECT_BASE_DELAY_MS,
-        maxDelayMs = RECONNECT_MAX_DELAY_MS,
+    private val transport = OpenClawTransportAuthComponent(
+        networkInitiallyAvailable = networkMonitor?.isNetworkAvailable() ?: true,
+        reconnectBaseDelayMs = RECONNECT_BASE_DELAY_MS,
+        reconnectMaxDelayMs = RECONNECT_MAX_DELAY_MS,
     )
+    private var webSocket by transport::webSocket
+    private val client get() = transport.client
+    private val requestSeq get() = transport.requestSeq
+    private val pendingRequests get() = transport.pendingRequests
+    private val connectionLock get() = transport.connectionLock
+    private val connectionEpoch get() = transport.connectionEpoch
+    private val reconnectBackoff get() = transport.reconnectBackoff
 
     // Connection params (saved for reconnect)
-    private var host: String = ""
-    private var port: Int = 18789
-    private var token: String = ""
-    private var shouldReconnect = false
-    private var reconnectJob: Job? = null
-    private val networkAvailability = NetworkAvailabilityGate(networkMonitor?.isNetworkAvailable() ?: true)
+    private var host by transport::host
+    private var port by transport::port
+    private var token by transport::token
+    private var shouldReconnect by transport::shouldReconnect
+    private var reconnectJob by transport::reconnectJob
+    private val networkAvailability get() = transport.networkAvailability
 
     // Active agent run tracking
-    @Volatile private var activeRunId: String? = null
-    @Volatile private var activeMessageId: String? = null
-    @Volatile private var activeSessionKey: String? = null // session that initiated the current run
-    @Volatile private var abortingRunId: String? = null
-    private val completedAbortedRuns = ConcurrentHashMap<String, Long>()
+    private var activeRunId by chatRun::activeRunId
+    private var activeMessageId by chatRun::activeMessageId
+    private var activeSessionKey by chatRun::activeSessionKey
+    private var abortingRunId by chatRun::abortingRunId
+    private val completedAbortedRuns get() = chatRun.completedAbortedRuns
     // Gateway deltas already carry the full immutable text. Retain that String directly instead
     // of copying the whole response into a StringBuilder for every delta.
-    private var streamingContent = ""
-    private val streamUpdateBuffer = StreamUpdateBuffer()
-    private var lastAgentPhase: String? = null
-    @Volatile private var agentProgressActive = false
+    private var streamingContent by chatRun::streamingContent
+    private val streamUpdateBuffer get() = chatRun.streamUpdateBuffer
+    private var lastAgentPhase by chatRun::lastAgentPhase
+    private var agentProgressActive by chatRun::agentProgressActive
 
     // Current session tracking (exposed as StateFlow for phone UI)
-    private val _currentSessionKey = MutableStateFlow<String?>(null)
+    private val catalogSession = OpenClawCatalogSessionComponent()
+    private val _currentSessionKey get() = catalogSession.currentSessionKey
     val currentSessionKey: StateFlow<String?> = _currentSessionKey.asStateFlow()
-    @Volatile private var homeSessionKey = "agent:main:main"
+    private var homeSessionKey by catalogSession::homeSessionKey
 
     // History pagination: tracks how many messages were last requested from OpenClaw
-    private var currentHistoryLimit = 50
-    private val sessionOperationEpoch = SessionOperationEpoch()
-    private val _isLoadingMoreHistory = MutableStateFlow(false)
+    private var currentHistoryLimit by catalogSession::currentHistoryLimit
+    private val sessionOperationEpoch get() = catalogSession.sessionOperationEpoch
+    private val _isLoadingMoreHistory get() = catalogSession.isLoadingMoreHistory
     val isLoadingMoreHistory: StateFlow<Boolean> = _isLoadingMoreHistory.asStateFlow()
-    private val _hasMoreHistory = MutableStateFlow(true)
+    private val _hasMoreHistory get() = catalogSession.hasMoreHistory
     val hasMoreHistory: StateFlow<Boolean> = _hasMoreHistory.asStateFlow()
 
     // Sessions with unread messages (received while that session was not active)
-    private val _unreadSessions = MutableStateFlow<Set<String>>(emptySet())
+    private val _unreadSessions get() = catalogSession.unreadSessions
     val unreadSessions: StateFlow<Set<String>> = _unreadSessions.asStateFlow()
 
     // Available sessions (exposed as StateFlow for phone UI)
-    private val _sessionList = MutableStateFlow<List<SessionInfo>>(emptyList())
+    private val _sessionList get() = catalogSession.sessionList
     val sessionList: StateFlow<List<SessionInfo>> = _sessionList.asStateFlow()
 
-    private val _agentList = MutableStateFlow<List<AgentInfo>>(emptyList())
+    private val _agentList get() = catalogSession.agentList
     val agentList: StateFlow<List<AgentInfo>> = _agentList.asStateFlow()
 
-    private val _modelList = MutableStateFlow<List<ModelInfo>>(emptyList())
+    private val _modelList get() = catalogSession.modelList
     val modelList: StateFlow<List<ModelInfo>> = _modelList.asStateFlow()
 
-    private val _currentModelRef = MutableStateFlow<String?>(null)
+    private val _currentModelRef get() = catalogSession.currentModelRef
     val currentModelRef: StateFlow<String?> = _currentModelRef.asStateFlow()
 
-    private val _isSelectingModel = MutableStateFlow(false)
+    private val _isSelectingModel get() = catalogSession.isSelectingModel
     val isSelectingModel: StateFlow<Boolean> = _isSelectingModel.asStateFlow()
 
-    private val _modelSelectionError = MutableStateFlow<String?>(null)
+    private val _modelSelectionError get() = catalogSession.modelSelectionError
     val modelSelectionError: StateFlow<String?> = _modelSelectionError.asStateFlow()
 
     // Challenge nonce for auth handshake
-    private var challengeNonce: String? = null
+    private var challengeNonce by transport::challengeNonce
 
     init {
         networkMonitor?.start { available -> handleNetworkAvailability(available) }
@@ -535,18 +531,7 @@ class OpenClawClient(
     }
 
     private fun parseSessions(payload: JsonObject?): List<SessionInfo> =
-        payload?.getAsJsonArray("sessions")?.mapNotNull { element ->
-            val obj = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-            val key = obj.get("key")?.asString?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            SessionInfo(
-                key = key,
-                displayName = obj.get("displayName")?.takeIf { !it.isJsonNull }?.asString,
-                label = obj.get("label")?.takeIf { !it.isJsonNull }?.asString,
-                derivedTitle = obj.get("derivedTitle")?.takeIf { !it.isJsonNull }?.asString,
-                updatedAt = obj.get("updatedAt")?.takeIf { !it.isJsonNull }?.asLong,
-                kind = obj.get("kind")?.takeIf { !it.isJsonNull }?.asString,
-            )
-        } ?: emptyList()
+        catalogSession.parseSessions(payload)
 
     /** Request the read-only agent roster exposed by the gateway. */
     fun requestAgents() {
@@ -1173,11 +1158,7 @@ class OpenClawClient(
             if (runId != null && runId == activeRunId) {
                 if (state == "final" || state == "aborted" || state == "error") {
                     Log.d(TAG, "Clearing stale active run for inactive session")
-                    activeRunId = null
-                    activeMessageId = null
-                    activeSessionKey = null
-                    abortingRunId = null
-                    streamingContent = ""
+                    chatRun.resetActiveRun()
                     updateRunState(if (state == "error") RunState.ERROR else RunState.IDLE)
                 }
             }
@@ -1262,13 +1243,7 @@ class OpenClawClient(
 
         onChatStreamEnd?.invoke(ChatStreamEnd(id = msgId, state = terminalState))
 
-        activeRunId = null
-        activeMessageId = null
-        activeSessionKey = null
-        abortingRunId = null
-        streamingContent = ""
-        streamUpdateBuffer.reset()
-        lastAgentPhase = null
+        chatRun.resetActiveRun()
         updateRunState(
             if (terminalState == "error") RunState.ERROR else RunState.IDLE,
             errorMessage
@@ -1278,13 +1253,7 @@ class OpenClawClient(
     private fun finishRunWithoutContent(terminalState: String, errorMessage: String? = null) {
         clearAgentProgress()
         activeMessageId?.let { onChatStreamEnd?.invoke(ChatStreamEnd(id = it, state = terminalState)) }
-        activeRunId = null
-        activeMessageId = null
-        activeSessionKey = null
-        abortingRunId = null
-        streamingContent = ""
-        streamUpdateBuffer.reset()
-        lastAgentPhase = null
+        chatRun.resetActiveRun()
         updateRunState(
             if (terminalState == "error") RunState.ERROR else RunState.IDLE,
             errorMessage
@@ -1297,42 +1266,30 @@ class OpenClawClient(
     }
 
     private fun activateSession(sessionKey: String): Long {
-        val operation = sessionOperationEpoch.begin()
-        _currentSessionKey.value = sessionKey
+        val operation = catalogSession.activateSession(sessionKey)
         chatStore.clear()
-        currentHistoryLimit = 50
-        _hasMoreHistory.value = true
-        _isLoadingMoreHistory.value = false
-        _unreadSessions.value = _unreadSessions.value - sessionKey
         return operation
     }
 
     private fun isCurrentSessionOperation(sessionKey: String, operation: Long): Boolean =
-        _currentSessionKey.value == sessionKey && sessionOperationEpoch.isCurrent(operation)
+        catalogSession.isCurrentOperation(sessionKey, operation)
 
     private fun rememberAbortedRun(runId: String?) {
-        if (runId == null) return
-        completedAbortedRuns[runId] = System.currentTimeMillis()
-        if (completedAbortedRuns.size > 64) {
-            completedAbortedRuns.entries
-                .sortedBy { it.value }
-                .take(completedAbortedRuns.size - 64)
-                .forEach { completedAbortedRuns.remove(it.key, it.value) }
-        }
+        chatRun.rememberAbortedRun(runId)
     }
 
     private fun addChatMessage(message: ChatMessage) {
-        chatStore.add(message)
+        chatRun.add(message)
     }
 
     /** Update existing message by id or add if not found */
     private fun updateOrAddChatMessage(message: ChatMessage) {
-        chatStore.upsertCompleted(message)
+        chatRun.upsertCompleted(message)
     }
 
     /** Update or insert a streaming assistant message in the chat list */
     private fun updateStreamingMessage(msgId: String, fullText: String) {
-        chatStore.updateStreaming(msgId, fullText)
+        chatRun.updateStreaming(msgId, fullText)
     }
 
     private fun notifyConnectionUpdate(connected: Boolean, sessionId: String? = null) {
@@ -1470,123 +1427,6 @@ class OpenClawClient(
             "image/webp"
         }
     }
-}
-
-internal class ReconnectBackoff(
-    private val baseDelayMs: Long,
-    private val maxDelayMs: Long,
-    private val randomUnit: () -> Double = { Random.nextDouble() },
-) {
-    private var attempt = 0
-
-    fun nextDelayMs(): Long {
-        val exponent = attempt.coerceAtMost(30)
-        attempt++
-        val exponential = if (exponent >= 30) {
-            maxDelayMs
-        } else {
-            (baseDelayMs * (1L shl exponent)).coerceAtMost(maxDelayMs)
-        }
-        val jitterMultiplier = 0.8 + randomUnit().coerceIn(0.0, 1.0) * 0.4
-        return (exponential * jitterMultiplier).toLong().coerceIn(1L, maxDelayMs)
-    }
-
-    fun reset() {
-        attempt = 0
-    }
-}
-
-internal class ConnectionEpoch {
-    private var current = 0L
-    private var ended: Long? = null
-
-    fun begin(): Long {
-        current++
-        ended = null
-        return current
-    }
-
-    fun invalidate() {
-        current++
-        ended = null
-    }
-
-    fun isCurrent(generation: Long): Boolean = generation == current
-
-    fun isEnded(generation: Long): Boolean = generation == ended
-
-    fun markEnded(generation: Long): Boolean {
-        if (!isCurrent(generation) || isEnded(generation)) return false
-        ended = generation
-        return true
-    }
-}
-
-internal class SessionOperationEpoch {
-    private val epoch = AtomicLong()
-
-    fun begin(): Long = epoch.incrementAndGet()
-
-    fun current(): Long = epoch.get()
-
-    fun isCurrent(operation: Long): Boolean = epoch.get() == operation
-}
-
-internal enum class NetworkAvailabilityChange {
-    UNCHANGED,
-    LOST,
-    RESTORED,
-}
-
-internal class NetworkAvailabilityGate(initiallyAvailable: Boolean) {
-    @Volatile private var available = initiallyAvailable
-
-    fun isAvailable(): Boolean = available
-
-    @Synchronized
-    fun update(newValue: Boolean): NetworkAvailabilityChange {
-        if (available == newValue) return NetworkAvailabilityChange.UNCHANGED
-        available = newValue
-        return if (newValue) NetworkAvailabilityChange.RESTORED else NetworkAvailabilityChange.LOST
-    }
-}
-
-internal data class ParsedModelCatalog(
-    val models: List<ModelInfo>,
-    val currentModel: String?,
-)
-
-internal fun parseConfiguredModels(payload: JsonObject?): List<ModelInfo> =
-    payload?.getAsJsonArray("models")?.mapNotNull { element ->
-        val obj = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-        val provider = obj.get("provider")?.takeIf { it.isJsonPrimitive }?.asString
-            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString
-            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val ref = if (id.startsWith("$provider/")) id else "$provider/$id"
-        val alias = obj.get("alias")?.takeIf { it.isJsonPrimitive }?.asString
-            ?.takeIf { it.isNotBlank() }
-        val name = obj.get("name")?.takeIf { it.isJsonPrimitive }?.asString
-            ?.takeIf { it.isNotBlank() }
-        val available = obj.get("available")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: true
-        ModelInfo(ref = ref, provider = provider, id = id, name = alias ?: name ?: ref, available = available)
-    }.orEmpty()
-
-internal fun resolveSessionModelRef(
-    payload: JsonObject?,
-    sessionKey: String,
-    models: List<ModelInfo>,
-): String? {
-    val row = payload?.getAsJsonArray("sessions")?.firstOrNull { element ->
-        element.isJsonObject && element.asJsonObject.get("key")
-            ?.takeIf { it.isJsonPrimitive }?.asString == sessionKey
-    }?.asJsonObject ?: return null
-    val provider = row.get("modelProvider")?.takeIf { it.isJsonPrimitive }?.asString
-        ?.takeIf { it.isNotBlank() } ?: return null
-    val model = row.get("model")?.takeIf { it.isJsonPrimitive }?.asString
-        ?.takeIf { it.isNotBlank() } ?: return null
-    val candidate = if (model.startsWith("$provider/")) model else "$provider/$model"
-    return models.firstOrNull { it.ref == candidate }?.ref
 }
 
 internal fun buildAgentListUpdate(
