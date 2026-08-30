@@ -828,14 +828,16 @@ class OpenClawClient(
 
     private fun refreshActiveHistory(reason: String) {
         val key = _currentSessionKey.value ?: return
-        if (!sessionSync.claimHistoryRefresh()) return
+        val claim = sessionSync.claimHistoryRefresh() ?: return
         val operation = sessionOperationEpoch.current()
         scope.launch {
             try {
-                Log.d(TAG, "Reconciling active session history ($reason)")
-                loadSessionHistoryNow(key, operation)
+                do {
+                    Log.d(TAG, "Reconciling active session history ($reason)")
+                    loadSessionHistoryNow(key, operation)
+                } while (sessionSync.completeHistoryRefreshCycle(claim))
             } finally {
-                sessionSync.completeHistoryRefresh()
+                sessionSync.releaseHistoryRefresh(claim)
             }
         }
     }
