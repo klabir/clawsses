@@ -44,10 +44,14 @@ internal object OpenClawChatHistoryParser {
         val timestamp = message.get("timestamp")
             ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
             ?.asLong ?: 0L
-        val messageId = explicitId?.takeIf(String::isNotBlank)
+        val transcriptMetadata = message.get("__openclaw")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+        val messageId = transcriptMetadata?.primitiveString("id")?.takeIf(String::isNotBlank)
             ?: listOf("id", "messageId", "clientMessageId")
                 .firstNotNullOfOrNull { name -> message.primitiveString(name) }
                 ?.takeIf(String::isNotBlank)
+            ?: explicitId?.takeIf(String::isNotBlank)
         return ChatMessage(
             id = stableHistoryMessageId(
                 sessionKey = sessionKey,

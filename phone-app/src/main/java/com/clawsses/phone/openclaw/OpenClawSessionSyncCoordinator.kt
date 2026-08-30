@@ -6,6 +6,8 @@ import java.util.LinkedHashMap
 
 /** Pure state holder for session-scoped subscriptions and transcript reconciliation. */
 internal class OpenClawSessionSyncCoordinator {
+    class HistoryRefreshClaim internal constructor(internal val id: Long)
+
     data class SubscriptionTarget(
         val sessionKey: String,
         val previousSubscribedKey: String?,
@@ -24,7 +26,9 @@ internal class OpenClawSessionSyncCoordinator {
     private var activeSessionKey: String? = null
     private var subscribedSessionKey: String? = null
     private var lastMessageSeq: Long? = null
-    private var historyRefreshClaimed = false
+    private var nextHistoryRefreshClaimId = 0L
+    private var activeHistoryRefreshClaimId: Long? = null
+    private var historyRefreshPending = false
     private var catalogRefreshClaimed = false
     private val optimisticMessages = LinkedHashMap<String, OptimisticMessage>()
 
@@ -32,7 +36,8 @@ internal class OpenClawSessionSyncCoordinator {
     fun resetConnection() {
         subscribedSessionKey = null
         lastMessageSeq = null
-        historyRefreshClaimed = false
+        activeHistoryRefreshClaimId = null
+        historyRefreshPending = false
         catalogRefreshClaimed = false
     }
 
@@ -40,7 +45,8 @@ internal class OpenClawSessionSyncCoordinator {
     fun activate(sessionKey: String): SubscriptionTarget {
         activeSessionKey = sessionKey
         lastMessageSeq = null
-        historyRefreshClaimed = false
+        activeHistoryRefreshClaimId = null
+        historyRefreshPending = false
         optimisticMessages.entries.removeAll { it.value.sessionKey != sessionKey }
         return SubscriptionTarget(sessionKey, subscribedSessionKey?.takeIf { it != sessionKey })
     }
@@ -80,15 +86,32 @@ internal class OpenClawSessionSyncCoordinator {
     }
 
     @Synchronized
-    fun claimHistoryRefresh(): Boolean {
-        if (historyRefreshClaimed) return false
-        historyRefreshClaimed = true
-        return true
+    fun claimHistoryRefresh(): HistoryRefreshClaim? {
+        if (activeHistoryRefreshClaimId != null) {
+            historyRefreshPending = true
+            return null
+        }
+        val claimId = ++nextHistoryRefreshClaimId
+        activeHistoryRefreshClaimId = claimId
+        return HistoryRefreshClaim(claimId)
     }
 
     @Synchronized
-    fun completeHistoryRefresh() {
-        historyRefreshClaimed = false
+    fun completeHistoryRefreshCycle(claim: HistoryRefreshClaim): Boolean {
+        if (activeHistoryRefreshClaimId != claim.id) return false
+        if (historyRefreshPending) {
+            historyRefreshPending = false
+            return true
+        }
+        activeHistoryRefreshClaimId = null
+        return false
+    }
+
+    @Synchronized
+    fun releaseHistoryRefresh(claim: HistoryRefreshClaim) {
+        if (activeHistoryRefreshClaimId != claim.id) return
+        activeHistoryRefreshClaimId = null
+        historyRefreshPending = false
     }
 
     @Synchronized
@@ -124,6 +147,9 @@ internal object SessionMessageEventParser {
             ?.takeIf { it.isJsonObject }
             ?.asJsonObject
             ?: return null
+        val transcriptMetadata = rawMessage.get("__openclaw")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
         val message = OpenClawChatHistoryParser.parseMessage(
             sessionKey = sessionKey,
             message = rawMessage,
@@ -132,9 +158,13 @@ internal object SessionMessageEventParser {
         return ParsedSessionMessage(
             sessionKey = sessionKey,
             message = message,
-            idempotencyKey = rawMessage.primitiveString("idempotencyKey")
-                ?: payload.primitiveString("idempotencyKey"),
-            messageSeq = payload.primitiveLong("messageSeq") ?: rawMessage.primitiveLong("seq"),
+            idempotencyKey = transcriptMetadata?.primitiveString("idempotencyKey")
+                ?: rawMessage.primitiveString("idempotencyKey")
+                ?: payload.primitiveString("idempotencyKey")
+                ?: payload.primitiveString("clientRunId"),
+            messageSeq = transcriptMetadata?.primitiveLong("seq")
+                ?: rawMessage.primitiveLong("seq")
+                ?: payload.primitiveLong("messageSeq"),
         )
     }
 

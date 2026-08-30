@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## 1.3.116 (build 125)
+
+### Fixed
+
+- Queue one bounded trailing history reconciliation when transcript invalidation arrives while an
+  authoritative history refresh is already running.
+- Isolate refresh ownership with unique claims so reconnects and session switches reject stale
+  refresh completions without clearing newer work.
+
+## 1.3.115 (build 124)
+
+### Fixed
+
+- Read canonical message ID, idempotency key, and sequence from the gateway's persisted
+  `message.__openclaw` metadata before using direct-message or envelope fallbacks.
+- Preserve the same canonical message identity in live session events and authoritative history so
+  an optimistic Glasses message can be replaced by its durable echo without a duplicate row.
+
 ## 1.3.114 (build 123)
 
 ### Added

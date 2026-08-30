@@ -8,19 +8,19 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.114` / Build `123` candidate
-- Release commit: none; Build 123 source is intentionally uncommitted pending final hardware verification
-- Base main: `f472f28`
-- Release branch: `build/123-cross-client-session-sync` (local only)
-- Publication status: Builds `119`–`122` are committed locally but are not pushed or merged;
-  Build 123 is an uncommitted local candidate and all private APKs remain unpublished.
+- Version: `1.3.116` / Build `125` source candidate
+- Release commit: none; Builds 124–125 remain uncommitted pending the final Build-125 gate
+- Base main: `7b6ec26`
+- Release branch: `build/124-session-identity` (local cumulative Builds 124–125 worktree)
+- Publication status: Build 123 source is merged and pushed on `main`; Builds 124–125 are
+  uncommitted local candidates and all private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
 ## Release commit stack
 
-- Builds `119`–`122` are cumulative release commits: `277f4f7`, `d87cfb2`, `a9885b5`,
-  `c269283`.
+- Builds `119`–`123` are integrated on `main` by merge commit `7b6ec26`; the Build-123 source commit
+  is `3243648` and includes the cumulative Builds 119–122 commits.
 - The complete 220-task public paired-release gate passed for Build 123. Its private Phone/HUD
   artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the standalone
   private HUD APK.
@@ -39,8 +39,8 @@ Last verified: 2026-08-30
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 123 source is uncommitted, local, and unpublished; private APKs remain unpublished.
-- The Build-119–122 commits contain no APKs or credentials.
+- Build 123 source is merged and published on `main`; private APKs remain unpublished.
+- The Build-119–123 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
 
@@ -111,7 +111,7 @@ with `adb devices -l` and collect a fresh version handshake.
 - These builds are structural refactors with behavior gates; no runtime performance improvement is
   claimed without a same-device benchmark.
 
-## Build 123 candidate changes
+## Build 123 release changes
 
 - Advertise session-scoped event support, subscribe to broad session changes, and subscribe to the
   active session transcript before taking an authoritative history snapshot.
@@ -120,6 +120,23 @@ with `adb devices -l` and collect a fresh version handshake.
 - Refresh authoritative history after terminal runs, sequence gaps, reconnects, and identity-only
   transcript invalidations while coalescing duplicate refresh triggers.
 - The repository has 312 checked-in `@Test` cases across JVM and instrumentation sources.
+
+## Build 124 candidate changes
+
+- Read persisted transcript identity, idempotency, and sequence from the gateway's canonical
+  `message.__openclaw` metadata before using legacy direct fields or envelope fallbacks.
+- Preserve one canonical ID across live events and history so optimistic Glasses messages can be
+  replaced without a transient duplicate.
+- Test against the gateway's actual nested metadata shape instead of a simplified local fixture.
+
+## Build 125 candidate changes
+
+- Retain exactly one trailing authoritative-history refresh when one or more invalidations arrive
+  during an active refresh.
+- Use unique refresh claims so stale completion after reconnect or session replacement cannot
+  release or suppress newer reconciliation work.
+- Cover the real gateway payload through parsing, optimistic correlation, and bounded-store
+  replacement in one regression test.
 
 ## Current code rating
 
