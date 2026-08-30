@@ -5,8 +5,6 @@ on:
   push:
     branches:
       - main
-      - 'build/**'
-      - 'refactor/**'
   workflow_dispatch:
 
 permissions:
@@ -77,7 +75,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run phone instrumentation tests
+      - name: Run Android instrumentation tests
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 35
@@ -85,4 +83,4 @@ jobs:
           arch: x86_64
           profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: ./gradlew :phone-app:connectedDebugAndroidTest --no-daemon
+          script: ./gradlew :phone-app:connectedDebugAndroidTest :glasses-app:connectedDebugAndroidTest --no-daemon

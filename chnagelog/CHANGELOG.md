@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 1.3.105 (build 114)
+
+### Added
+
+- Run Phone and HUD Compose instrumentation contracts on the API-35 CI emulator.
+- Cover updater success, retry, pending-verification, and cancellation surfaces with UI tests.
+
+### Changed
+
+- Run branch validation through pull requests or explicit workflow dispatch while retaining the
+  post-merge `main` gate, avoiding duplicate push and pull-request executions for the same branch.
+
 ## 1.3.104 (build 113)
 
 ### Changed
