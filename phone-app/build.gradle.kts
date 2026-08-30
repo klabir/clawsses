@@ -541,5 +541,14 @@ val generatePairedReleaseEvidence = tasks.register<GeneratePairedReleaseEvidence
 tasks.register("verifyPairedRelease") {
     group = "verification"
     description = "Runs the full source gate and emits paired public-release evidence."
-    dependsOn("check", generatePairedReleaseEvidence)
+    dependsOn(
+        "check",
+        generatePairedReleaseEvidence,
+        ":glasses-app:testReleaseUnitTest",
+        ":glasses-app:lintDebug",
+        ":shared:testReleaseUnitTest",
+        ":shared:lintDebug",
+        ":releaseUnitTestCoverageReport",
+        ":verifyReleaseUnitTestCoverage",
+    )
 }

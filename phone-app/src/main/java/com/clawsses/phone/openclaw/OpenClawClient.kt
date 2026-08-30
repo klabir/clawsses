@@ -114,7 +114,6 @@ class OpenClawClient(
     // Gateway deltas already carry the full immutable text. Retain that String directly instead
     // of copying the whole response into a StringBuilder for every delta.
     private var streamingContent by chatRun::streamingContent
-    private val streamUpdateBuffer get() = chatRun.streamUpdateBuffer
     private var lastAgentPhase by chatRun::lastAgentPhase
     private var agentProgressActive by chatRun::agentProgressActive
 
@@ -166,6 +165,21 @@ class OpenClawClient(
 
     // Challenge nonce for auth handshake
     private var challengeNonce by transport::challengeNonce
+
+    private val streamPublisher = OpenClawStreamPublisher(
+        publicationIntervalMs = STREAM_PUBLICATION_INTERVAL_MS,
+        schedule = { delayMs, publication ->
+            scope.launch {
+                delay(delayMs)
+                publication()
+            }
+        },
+        publish = { update ->
+            onChatStream?.invoke(ChatStream(id = update.messageId, chunk = update.chunk))
+            updateStreamingMessage(update.messageId, update.fullText)
+        },
+        buffer = chatRun.streamUpdateBuffer,
+    )
 
     init {
         networkMonitor?.start { available -> handleNetworkAvailability(available) }
@@ -389,7 +403,7 @@ class OpenClawClient(
                 activeRunId = idempotencyKey
                 abortingRunId = null
                 streamingContent = ""
-                streamUpdateBuffer.reset()
+                streamPublisher.reset()
                 lastAgentPhase = null
 
                 val response = sendRequest(OpenClawMethods.CHAT_SEND, params)
@@ -1039,14 +1053,14 @@ class OpenClawClient(
                 streamingContent = plan.fullText
                 clearAgentProgress()
                 updateRunState(RunState.STREAMING)
-                enqueueStreamingUpdate(plan.messageId, plan.fullText, plan.newChunk)
+                streamPublisher.enqueue(plan.messageId, plan.fullText, plan.newChunk)
             }
             is ChatEventPlan.Final -> {
                 if (plan.newChunk != null) {
                     streamingContent = plan.fullText
-                    enqueueStreamingUpdate(plan.messageId, plan.fullText, plan.newChunk)
+                    streamPublisher.enqueue(plan.messageId, plan.fullText, plan.newChunk)
                 }
-                flushPendingStreamingUpdate()
+                streamPublisher.flush()
                 finalizeStreaming("final")
             }
             is ChatEventPlan.Terminal -> {
@@ -1111,20 +1125,6 @@ class OpenClawClient(
                 sessionSync.completeCatalogRefresh()
             }
         }
-    }
-
-    private fun enqueueStreamingUpdate(messageId: String, fullText: String, chunk: String) {
-        if (!streamUpdateBuffer.offer(messageId, fullText, chunk)) return
-        scope.launch {
-            delay(STREAM_PUBLICATION_INTERVAL_MS)
-            flushPendingStreamingUpdate()
-        }
-    }
-
-    private fun flushPendingStreamingUpdate() {
-        val update = streamUpdateBuffer.drain() ?: return
-        onChatStream?.invoke(ChatStream(id = update.messageId, chunk = update.chunk))
-        updateStreamingMessage(update.messageId, update.fullText)
     }
 
     private fun finalizeStreaming(terminalState: String, errorMessage: String? = null) {

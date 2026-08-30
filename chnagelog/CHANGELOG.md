@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## 1.3.120 (build 129)
+
+### Changed
+
+- Move bounded-rate Phone stream publication scheduling out of `OpenClawClient` into a directly
+  tested publisher while retaining coroutine ownership in the client.
+- Move HUD stream accumulation decisions and model soft-wrap normalization out of `HudActivity`
+  into deterministic tested controllers while retaining lifecycle jobs in the Activity.
+
+### Fixed
+
+- Preserve line breaks inside fenced Markdown code blocks instead of treating code lines as model
+  soft wraps.
+
+## 1.3.119 (build 128)
+
+### Added
+
+- Generate one JaCoCo report for deterministic Phone, HUD, and shared release logic and require at
+  least 70 percent aggregate line coverage.
+
+### Changed
+
+- Run HUD and shared release JVM tests, HUD/shared lint, and coverage verification from the paired
+  release gate instead of relying on separate manual commands.
+- Disable Android cloud backup and device transfer explicitly through Android 12 data-extraction
+  rules in both applications.
+
+### Fixed
+
+- Persist HUD preferences asynchronously during Activity teardown instead of blocking the main
+  thread on a synchronous preference commit.
+
 ## 1.3.118 (build 127)
 
 ### Changed
