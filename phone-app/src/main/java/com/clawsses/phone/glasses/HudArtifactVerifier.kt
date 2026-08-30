@@ -45,6 +45,19 @@ internal object HudArtifactPreflight {
         )
     }
 
+    fun format(manifest: HudArtifactManifest): String =
+        """
+        {
+          "schemaVersion": ${manifest.schemaVersion},
+          "fileName": "${manifest.fileName}",
+          "applicationId": "${manifest.applicationId}",
+          "versionCode": ${manifest.versionCode},
+          "versionName": "${manifest.versionName}",
+          "sha256": "${manifest.sha256}",
+          "signerPolicy": "${manifest.signerPolicy}"
+        }
+        """.trimIndent() + "\n"
+
     fun verify(manifest: HudArtifactManifest, observed: HudArtifactObservation) {
         check(manifest.schemaVersion == SUPPORTED_SCHEMA) {
             "Unsupported HUD artifact manifest schema ${manifest.schemaVersion}."

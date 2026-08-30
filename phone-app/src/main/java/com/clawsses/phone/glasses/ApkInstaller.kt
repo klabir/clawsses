@@ -82,6 +82,9 @@ class ApkInstaller(
     private var installJob: Job? = null
     private val hiRokidInstaller = HiRokidInstaller(context, glassesManager)
     private val hudArtifactVerifier = HudArtifactVerifier(context)
+    private val lastKnownGoodStore = HudLastKnownGoodStore(
+        File(context.filesDir, "hud-last-known-good"),
+    )
 
     init {
         scope.launch {
@@ -265,9 +268,7 @@ class ApkInstaller(
                 transactionStore.advance(InstallerPhase.PREPARING_APK)
                 _installState.value = InstallState.PreparingApk
                 val apkFile = withContext(Dispatchers.IO) {
-                    extractApkFromAssets()
-                        ?.also(hudArtifactVerifier::verify)
-                        ?: throw IllegalStateException("Bundled glasses APK is missing.")
+                    prepareBundledApk()
                 }
                 val receipt = hiRokidInstaller.install(apkFile, token) { message ->
                     transactionStore.advance(InstallerPhase.CONNECTING)
@@ -340,8 +341,14 @@ class ApkInstaller(
         installerPreferences.edit().remove(KEY_PENDING_PEER_BUILD).apply()
     }
 
-    private fun markPeerVerified(expectedBuild: Int) {
+    private suspend fun markPeerVerified(expectedBuild: Int) {
         if (pendingPeerBuild() != expectedBuild) return
+        runCatching {
+            withContext(Dispatchers.IO) {
+                lastKnownGoodStore.promote(expectedBuild.toLong())
+            }
+        }
+            .onFailure { error -> Log.w(TAG, "Could not retain verified HUD recovery artifact", error) }
         clearPendingPeerBuild()
         val route = transactionStore.active()?.route?.label ?: "installer"
         transactionStore.clear()
@@ -353,9 +360,7 @@ class ApkInstaller(
     private suspend fun doSdkInstall() = withContext(Dispatchers.IO) {
         transactionStore.advance(InstallerPhase.PREPARING_APK)
         // Step 1: Prepare APK
-        val apkFile = extractApkFromAssets()
-            ?: throw Exception("No APK found. Ensure glasses-app-release.apk is bundled.")
-        hudArtifactVerifier.verify(apkFile)
+        val apkFile = prepareBundledApk()
 
         Log.d(TAG, "APK prepared: ${apkFile.absolutePath} (${apkFile.length() / 1024} KB)")
 
@@ -622,6 +627,14 @@ class ApkInstaller(
             Log.e(TAG, "Error extracting APK from assets", e)
             null
         }
+    }
+
+    private fun prepareBundledApk(): File {
+        val apk = extractApkFromAssets()
+            ?: throw IllegalStateException("Bundled glasses APK is missing.")
+        val manifest = hudArtifactVerifier.verify(apk)
+        lastKnownGoodStore.stage(apk, manifest)
+        return apk
     }
 
     private fun cleanupTempApk() {

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 1.3.102 (build 111)
+
+### Added
+
+- Retain exactly one hash-verified HUD artifact only after its matching live build handshake.
+- Keep an independently bounded candidate across process restart until verification promotes it to
+  last-known-good state.
+
+### Security
+
+- Explicitly reject automatic rollback for both CXR-M and Hi Rokid because neither verified vendor
+  API exposes a safe downgrade contract. No uninstall-based fallback is attempted.
+
 ## 1.3.101 (build 110)
 
 ### Added
