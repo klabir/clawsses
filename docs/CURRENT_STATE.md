@@ -87,7 +87,7 @@ with `adb devices -l` and collect a fresh version handshake.
   including stale runs, inactive-session unread state, abort races, and terminal cleanup.
 - Build 118 moves the session/model/agent picker overlays from `HudScreen.kt` into
   `HudPickerOverlays.kt`; `HudScreen.kt` is now 1,595 lines and `OpenClawClient.kt` is 1,345 lines.
-- The candidate has 279 checked-in `@Test` cases across JVM and instrumentation sources. The full
+- The release has 280 checked-in `@Test` cases across JVM and instrumentation sources. The full
   public `verifyPairedRelease` gate passed at every candidate stage.
 
 ## Platform contracts

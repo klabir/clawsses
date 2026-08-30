@@ -40,7 +40,7 @@ class HudScreenContractTest {
     }
 
     @Test
-    fun modelAndAgentOverlaysExposeCatalogItems() {
+    fun modelOverlayExposesCatalogItems() {
         setHud(
             ChatHudState(
                 showModelPicker = true,
@@ -53,7 +53,10 @@ class HudScreenContractTest {
         composeTestRule.onNodeWithText("SELECT MODEL").assertIsDisplayed()
         composeTestRule.onNodeWithText("Codex").assertIsDisplayed()
         composeTestRule.onNodeWithText("● CURRENT").assertIsDisplayed()
+    }
 
+    @Test
+    fun agentOverlayExposesCatalogItems() {
         setHud(
             ChatHudState(
                 showAgentPicker = true,
