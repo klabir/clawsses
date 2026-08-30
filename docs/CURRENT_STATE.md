@@ -17,10 +17,26 @@ Last verified: 2026-08-30
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
+## Active release candidate
+
+- Version: `1.3.109` / Build `118`
+- Candidate commit: `6d67977`
+- Working branch: `build/118-hud-ui-components` (local, not pushed or merged)
+- Builds `114`–`118` are cumulative local commits: `6af1bf9`, `0f32553`, `ac4949f`,
+  `1b2f137`, `6d67977`.
+- The complete public paired-release gate is green. Private Phone/HUD artifacts have matching
+  signers, and the embedded HUD APK is byte-identical to the standalone private HUD APK.
+- The Pixel runs Build `118`, but the final HUD installation and matching `118/118` runtime
+  handshake remain blocked until the sleeping Rokid CXR beacon advertises to the official Hi
+  Rokid installer. Build `118` is therefore not yet the verified paired release.
+
 ## Verified hardware state
 
-- The connected Pixel phone and Rokid HUD both run the private hardware-test build `1.3.104` /
-  Build `113` from local commit `76e00ef`.
+- The connected Pixel phone runs private hardware-test build `1.3.109` / Build `118`; its install,
+  cold launch, resumed Activity, live process, and package version were verified.
+- The Rokid HUD remains on the last verified private hardware-test build `1.3.104` / Build `113`.
+  The official Hi Rokid association dialog currently sees no advertising device, even though the
+  Android bond can persist while the proprietary beacon sleeps.
 - The Phone installation, cold launch, resumed Activity, live process, official Hi Rokid/CXR-L HUD
   upload, install, launch, and fresh matching `113/113` peer handshake were verified.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
@@ -65,6 +81,22 @@ with `adb devices -l` and collect a fresh version handshake.
   version `1.3.104`, with a match-host signer policy. The matching runtime handshake was confirmed
   after the official CXR-L installation.
 
+## Build 114–118 candidate changes
+
+- Build 114 adds API-35 instrumentation regression coverage for both Phone and HUD and runs both
+  suites in the Android CI emulator job. The suites compile locally; execution awaits CI because
+  only the physical release-test phone is connected.
+- Build 115 moves typed Phone-to-HUD decoding, replay detection, ACK policy, and malformed-message
+  handling out of `HudActivity` into a tested `HudPhoneMessageController`.
+- Build 116 moves OpenClaw agent/model catalog and session-page projection into the tested
+  `OpenClawCatalogSessionComponent`.
+- Build 117 makes OpenClaw chat-event decisions explicit and tested in `OpenClawChatRunComponent`,
+  including stale runs, inactive-session unread state, abort races, and terminal cleanup.
+- Build 118 moves the session/model/agent picker overlays from `HudScreen.kt` into
+  `HudPickerOverlays.kt`; `HudScreen.kt` is now 1,595 lines and `OpenClawClient.kt` is 1,345 lines.
+- The candidate has 279 checked-in `@Test` cases across JVM and instrumentation sources. The full
+  public `verifyPairedRelease` gate passed at every candidate stage.
+
 ## Platform contracts
 
 - Phone: compile SDK 35, target SDK 35, minimum SDK 28.
@@ -105,6 +137,9 @@ For source changes, run the narrowest modified tests and then:
 
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
+
+Build `118` still requires the final official CXR-L HUD installation and fresh matching `118/118`
+runtime handshake before promoting it from candidate to current release.
 
 ## New-session resume prompt
 
