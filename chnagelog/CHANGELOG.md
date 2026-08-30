@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## 1.3.109 (build 118)
+
+### Changed
+
+- Split session, model, and agent picker overlays from the primary HUD chat surface into a
+  dedicated Compose component file.
+- Preserve picker layout, focus, navigation labels, and visible state contracts while reducing
+  the primary `HudScreen` source by more than four hundred lines.
+
+## 1.3.108 (build 117)
+
+### Changed
+
+- Route gateway chat events through a tested chat-run planner before mutating streaming state.
+- Make stale-run rejection, inactive-session unread handling, abort races, and terminal cleanup
+  explicit decisions owned by the chat-run component.
+
+## 1.3.107 (build 116)
+
+### Changed
+
+- Move session-page projection, agent catalog parsing, model fallback selection, and agent-list
+  projection into the catalog/session component behind the stable `OpenClawClient` facade.
+- Keep gateway methods and callback payloads unchanged while making catalog decisions directly
+  testable without a WebSocket.
+
+## 1.3.106 (build 115)
+
+### Changed
+
+- Move Phone-to-HUD decoding, bounded transaction replay detection, and transport
+  acknowledgments behind a tested ingress controller.
+- Keep typed HUD effects injected into the controller so failed effects remain replayable and are
+  never acknowledged as successfully applied.
+
+## 1.3.105 (build 114)
+
+### Added
+
+- Run Phone and HUD Compose instrumentation contracts on the API-35 CI emulator.
+- Cover updater success, retry, pending-verification, and cancellation surfaces with UI tests.
+
+### Changed
+
+- Run branch validation through pull requests or explicit workflow dispatch while retaining the
+  post-merge `main` gate, avoiding duplicate push and pull-request executions for the same branch.
+
 ## 1.3.104 (build 113)
 
 ### Changed

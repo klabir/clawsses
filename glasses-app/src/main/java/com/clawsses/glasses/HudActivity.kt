@@ -25,9 +25,7 @@ import com.clawsses.glasses.camera.PhotoCaptureState
 import com.clawsses.glasses.input.GestureHandler
 import com.clawsses.glasses.media.ThumbnailBitmapCache
 import com.clawsses.glasses.media.ThumbnailHandle
-import com.clawsses.glasses.protocol.PhoneHudDecodeResult
 import com.clawsses.glasses.protocol.PhoneHudMessage
-import com.clawsses.glasses.protocol.PhoneHudMessageCodec
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.input.ModelPageSelection
 import com.clawsses.glasses.input.ModelPickerMove
@@ -38,8 +36,9 @@ import com.clawsses.glasses.orchestration.HudGestureRouter
 import com.clawsses.glasses.orchestration.HudGestureTarget
 import com.clawsses.glasses.orchestration.HudKeyRouter
 import com.clawsses.glasses.orchestration.HudLifecycleRouter
+import com.clawsses.glasses.orchestration.HudPhoneMessageController
+import com.clawsses.glasses.orchestration.HudPhoneMessageResult
 import com.clawsses.glasses.orchestration.HudRuntimeMetrics
-import com.clawsses.glasses.orchestration.HudTransportTransactionTracker
 import com.clawsses.glasses.service.PhoneConnectionService
 import com.clawsses.glasses.state.HudStateEvent
 import com.clawsses.glasses.state.HudHistorySnapshotAssembler
@@ -149,8 +148,16 @@ class HudActivity : ComponentActivity() {
     // History snapshots arrive as multiple CXR-safe commands. Keep assembly separate
     // from visible HUD state and swap it in only after the matching end marker arrives.
     private val historySnapshotAssembler = HudHistorySnapshotAssembler()
-    private val processedTransportTransactions = HudTransportTransactionTracker()
     private val runtimeMetrics = HudRuntimeMetrics()
+    private val phoneMessageController by lazy {
+        HudPhoneMessageController(
+            metrics = runtimeMetrics,
+            acknowledge = { transactionId ->
+                sendCommand(GlassesCommand.TransportAck(transactionId))
+            },
+            deliver = ::handleTypedPhoneMessage,
+        )
+    }
 
     // Coroutine to clear newPrependCount after fade-in animations complete
     private var clearPrependJob: Job? = null
@@ -1511,38 +1518,22 @@ class HudActivity : ComponentActivity() {
     // ============== Phone Message Handling ==============
 
     private fun handlePhoneMessage(json: String) {
-        runtimeMetrics.recordPhoneMessage()
-        try {
-            Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
-            when (val decoded = PhoneHudMessageCodec.decode(json)) {
-                is PhoneHudDecodeResult.Success -> {
-                    val transactionId = decoded.envelope.transactionId
-                    if (transactionId != null &&
-                        processedTransportTransactions.contains(transactionId)
-                    ) {
-                        runtimeMetrics.recordDuplicateTransaction()
-                        acknowledgeTransport(transactionId)
-                        return
-                    }
-                    handleTypedPhoneMessage(decoded.envelope.message)
-                    if (transactionId != null) recordAndAcknowledgeTransport(transactionId)
-                }
-                is PhoneHudDecodeResult.Malformed -> {
-                    runtimeMetrics.recordMalformedMessage()
-                    Log.w(
-                        GlassesApp.TAG,
-                        "Rejected malformed phone message type=${decoded.type}: ${decoded.reason}",
-                    )
-                    decoded.transactionId?.let(::recordAndAcknowledgeTransport)
-                }
-                is PhoneHudDecodeResult.UnknownType -> {
-                    Log.d(GlassesApp.TAG, "Unknown message type: ${decoded.type}")
-                    decoded.transactionId?.let(::recordAndAcknowledgeTransport)
-                }
-            }
-        } catch (error: Exception) {
-            runtimeMetrics.recordMalformedMessage()
-            Log.e(GlassesApp.TAG, "Error handling phone message (${json.length} chars)", error)
+        Log.d(GlassesApp.TAG, "Handling phone message (${json.length} chars)")
+        when (val result = phoneMessageController.accept(json)) {
+            HudPhoneMessageResult.Delivered -> Unit
+            is HudPhoneMessageResult.Duplicate ->
+                Log.d(GlassesApp.TAG, "Acknowledged duplicate transport transaction")
+            is HudPhoneMessageResult.Malformed -> Log.w(
+                GlassesApp.TAG,
+                "Rejected malformed phone message type=${result.type}: ${result.reason}",
+            )
+            is HudPhoneMessageResult.Unknown ->
+                Log.d(GlassesApp.TAG, "Unknown message type: ${result.type}")
+            is HudPhoneMessageResult.HandlerFailed -> Log.e(
+                GlassesApp.TAG,
+                "Error applying phone message (${json.length} chars)",
+                result.error,
+            )
         }
     }
 
@@ -1959,15 +1950,6 @@ class HudActivity : ComponentActivity() {
             width = width,
             height = height,
         )
-
-    private fun acknowledgeTransport(transactionId: String) {
-        sendCommand(GlassesCommand.TransportAck(transactionId))
-    }
-
-    private fun recordAndAcknowledgeTransport(transactionId: String) {
-        processedTransportTransactions.record(transactionId)
-        acknowledgeTransport(transactionId)
-    }
 
     private fun publishStreamingMessage() {
         streamingAccumulator.snapshotIfChanged()?.let {

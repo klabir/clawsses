@@ -1,8 +1,10 @@
 package com.clawsses.phone.openclaw
 
 import com.clawsses.shared.AgentInfo
+import com.clawsses.shared.AgentListUpdate
 import com.clawsses.shared.ModelInfo
 import com.clawsses.shared.SessionInfo
+import com.clawsses.shared.SessionListUpdate
 import com.google.gson.JsonObject
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.atomic.AtomicLong
@@ -51,6 +53,58 @@ internal class OpenClawCatalogSessionComponent {
                 kind = obj.get("kind")?.takeIf { !it.isJsonNull }?.asString,
             )
         }.orEmpty()
+
+    fun sessionPage(payload: JsonObject?, offset: Int): SessionListUpdate {
+        val sessions = parseSessions(payload)
+        val requestLimit = SessionRequestFactory.pageRequestLimit(offset)
+        val hasMore = payload?.get("hasMore")?.takeIf { it.isJsonPrimitive }?.asBoolean
+            ?: (sessions.size == requestLimit)
+        val nextOffset = payload?.get("nextOffset")
+            ?.takeIf { it.isJsonPrimitive }
+            ?.asInt
+            ?: if (hasMore) offset + sessions.size else null
+        return SessionListUpdate(
+            sessions = SessionRequestFactory.pageItems(
+                sessions = sessions,
+                offset = offset,
+                homeSessionKey = homeSessionKey,
+                unreadSessionKeys = unreadSessions.value,
+            ),
+            offset = offset,
+            nextOffset = nextOffset,
+            hasMore = hasMore,
+        )
+    }
+
+    fun applyAgentCatalog(payload: JsonObject?): String? {
+        val parsed = parseAgentCatalog(payload)
+        agentList.value = parsed.agents
+        return parsed.defaultAgentId
+    }
+
+    fun applyModelCatalog(models: List<ModelInfo>, sessionModel: String?): ParsedModelCatalog {
+        val sessionKey = currentSessionKey.value
+        val agentModel = agentList.value
+            .firstOrNull { it.id == SessionRequestFactory.agentIdFromSessionKey(sessionKey) }
+            ?.model
+            ?.takeIf { candidate -> models.any { it.ref == candidate } }
+        return ParsedModelCatalog(
+            models = models,
+            currentModel = sessionModel ?: agentModel ?: currentModelRef.value,
+        ).also { catalog ->
+            modelList.value = catalog.models
+            currentModelRef.value = catalog.currentModel
+            modelSelectionError.value = null
+        }
+    }
+
+    fun currentAgentListUpdate(defaultAgentId: String? = null): AgentListUpdate =
+        buildAgentListUpdate(
+            agents = agentList.value,
+            currentAgentId = SessionRequestFactory.agentIdFromSessionKey(currentSessionKey.value)
+                ?: defaultAgentId,
+            currentModelRef = currentModelRef.value,
+        )
 }
 
 internal class SessionOperationEpoch {
@@ -65,6 +119,39 @@ internal data class ParsedModelCatalog(
     val models: List<ModelInfo>,
     val currentModel: String?,
 )
+
+internal data class ParsedAgentCatalog(
+    val agents: List<AgentInfo>,
+    val defaultAgentId: String?,
+)
+
+internal fun parseAgentCatalog(payload: JsonObject?): ParsedAgentCatalog {
+    val agents = payload?.getAsJsonArray("agents")?.mapNotNull { element ->
+        val obj = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+        val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val identity = obj.get("identity")?.takeIf { it.isJsonObject }?.asJsonObject
+        val identityName = identity?.get("name")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() }
+        val configuredName = obj.get("name")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() }
+        val emoji = identity?.get("emoji")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.takeIf { it.isNotBlank() && it != "(not set)" }
+        var name = configuredName ?: identityName ?: id
+        if (emoji != null && !name.contains(emoji)) name = "$emoji $name"
+        val modelElement = obj.get("model")
+        val model = when {
+            modelElement == null -> null
+            modelElement.isJsonPrimitive -> modelElement.asString
+            modelElement.isJsonObject -> modelElement.asJsonObject.get("primary")
+                ?.takeIf { it.isJsonPrimitive }?.asString
+            else -> null
+        }
+        AgentInfo(id = id, name = name, model = model)
+    }.orEmpty()
+    val defaultAgentId = payload?.get("defaultId")?.takeIf { it.isJsonPrimitive }?.asString
+    return ParsedAgentCatalog(agents, defaultAgentId)
+}
 
 internal fun parseConfiguredModels(payload: JsonObject?): List<ModelInfo> =
     payload?.getAsJsonArray("models")?.mapNotNull { element ->

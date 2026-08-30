@@ -8,25 +8,34 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.104` / Build `113`
-- Release commit: `76e00ef`
-- Handoff commit: `32c81f6`
-- Main merge: `649cc06047ee3d93c965d248b762f3e8842bf0ed`
-- Release branch: `build/113-openclaw-components` (pushed)
-- Publication status: source pushed and merged into `main`; private APKs remain unpublished.
+- Version: `1.3.109` / Build `118`
+- Release commit: `6d67977`
+- Working branch: `build/118-hud-ui-components` (local, not pushed or merged)
+- Main baseline: `c912c90`; Build `118` integration into `main` is still pending explicit approval.
+- Publication status: source remains local; private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
+## Release commit stack
+
+- Builds `114`–`118` are cumulative local commits: `6af1bf9`, `0f32553`, `ac4949f`,
+  `1b2f137`, `6d67977`.
+- The complete public paired-release gate is green. Private Phone/HUD artifacts have matching
+  signers, and the embedded HUD APK is byte-identical to the standalone private HUD APK.
+- The final official CXR-L install, HUD launch, and fresh matching `118/118` runtime handshake are
+  verified. Source push and merge remain separate, unapproved integration steps.
+
 ## Verified hardware state
 
-- The connected Pixel phone and Rokid HUD both run the private hardware-test build `1.3.104` /
-  Build `113` from local commit `76e00ef`.
+- The connected Pixel phone and Rokid HUD both run private hardware-test build `1.3.109` / Build
+  `118` from local commit `6d67977`.
 - The Phone installation, cold launch, resumed Activity, live process, official Hi Rokid/CXR-L HUD
-  upload, install, launch, and fresh matching `113/113` peer handshake were verified.
+  upload, install, launch, and fresh matching `118/118` peer handshake were verified.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
-- Build 113 source is pushed and merged into `main`; private APKs remain unpublished.
-- The Build-113 commits contain no APKs or credentials.
+- The unrelated `com.rokidapks` utility also remains disabled.
+- Build 118 source is local and unmerged; private APKs remain unpublished.
+- The Build-118 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
 
@@ -64,6 +73,22 @@ with `adb devices -l` and collect a fresh version handshake.
   private HUD APK, and its embedded manifest reports package `com.clawsses.glasses`, Build `113`,
   version `1.3.104`, with a match-host signer policy. The matching runtime handshake was confirmed
   after the official CXR-L installation.
+
+## Build 114–118 candidate changes
+
+- Build 114 adds API-35 instrumentation regression coverage for both Phone and HUD and runs both
+  suites in the Android CI emulator job. The suites compile locally; execution awaits CI because
+  only the physical release-test phone is connected.
+- Build 115 moves typed Phone-to-HUD decoding, replay detection, ACK policy, and malformed-message
+  handling out of `HudActivity` into a tested `HudPhoneMessageController`.
+- Build 116 moves OpenClaw agent/model catalog and session-page projection into the tested
+  `OpenClawCatalogSessionComponent`.
+- Build 117 makes OpenClaw chat-event decisions explicit and tested in `OpenClawChatRunComponent`,
+  including stale runs, inactive-session unread state, abort races, and terminal cleanup.
+- Build 118 moves the session/model/agent picker overlays from `HudScreen.kt` into
+  `HudPickerOverlays.kt`; `HudScreen.kt` is now 1,595 lines and `OpenClawClient.kt` is 1,345 lines.
+- The candidate has 279 checked-in `@Test` cases across JVM and instrumentation sources. The full
+  public `verifyPairedRelease` gate passed at every candidate stage.
 
 ## Platform contracts
 
@@ -105,6 +130,9 @@ For source changes, run the narrowest modified tests and then:
 
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
+
+Build `118` has passed the final official CXR-L HUD installation and fresh matching `118/118`
+runtime handshake. Push and merge require separate explicit approval.
 
 ## New-session resume prompt
 

@@ -49,7 +49,84 @@ internal class OpenClawChatRunComponent(
     fun updateStreaming(messageId: String, fullText: String) =
         chatStore.updateStreaming(messageId, fullText)
 
+    fun plan(event: ParsedChatEvent, currentSessionKey: String?): ChatEventPlan {
+        val runId = event.runId
+        if (runId != null && completedAbortedRuns.containsKey(runId)) return ChatEventPlan.Ignore
+
+        val eventSessionKey = event.sessionKey
+        if (eventSessionKey != null && currentSessionKey != null &&
+            eventSessionKey != currentSessionKey
+        ) {
+            return ChatEventPlan.InactiveSession(
+                sessionKey = eventSessionKey,
+                terminalActiveRun = runId != null && runId == activeRunId && event.state.isTerminal(),
+                terminalState = event.state,
+            )
+        }
+        if (runId != null && activeRunId != null && runId != activeRunId) {
+            return ChatEventPlan.Ignore
+        }
+        val messageId = activeMessageId ?: return ChatEventPlan.Ignore
+        return when (event.state) {
+            "delta" -> {
+                if (runId == abortingRunId || event.fullText.length <= streamingContent.length) {
+                    ChatEventPlan.Ignore
+                } else {
+                    ChatEventPlan.Delta(
+                        messageId = messageId,
+                        fullText = event.fullText,
+                        newChunk = event.fullText.substring(streamingContent.length),
+                    )
+                }
+            }
+            "final" -> {
+                if (runId == abortingRunId) {
+                    ChatEventPlan.Terminal(
+                        messageId = messageId,
+                        state = "aborted",
+                        rememberAbortedRunId = runId,
+                    )
+                } else {
+                    ChatEventPlan.Final(
+                        messageId = messageId,
+                        fullText = event.fullText,
+                        newChunk = event.fullText.takeIf { it.length > streamingContent.length }
+                            ?.substring(streamingContent.length),
+                    )
+                }
+            }
+            "aborted", "error" -> ChatEventPlan.Terminal(
+                messageId = messageId,
+                state = event.state,
+                errorMessage = event.errorMessage,
+                rememberAbortedRunId = runId.takeIf { event.state == "aborted" },
+            )
+            else -> ChatEventPlan.Ignore
+        }
+    }
+
     private companion object {
         const val MAX_COMPLETED_ABORTS = 64
     }
 }
+
+internal sealed interface ChatEventPlan {
+    data object Ignore : ChatEventPlan
+    data class InactiveSession(
+        val sessionKey: String,
+        val terminalActiveRun: Boolean,
+        val terminalState: String,
+    ) : ChatEventPlan
+    data class Delta(val messageId: String, val fullText: String, val newChunk: String) :
+        ChatEventPlan
+    data class Final(val messageId: String, val fullText: String, val newChunk: String?) :
+        ChatEventPlan
+    data class Terminal(
+        val messageId: String,
+        val state: String,
+        val errorMessage: String? = null,
+        val rememberAbortedRunId: String? = null,
+    ) : ChatEventPlan
+}
+
+private fun String.isTerminal(): Boolean = this == "final" || this == "aborted" || this == "error"
