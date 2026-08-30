@@ -8,12 +8,13 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.116` / Build `125` source release
-- Release commit: `ed9e605`; merged to `main` by `f91cbd4`
-- Base main before release: `7b6ec26`
-- Release branch: `build/124-session-identity` (cumulative Builds 124–125 source)
-- Publication status: Build 125 source is merged and pushed on `main`; all private APKs remain
-  unpublished.
+- Version: `1.3.118` / Build `127` paired-device verified
+- Release commit: `1fa8c14` (local only)
+- Base main: `68580c6`
+- Release branch: `build/127-hud-catalog-interactions` (local only), stacked on local Build-126
+  source commit `9f7927f`
+- Publication status: Build 125 source is merged and pushed on `main`; Builds 126-127 remain local
+  and all private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
@@ -22,23 +23,22 @@ Last verified: 2026-08-30
 - Builds `119`–`123` are integrated on `main` by merge commit `7b6ec26`; the Build-123 source commit
   is `3243648` and includes the cumulative Builds 119–122 commits.
 - Builds `124`–`125` are integrated by source commit `ed9e605` and merge commit `f91cbd4`.
+- Build `126` is local source commit `9f7927f`; Build `127` is local source commit `1fa8c14`.
 - The complete 220-task public paired-release source gate passed for Build 125. No Build-125 APK
   was installed because device mutation was not authorized for this source release.
 - The complete 220-task public paired-release gate passed for Build 123. Its private Phone/HUD
   artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the standalone
   private HUD APK.
-- The official Build-123 CXR-L install callback returned success and launched the HUD. Final
-  release verification is still pending a fresh matching `123/123` runtime handshake after the
-  known firmware deep-sleep state is physically cleared.
+- Build 127 passed the complete 220-task source gate and both Pixel Startup Macrobenchmarks. Its
+  private Phone/HUD artifacts have matching v2 signers and a byte-identical embedded HUD APK.
 
 ## Verified hardware state
 
-- The connected Pixel phone runs private hardware-test build `1.3.114` / Build `123`; installation,
-  cold launch, resumed Activity, and live process are verified.
-- The official Hi Rokid/CXR-L HUD upload and install returned `onInstallAppResult:true`, and the
-  installer launched the bundled Build-123 HUD. The subsequent Clawsses ownership handoff is
-  blocked on the glasses' known deep-sleep beacon state, so the fresh `123/123` handshake is not
-  yet verified.
+- The connected Pixel phone runs private hardware-test build `1.3.118` / Build `127`; data-preserving
+  installation, resumed Activity, live process, and restored OpenClaw connection are verified.
+- The official Hi Rokid/CXR-L installer completed the Build-127 HUD upload, installation, and
+  launch. After the known deep-sleep beacon was cleared, Clawsses verified the fresh matching
+  `127/127` runtime handshake.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
@@ -141,19 +141,36 @@ with `adb devices -l` and collect a fresh version handshake.
 - Cover the real gateway payload through parsing, optimistic correlation, and bounded-store
   replacement in one regression test.
 
+## Build 126 candidate changes
+
+- Move active-session subscription, authoritative history reconciliation, refresh ownership, and
+  bounded pagination into `OpenClawActiveSessionRuntime` behind the stable client API.
+- Preserve session epochs and gateway contracts while directly testing subscription replacement,
+  stale history rejection, and bounded expanded-history claims.
+- Reduce `OpenClawClient.kt` from 1,485 to 1,342 lines without changing Phone/HUD protocol or
+  Rokid ownership.
+
+## Build 127 candidate changes
+
+- Move HUD session, model, and agent picker transitions and typed command intents into the pure,
+  tested `HudCatalogInteractionController`.
+- Preserve command/state ordering, bounded session and model pagination, and busy/error picker
+  behavior while retaining transport, CXR, camera, audio, and lifecycle ownership in the Activity.
+- Reduce `HudActivity.kt` from 1,706 to 1,513 lines and raise checked-in test coverage to 331 tests.
+
 ## Current code rating
 
-- Overall: **9.0/10** for the Build-125 source release. Cross-client identity and refresh races are
-  contained behind typed, directly tested reconciliation boundaries, with 316 checked-in tests
-  and the full public paired source gate green. Deployment confidence remains tied to Build 123
-  until Build 125 receives a separately authorized paired-device gate.
-- Architecture: **8.7/10**. Session subscription, message identity, and refresh coalescing now live
-  in a tested coordinator, but `HudActivity` and the 1,480-line `OpenClawClient` remain the principal
-  orchestration hotspots.
-- Maintainability: **8.6/10**. Cross-client edge cases are explicit and directly tested; remaining
-  risk is concentrated in lifecycle-heavy Activity and client orchestration.
-- Performance confidence: **8.4/10**. Hot-path allocations and invalidation boundaries have
-  improved over earlier releases, but Builds 119–122 were not followed by a fresh Macrobenchmark.
+- Overall: **9.2/10** for the paired-device-verified Build 127. Active-session reconciliation and
+  HUD catalog interactions now have dedicated tested owners, with 331 checked-in tests and a
+  matching live `127/127` deployment.
+- Architecture: **9.0/10**. Session subscription, history reconciliation, and HUD picker decisions
+  now live in tested coordinators; `HudActivity` and `OpenClawClient` remain the principal, but
+  substantially smaller, orchestration hotspots.
+- Maintainability: **8.9/10**. Cross-client and picker edge cases are explicit and directly tested;
+  remaining risk is concentrated in lifecycle-heavy Activity and client orchestration.
+- Performance confidence: **8.6/10**. A fresh Build-127 Pixel 9 Pro Macrobenchmark measured median
+  time-to-initial-display of 64.4 ms warm and 261.0 ms cold. No improvement percentage is claimed
+  because the Build-125 baseline disconnected before producing a valid complete result.
 - Security/release discipline: **9.4/10**. Public artifacts remain credential-free, private
   artifacts stay unpublished, signer/hash/version gates match, and temporary Hi Rokid ownership is
   restored after deployment.
@@ -199,10 +216,11 @@ For source changes, run the narrowest modified tests and then:
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
 
-Build `125` has passed the full public source gate and is merged on `main`. Build `123` remains the
-latest installed hardware-test pair and passed private artifact checks, Phone deployment, and the
-official CXR-L HUD installation callback. A fresh matching runtime handshake is still required
-after physically waking the known deep-sleep CXR beacon; Build 125 has not been installed.
+Build `126` passed the full public source gate before local intermediate commit `9f7927f`. Build
+`127` passed the 220-task public source gate, both Startup Macrobenchmark tests, and private paired
+artifact version, v2 signer, and embedded-HUD hash checks. Its Phone APK is installed and running;
+the official CXR-L HUD installation, launch, Clawsses ownership restoration, and matching `127/127`
+handshake are verified. Hi Rokid is restored to disabled and Tailscale remains active.
 
 ## New-session resume prompt
 

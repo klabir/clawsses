@@ -120,13 +120,22 @@ class OpenClawClient(
 
     // Current session tracking (exposed as StateFlow for phone UI)
     private val catalogSession = OpenClawCatalogSessionComponent()
+    private val activeSessionRuntime = OpenClawActiveSessionRuntime(
+        catalogSession = catalogSession,
+        sessionSync = sessionSync,
+        chatStore = chatStore,
+        attachmentFileStore = attachmentFileStore,
+        sendRequest = { method, params, generation -> sendRequest(method, params, generation) },
+        onChatHistory = { history -> onChatHistory?.invoke(history) },
+        onMoreHistoryLoaded = { count, hasMore ->
+            onMoreHistoryLoaded?.invoke(count, hasMore)
+        },
+    )
     private val _currentSessionKey get() = catalogSession.currentSessionKey
     val currentSessionKey: StateFlow<String?> = _currentSessionKey.asStateFlow()
     private var homeSessionKey by catalogSession::homeSessionKey
 
     // History pagination: tracks how many messages were last requested from OpenClaw
-    private var currentHistoryLimit by catalogSession::currentHistoryLimit
-    private val sessionOperationEpoch get() = catalogSession.sessionOperationEpoch
     private val _isLoadingMoreHistory get() = catalogSession.isLoadingMoreHistory
     val isLoadingMoreHistory: StateFlow<Boolean> = _isLoadingMoreHistory.asStateFlow()
     private val _hasMoreHistory get() = catalogSession.hasMoreHistory
@@ -637,7 +646,7 @@ class OpenClawClient(
                         ?: normalizedId
                 )
             )
-            synchronizeActiveSession(key, operation)
+            synchronizeActiveSession(operation)
             requestModels()
         }
     }
@@ -677,7 +686,7 @@ class OpenClawClient(
                     Log.i(TAG, "Session creation completed")
                     val operation = activateSession(newKey)
                     notifyConnectionUpdate(true, newKey)
-                    synchronizeActiveSession(newKey, operation)
+                    synchronizeActiveSession(operation)
                     onSessionOperation?.invoke(
                         SessionOperationUpdate(operation = "create", state = "success")
                     )
@@ -724,7 +733,7 @@ class OpenClawClient(
             Log.d(TAG, "Switching session")
             val operation = activateSession(sessionKey)
             notifyConnectionUpdate(true, sessionKey)
-            synchronizeActiveSession(sessionKey, operation)
+            synchronizeActiveSession(operation)
             requestModels()
         }
     }
@@ -735,111 +744,19 @@ class OpenClawClient(
      * Always notifies glasses (even for empty history) so they can clear stale messages.
      */
     fun loadSessionHistory(sessionKey: String? = null) {
-        val key = sessionKey ?: _currentSessionKey.value ?: "main"
-        val operation = if (_currentSessionKey.value == key) {
-            sessionOperationEpoch.current()
-        } else {
-            activateSession(key)
-        }
-        scope.launch { loadSessionHistoryNow(key, operation) }
-    }
-
-    private suspend fun loadSessionHistoryNow(key: String, operation: Long) {
-        try {
-            val params = JsonObject().apply {
-                addProperty("sessionKey", key)
-                addProperty("limit", 50)
-            }
-            Log.d(TAG, "Requesting chat history for session $key")
-            val response = sendRequest(OpenClawMethods.CHAT_HISTORY, params)
-            if (response.ok) {
-                val messagesArray = response.payload?.getAsJsonArray("messages")
-                val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
-                if (!isCurrentSessionOperation(key, operation)) {
-                    Log.d(TAG, "Discarded stale history response for session $key")
-                    return
-                }
-                val boundedHistory = chatStore.replace(
-                    attachmentFileStore.materialize(parsedHistory.messages),
-                )
-                _hasMoreHistory.value = parsedHistory.rawCount >= 50
-                Log.d(TAG, "Loaded ${boundedHistory.size} history messages for session $key")
-                onChatHistory?.invoke(boundedHistory)
-            } else {
-                if (!isCurrentSessionOperation(key, operation)) return
-                Log.e(TAG, "Chat history request failed: ${response.error}")
-                chatStore.clear()
-                _hasMoreHistory.value = false
-                onChatHistory?.invoke(emptyList())
-            }
-        } catch (e: Exception) {
-            if (!isCurrentSessionOperation(key, operation)) return
-            Log.e(TAG, "Error loading session history for $key", e)
-            chatStore.clear()
-            _hasMoreHistory.value = false
-            onChatHistory?.invoke(emptyList())
-        }
+        val operation = activeSessionRuntime.prepareHistoryLoad(sessionKey)
+        scope.launch { activeSessionRuntime.loadHistory(operation) }
     }
 
     private suspend fun synchronizeActiveSession(
-        key: String,
-        operation: Long,
+        operation: OpenClawActiveSessionRuntime.Operation,
         requiredGeneration: Long? = null,
     ) {
-        var previousKey: String? = null
-        try {
-            val response = sendRequest(
-                OpenClawMethods.SESSION_MESSAGES_SUBSCRIBE,
-                JsonObject().apply { addProperty("key", key) },
-                requiredGeneration = requiredGeneration,
-            )
-            if (response.ok && isCurrentSessionOperation(key, operation)) {
-                previousKey = sessionSync.confirmSubscription(key)
-            } else if (response.ok) {
-                runCatching {
-                    sendRequest(
-                        OpenClawMethods.SESSION_MESSAGES_UNSUBSCRIBE,
-                        JsonObject().apply { addProperty("key", key) },
-                        requiredGeneration = requiredGeneration,
-                    )
-                }
-            } else if (!response.ok) {
-                Log.w(TAG, "Session message subscription failed for $key")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not subscribe to session messages for $key", e)
-        }
-
-        if (!isCurrentSessionOperation(key, operation)) return
-        loadSessionHistoryNow(key, operation)
-
-        previousKey?.let { oldKey ->
-            try {
-                sendRequest(
-                    OpenClawMethods.SESSION_MESSAGES_UNSUBSCRIBE,
-                    JsonObject().apply { addProperty("key", oldKey) },
-                    requiredGeneration = requiredGeneration,
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not unsubscribe stale session $oldKey", e)
-            }
-        }
+        activeSessionRuntime.synchronize(operation, requiredGeneration)
     }
 
     private fun refreshActiveHistory(reason: String) {
-        val key = _currentSessionKey.value ?: return
-        val claim = sessionSync.claimHistoryRefresh() ?: return
-        val operation = sessionOperationEpoch.current()
-        scope.launch {
-            try {
-                do {
-                    Log.d(TAG, "Reconciling active session history ($reason)")
-                    loadSessionHistoryNow(key, operation)
-                } while (sessionSync.completeHistoryRefreshCycle(claim))
-            } finally {
-                sessionSync.releaseHistoryRefresh(claim)
-            }
-        }
+        scope.launch { activeSessionRuntime.refresh(reason) }
     }
 
     /**
@@ -851,61 +768,8 @@ class OpenClawClient(
      * existing message IDs stable).
      */
     fun loadMoreHistory() {
-        if (_isLoadingMoreHistory.value) return
-        _isLoadingMoreHistory.value = true
-
-        scope.launch {
-            val key = _currentSessionKey.value ?: "main"
-            val operation = sessionOperationEpoch.current()
-            val existingMessages = chatStore.value()
-            val oldCount = existingMessages.size
-
-            try {
-                // Bump the limit by 50, cap at 500 (OpenClaw hard max is 1000)
-                val requestedLimit = (currentHistoryLimit + 50).coerceAtMost(500)
-                val params = JsonObject().apply {
-                    addProperty("sessionKey", key)
-                    addProperty("limit", requestedLimit)
-                }
-                Log.d(TAG, "Requesting more history for session $key (limit=$requestedLimit, existing=$oldCount)")
-                val response = sendRequest(OpenClawMethods.CHAT_HISTORY, params)
-                if (!isCurrentSessionOperation(key, operation)) {
-                    Log.d(TAG, "Discarded stale expanded history response for session $key")
-                    return@launch
-                }
-                currentHistoryLimit = requestedLimit
-
-                if (response.ok) {
-                    val messagesArray = response.payload?.getAsJsonArray("messages")
-                    val parsedHistory = OpenClawChatHistoryParser.parse(key, messagesArray)
-                    val merge = HistoryPrependMerge.merge(
-                        attachmentFileStore.materialize(parsedHistory.messages),
-                        existingMessages,
-                    )
-                    val boundedCombined = chatStore.replace(merge.combined)
-
-                    // Did we get everything the gateway has?
-                    // Use the raw count (including system messages) vs the limit we sent,
-                    // NOT the filtered user/assistant count which is always smaller.
-                    val hasMore = parsedHistory.rawCount >= requestedLimit
-                    _hasMoreHistory.value = hasMore
-
-                    Log.d(TAG, "Prepended ${merge.prependedCount} older messages (total=${boundedCombined.size}, hasMore=$hasMore)")
-                    _isLoadingMoreHistory.value = false
-                    onMoreHistoryLoaded?.invoke(merge.prependedCount, hasMore)
-                } else {
-                    if (!isCurrentSessionOperation(key, operation)) return@launch
-                    Log.e(TAG, "More history request failed: ${response.error}")
-                    _isLoadingMoreHistory.value = false
-                    onMoreHistoryLoaded?.invoke(0, _hasMoreHistory.value)
-                }
-            } catch (e: Exception) {
-                if (!isCurrentSessionOperation(key, operation)) return@launch
-                Log.e(TAG, "Error loading more history for $key", e)
-                _isLoadingMoreHistory.value = false
-                onMoreHistoryLoaded?.invoke(0, _hasMoreHistory.value)
-            }
-        }
+        val claim = activeSessionRuntime.claimMoreHistory() ?: return
+        scope.launch { activeSessionRuntime.loadMoreHistory(claim) }
     }
 
     /**
@@ -1090,7 +954,7 @@ class OpenClawClient(
                     val snapshot = response.payload?.getAsJsonObject("snapshot")
                     val sessionDefaults = snapshot?.getAsJsonObject("sessionDefaults")
                     val mainSessionKey = sessionDefaults?.get("mainSessionKey")?.asString
-                    var sessionOperation: Long? = null
+                    var sessionOperation: OpenClawActiveSessionRuntime.Operation? = null
                     if (mainSessionKey != null) {
                         homeSessionKey = mainSessionKey
                         sessionOperation = activateSession(mainSessionKey)
@@ -1120,8 +984,8 @@ class OpenClawClient(
                     val activeKey = _currentSessionKey.value
                     if (activeKey != null) {
                         synchronizeActiveSession(
-                            key = activeKey,
-                            operation = sessionOperation ?: sessionOperationEpoch.current(),
+                            operation = sessionOperation
+                                ?: activeSessionRuntime.currentOperation(activeKey),
                             requiredGeneration = generation,
                         )
                     }
@@ -1305,15 +1169,8 @@ class OpenClawClient(
         _runState.value = state
     }
 
-    private fun activateSession(sessionKey: String): Long {
-        val operation = catalogSession.activateSession(sessionKey)
-        sessionSync.activate(sessionKey)
-        chatStore.clear()
-        return operation
-    }
-
-    private fun isCurrentSessionOperation(sessionKey: String, operation: Long): Boolean =
-        catalogSession.isCurrentOperation(sessionKey, operation)
+    private fun activateSession(sessionKey: String): OpenClawActiveSessionRuntime.Operation =
+        activeSessionRuntime.activate(sessionKey)
 
     private fun rememberAbortedRun(runId: String?) {
         chatRun.rememberAbortedRun(runId)

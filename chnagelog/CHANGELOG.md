@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## 1.3.118 (build 127)
+
+### Changed
+
+- Move HUD session, model, and agent picker transitions into a pure interaction controller that
+  emits typed command intents while retaining transport and lifecycle ownership in `HudActivity`.
+- Preserve picker command ordering and pagination semantics with direct gesture-decision tests,
+  reducing `HudActivity.kt` from 1,706 to 1,513 lines.
+
+## 1.3.117 (build 126)
+
+### Changed
+
+- Move active-session subscription, authoritative history reconciliation, and bounded pagination
+  from `OpenClawClient` into a dedicated runtime behind the existing client API.
+- Preserve session epochs, refresh claims, gateway methods, callbacks, and history limits while
+  directly testing stale responses and subscription replacement.
+
 ## 1.3.116 (build 125)
 
 ### Fixed

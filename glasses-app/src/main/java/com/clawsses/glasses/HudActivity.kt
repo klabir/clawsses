@@ -28,8 +28,9 @@ import com.clawsses.glasses.media.ThumbnailHandle
 import com.clawsses.glasses.protocol.PhoneHudMessage
 import com.clawsses.glasses.input.GestureHandler.Gesture
 import com.clawsses.glasses.input.ModelPageSelection
-import com.clawsses.glasses.input.ModelPickerMove
-import com.clawsses.glasses.input.ModelPickerNavigation
+import com.clawsses.glasses.orchestration.HudCatalogAction
+import com.clawsses.glasses.orchestration.HudCatalogDecision
+import com.clawsses.glasses.orchestration.HudCatalogInteractionController
 import com.clawsses.glasses.orchestration.HudCommandDispatcher
 import com.clawsses.glasses.orchestration.HudGestureContext
 import com.clawsses.glasses.orchestration.HudGestureRouter
@@ -66,9 +67,7 @@ import com.clawsses.glasses.ui.HudStreamingSnapshot
 import com.clawsses.glasses.ui.HudTelemetry
 import com.clawsses.glasses.ui.InputActionItem
 import com.clawsses.glasses.ui.MenuBarItem
-import com.clawsses.glasses.ui.ModelPickerInfo
 import com.clawsses.glasses.ui.MoreMenuItem
-import com.clawsses.glasses.ui.SessionPickerInfo
 import com.clawsses.glasses.ui.MAX_PHOTOS
 import com.clawsses.glasses.ui.SLASH_COMMANDS
 import com.clawsses.glasses.ui.VoiceInputState
@@ -156,6 +155,10 @@ class HudActivity : ComponentActivity() {
     private val historySnapshotAssembler = HudHistorySnapshotAssembler()
     private val runtimeMetrics = HudRuntimeMetrics()
     private val phoneMessageEffectPlanner = HudPhoneMessageEffectPlanner(
+        newSessionKey = NEW_SESSION_KEY,
+        moreSessionsKey = MORE_SESSIONS_KEY,
+    )
+    private val catalogInteractionController = HudCatalogInteractionController(
         newSessionKey = NEW_SESSION_KEY,
         moreSessionsKey = MORE_SESSIONS_KEY,
     )
@@ -620,10 +623,10 @@ class HudActivity : ComponentActivity() {
                 requestPhotoCapture(sendAfterCapture = false)
             }
             MenuBarItem.SESSION -> {
-                requestSessionList()
+                applyCatalogDecision(catalogInteractionController.requestSessions(current))
             }
             MenuBarItem.MODEL -> {
-                requestModelPage(-1)
+                applyCatalogDecision(catalogInteractionController.requestModels(current, -1))
             }
             MenuBarItem.SIZE -> {
                 val nextPosition = when (current.hudPosition) {
@@ -712,197 +715,29 @@ class HudActivity : ComponentActivity() {
     // ============== Session Picker Gestures ==============
 
     private fun handleSessionPickerGesture(gesture: Gesture) {
-        val current = hudState.value
-        val totalOptions = current.availableSessions.size
-
-        if (current.isSessionOperationPending) {
-            when (gesture) {
-                Gesture.TAP -> {
-                    val selected = current.availableSessions.getOrNull(current.selectedSessionIndex)
-                    if (selected?.key == NEW_SESSION_KEY) {
-                        sessionPickerRequested = false
-                        createNewSession()
-                        hudState.value = current.copy(
-                            showSessionPicker = true,
-                            currentSessionName = null,
-                            isSessionOperationPending = true,
-                            sessionOperationMessage = "Creating session...",
-                            sessionOperationError = null
-                        )
-                    }
-                }
-                Gesture.DOUBLE_TAP -> {
-                    sessionPickerRequested = false
-                    hudState.value = current.copy(
-                        showSessionPicker = false,
-                        isSessionOperationPending = false,
-                        sessionOperationMessage = null,
-                        sessionOperationError = null
-                    )
-                }
-                else -> Unit
-            }
-            return
-        }
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                val newIndex = maxOf(0, current.selectedSessionIndex - 1)
-                hudState.value = current.copy(selectedSessionIndex = newIndex)
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                if (totalOptions > 0) {
-                    val newIndex = minOf(totalOptions - 1, current.selectedSessionIndex + 1)
-                    hudState.value = current.copy(selectedSessionIndex = newIndex)
-                }
-            }
-            Gesture.TAP -> {
-                if (totalOptions > 0) {
-                    val selected = current.availableSessions[current.selectedSessionIndex]
-                    if (selected.key == NEW_SESSION_KEY) {
-                        sessionPickerRequested = false
-                        createNewSession()
-                        hudState.value = current.copy(
-                            showSessionPicker = true,
-                            currentSessionName = null,
-                            isSessionOperationPending = true,
-                            sessionOperationMessage = "Creating session...",
-                            sessionOperationError = null
-                        )
-                    } else if (selected.key == MORE_SESSIONS_KEY) {
-                        requestSessionList(sessionNextOffset ?: 0)
-                    } else {
-                        switchToSession(selected.key)
-                        hudState.value = current.copy(
-                            showSessionPicker = false,
-                            currentSessionName = selected.name,
-                            sessionOperationError = null
-                        )
-                    }
-                } else {
-                    sessionPickerRequested = false
-                    hudState.value = current.copy(showSessionPicker = false)
-                }
-            }
-            Gesture.DOUBLE_TAP -> {
-                sessionPickerRequested = false
-                hudState.value = current.copy(showSessionPicker = false)
-            }
-            Gesture.LONG_PRESS -> {}
-        }
-    }
-
-    private fun createNewSession() {
-        sendCommand(GlassesCommand.CreateSession)
+        applyCatalogDecision(
+            catalogInteractionController.planSessionGesture(
+                state = hudState.value,
+                gesture = gesture,
+                nextOffset = sessionNextOffset,
+            ),
+        )
     }
 
     // ============== Model Picker Gestures ==============
 
     private fun handleModelPickerGesture(gesture: Gesture) {
-        val current = hudState.value
-        if (current.isModelOperationPending) {
-            if (gesture == Gesture.DOUBLE_TAP) {
-                modelPickerRequested = false
-                hudState.value = current.copy(
-                    showModelPicker = false,
-                    isModelOperationPending = false,
-                    modelOperationMessage = null,
-                )
-            }
-            return
-        }
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                applyModelPickerMove(
-                    ModelPickerNavigation.forward(
-                        selectedIndex = current.selectedModelIndex,
-                        itemCount = current.availableModels.size,
-                        nextOffset = current.modelNextOffset,
-                    )
-                )
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                applyModelPickerMove(
-                    ModelPickerNavigation.backward(
-                        selectedIndex = current.selectedModelIndex,
-                        itemCount = current.availableModels.size,
-                        pageOffset = current.modelPageOffset,
-                    )
-                )
-            }
-            Gesture.TAP -> {
-                val selected = current.availableModels.getOrNull(current.selectedModelIndex)
-                when {
-                    selected == null -> Unit
-                    !selected.available -> hudState.value = current.copy(
-                        modelOperationError = "Model is unavailable",
-                    )
-                    selected.index == current.currentModelIndex -> {
-                        modelPickerRequested = false
-                        hudState.value = current.copy(showModelPicker = false)
-                    }
-                    current.runState !in setOf("idle", "error") -> hudState.value = current.copy(
-                        modelOperationError = "Available after response",
-                    )
-                    else -> selectModel(selected)
-                }
-            }
-            Gesture.DOUBLE_TAP -> {
-                modelPickerRequested = false
-                hudState.value = current.copy(showModelPicker = false)
-            }
-            Gesture.LONG_PRESS -> Unit
-        }
-    }
-
-    private fun applyModelPickerMove(move: ModelPickerMove) {
-        move.selectedIndex?.let { selectedIndex ->
-            hudState.update { current -> current.copy(selectedModelIndex = selectedIndex) }
-        }
-        move.requestedOffset?.let { offset ->
-            requestModelPage(offset, move.pageSelection)
-        }
+        applyCatalogDecision(
+            catalogInteractionController.planModelGesture(hudState.value, gesture),
+        )
     }
 
     // ============== Agent Picker Gestures ==============
 
     private fun handleAgentPickerGesture(gesture: Gesture) {
-        val current = hudState.value
-        val totalOptions = current.availableAgents.size
-
-        when (gesture) {
-            Gesture.SWIPE_FORWARD -> {
-                if (totalOptions > 0) {
-                    hudState.value = current.copy(
-                        selectedAgentIndex = maxOf(0, current.selectedAgentIndex - 1)
-                    )
-                }
-            }
-            Gesture.SWIPE_BACKWARD -> {
-                if (totalOptions > 0) {
-                    hudState.value = current.copy(
-                        selectedAgentIndex = minOf(totalOptions - 1, current.selectedAgentIndex + 1)
-                    )
-                }
-            }
-            Gesture.TAP -> {
-                val selected = current.availableAgents.getOrNull(current.selectedAgentIndex)
-                if (selected != null) {
-                    switchToAgent(selected.id, selected.name)
-                    hudState.value = current.copy(
-                        showAgentPicker = false,
-                        currentAgentId = selected.id,
-                        currentAgentName = selected.name,
-                        currentSessionName = selected.name
-                    )
-                } else {
-                    hudState.value = current.copy(showAgentPicker = false)
-                }
-            }
-            Gesture.DOUBLE_TAP -> hudState.value = current.copy(showAgentPicker = false)
-            Gesture.LONG_PRESS -> {}
-        }
+        applyCatalogDecision(
+            catalogInteractionController.planAgentGesture(hudState.value, gesture),
+        )
     }
 
     // ============== More Menu Gestures ==============
@@ -952,7 +787,9 @@ class HudActivity : ComponentActivity() {
         }
 
         when (item) {
-            MoreMenuItem.AGENT -> requestAgentList()
+            MoreMenuItem.AGENT -> applyCatalogDecision(
+                catalogInteractionController.requestAgents(current),
+            )
             MoreMenuItem.SLASH -> {
                 hudState.value = current.copy(
                     showMoreMenu = false,
@@ -1302,69 +1139,39 @@ class HudActivity : ComponentActivity() {
 
     // ============== Phone Communication ==============
 
-    private fun requestSessionList(offset: Int = 0) {
-        sessionPickerRequested = true
-        sessionNextOffset = null
-        hudState.update { current ->
-            val options = listOf(SessionPickerInfo(NEW_SESSION_KEY, "+ New Session"))
-            current.copy(
-                showSessionPicker = true,
-                availableSessions = options,
-                selectedSessionIndex = 0,
-                isSessionOperationPending = true,
-                sessionOperationMessage = "Loading sessions...",
-                sessionOperationError = null
-            )
+    private fun applyCatalogDecision(decision: HudCatalogDecision) {
+        if (decision.applyStateBeforeActions) hudState.value = decision.state
+        decision.sessionRequestActive?.let { sessionPickerRequested = it }
+        decision.modelRequestActive?.let { modelPickerRequested = it }
+        decision.agentRequestActive?.let { agentPickerRequested = it }
+        decision.actions.forEach { action ->
+            when (action) {
+                is HudCatalogAction.RequestSessions -> {
+                    sessionNextOffset = null
+                    sendCommand(GlassesCommand.ListSessions(action.offset))
+                }
+                HudCatalogAction.CreateSession -> sendCommand(GlassesCommand.CreateSession)
+                is HudCatalogAction.SwitchSession -> sendCommand(
+                    GlassesCommand.SwitchSession(action.sessionKey),
+                )
+                is HudCatalogAction.RequestModels -> {
+                    pendingModelPageSelection = action.pageSelection
+                    sendCommand(GlassesCommand.ListModels(action.offset))
+                }
+                is HudCatalogAction.SelectModel -> sendCommand(
+                    GlassesCommand.SelectModel(
+                        action.sessionKey,
+                        action.catalogId,
+                        action.modelIndex,
+                    ),
+                )
+                HudCatalogAction.RequestAgents -> sendCommand(GlassesCommand.ListAgents)
+                is HudCatalogAction.SwitchAgent -> sendCommand(
+                    GlassesCommand.SwitchAgent(action.agentId, action.agentName),
+                )
+            }
         }
-        sendCommand(GlassesCommand.ListSessions(offset.coerceAtLeast(0)))
-    }
-
-    private fun switchToSession(sessionKey: String) {
-        sendCommand(GlassesCommand.SwitchSession(sessionKey))
-    }
-
-    private fun requestModelPage(
-        offset: Int,
-        pageSelection: ModelPageSelection = ModelPageSelection.CURRENT,
-    ) {
-        modelPickerRequested = true
-        pendingModelPageSelection = pageSelection
-        hudState.update { current ->
-            current.copy(
-                showModelPicker = true,
-                isModelOperationPending = true,
-                modelOperationMessage = "Loading models...",
-                modelOperationError = null,
-            )
-        }
-        sendCommand(GlassesCommand.ListModels(offset))
-    }
-
-    private fun selectModel(model: ModelPickerInfo) {
-        val current = hudState.value
-        val catalogId = current.modelCatalogId ?: return
-        val sessionKey = current.currentSessionKey ?: return
-        hudState.value = current.copy(
-            isModelOperationPending = true,
-            modelOperationMessage = "Changing model...",
-            modelOperationError = null,
-        )
-        sendCommand(GlassesCommand.SelectModel(sessionKey, catalogId, model.index))
-    }
-
-    private fun requestAgentList() {
-        agentPickerRequested = true
-        sendCommand(GlassesCommand.ListAgents)
-    }
-
-    private fun switchToAgent(agentId: String, agentName: String) {
-        sendCommand(GlassesCommand.SwitchAgent(agentId, agentName))
-    }
-
-    private fun agentIdFromSessionKey(key: String?): String? {
-        if (key.isNullOrBlank()) return null
-        val parts = key.split(':')
-        return parts.getOrNull(1)?.takeIf { parts.firstOrNull() == "agent" && it.isNotBlank() }
+        if (!decision.applyStateBeforeActions) hudState.value = decision.state
     }
 
     // ============== Phone Message Handling ==============
