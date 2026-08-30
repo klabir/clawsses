@@ -93,4 +93,89 @@ class HudInteractionPlannerTest {
             tapped.actions,
         )
     }
+
+    @Test
+    fun `content gestures emit bounded actions and focus menu`() {
+        val state = ChatHudState(pageCount = 1, isScrolledToEnd = true)
+
+        assertEquals(
+            listOf(HudInteractionAction.ScrollUp),
+            HudInteractionPlanner.plan(state, HudGestureTarget.CONTENT, Gesture.SWIPE_FORWARD).actions,
+        )
+        assertEquals(
+            listOf(HudInteractionAction.ScrollToBottom),
+            HudInteractionPlanner.plan(state, HudGestureTarget.CONTENT, Gesture.TAP).actions,
+        )
+        assertEquals(
+            listOf(HudInteractionAction.StartVoice),
+            HudInteractionPlanner.plan(state, HudGestureTarget.CONTENT, Gesture.LONG_PRESS).actions,
+        )
+        assertEquals(
+            ChatFocusArea.MENU,
+            HudInteractionPlanner.plan(state, HudGestureTarget.CONTENT, Gesture.DOUBLE_TAP)
+                .state.focusedArea,
+        )
+    }
+
+    @Test
+    fun `input gestures navigate submit and start voice`() {
+        val staged = ChatHudState(
+            focusedArea = ChatFocusArea.INPUT,
+            showInputStaging = true,
+            stagingText = "  hello  ",
+            inputActionIndex = 1,
+        )
+
+        val submitted = HudInteractionPlanner.plan(staged, HudGestureTarget.INPUT, Gesture.TAP)
+        assertEquals("hello", submitted.state.inputText)
+        assertEquals(listOf(HudInteractionAction.SubmitInput), submitted.actions)
+        assertEquals(
+            ChatFocusArea.CONTENT,
+            HudInteractionPlanner.plan(
+                staged.copy(inputActionIndex = 0),
+                HudGestureTarget.INPUT,
+                Gesture.SWIPE_FORWARD,
+            ).state.focusedArea,
+        )
+        assertEquals(
+            ChatFocusArea.MENU,
+            HudInteractionPlanner.plan(staged, HudGestureTarget.INPUT, Gesture.SWIPE_BACKWARD)
+                .state.focusedArea,
+        )
+        assertEquals(
+            ChatFocusArea.CONTENT,
+            HudInteractionPlanner.plan(staged, HudGestureTarget.INPUT, Gesture.DOUBLE_TAP)
+                .state.focusedArea,
+        )
+        assertEquals(
+            listOf(HudInteractionAction.StartVoice),
+            HudInteractionPlanner.plan(staged, HudGestureTarget.INPUT, Gesture.LONG_PRESS).actions,
+        )
+    }
+
+    @Test
+    fun `menu gestures traverse focus show exit and start voice`() {
+        val menu = ChatHudState(focusedArea = ChatFocusArea.MENU, menuBarIndex = 1)
+        assertEquals(
+            0,
+            HudInteractionPlanner.plan(menu, HudGestureTarget.MENU, Gesture.SWIPE_FORWARD)
+                .state.menuBarIndex,
+        )
+        assertEquals(
+            ChatFocusArea.CONTENT,
+            HudInteractionPlanner.plan(
+                menu.copy(menuBarIndex = 0),
+                HudGestureTarget.MENU,
+                Gesture.SWIPE_FORWARD,
+            ).state.focusedArea,
+        )
+        assertTrue(
+            HudInteractionPlanner.plan(menu, HudGestureTarget.MENU, Gesture.DOUBLE_TAP)
+                .state.showExitConfirm,
+        )
+        assertEquals(
+            listOf(HudInteractionAction.StartVoice),
+            HudInteractionPlanner.plan(menu, HudGestureTarget.MENU, Gesture.LONG_PRESS).actions,
+        )
+    }
 }

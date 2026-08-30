@@ -160,6 +160,19 @@ with `adb devices -l` and collect a fresh version handshake.
   behavior while retaining transport, CXR, camera, audio, and lifecycle ownership in the Activity.
 - Reduce `HudActivity.kt` from 1,706 to 1,513 lines and raise checked-in test coverage to 331 tests.
 
+## Build 128 candidate changes
+
+- Make the paired-release gate run HUD and shared release JVM tests plus HUD/shared lint directly,
+  instead of requiring separate manual verification commands.
+- Generate a JaCoCo report for deterministic Phone, HUD, and shared release logic and fail below
+  70 percent aggregate line coverage. The Build-128 candidate measures 1,236 covered of 1,735
+  selected lines, or 71.2 percent.
+- Add explicit Android 12 cloud-backup and device-transfer exclusions to both apps and make HUD
+  preference persistence asynchronous during Activity teardown.
+- Add direct coverage for content, input, and menu gesture branches. The expanded paired-release
+  gate passes 265 tasks and retains credential, debug-transport, HUD-isolation, and embedded-HUD
+  hash verification.
+
 ## Current code rating
 
 - Overall: **9.2/10** for the paired-device-verified Build 127. Active-session reconciliation and
@@ -222,7 +235,9 @@ Build `126` passed the full public source gate before local intermediate commit 
 `127` passed the 220-task public source gate, both Startup Macrobenchmark tests, and private paired
 artifact version, v2 signer, and embedded-HUD hash checks. Its Phone APK is installed and running;
 the official CXR-L HUD installation, launch, Clawsses ownership restoration, and matching `127/127`
-handshake are verified. Hi Rokid is restored to disabled and Tailscale remains active.
+handshake are verified. Hi Rokid is restored to disabled and Tailscale remains active. Build `128`
+passes the expanded 265-task public source gate and its 70-percent deterministic-logic coverage
+threshold; it has not been installed or paired-device verified.
 
 ## New-session resume prompt
 

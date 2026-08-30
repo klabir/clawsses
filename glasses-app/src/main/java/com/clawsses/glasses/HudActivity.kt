@@ -1489,7 +1489,7 @@ class HudActivity : ComponentActivity() {
             getSharedPreferences("hud_prefs", MODE_PRIVATE).edit()
                 .putString("hudPosition", state.hudPosition.name)
                 .putString("displaySize", state.displaySize.name)
-                .commit()
+                .apply()
         } catch (e: Exception) {
             Log.w(GlassesApp.TAG, "Failed to save HUD preferences", e)
         }
