@@ -3,8 +3,8 @@
 The phone and glasses applications are released as one compatible app pair. Their shared version is defined in the root `gradle.properties` file:
 
 ```properties
-clawsses.versionCode=116
-clawsses.versionName=1.3.107
+clawsses.versionCode=117
+clawsses.versionName=1.3.108
 ```
 
 Before every distributable release:

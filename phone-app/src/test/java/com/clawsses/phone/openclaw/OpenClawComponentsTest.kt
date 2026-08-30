@@ -91,4 +91,55 @@ class OpenClawComponentsTest {
         assertEquals("local/fallback", fallbackCatalog.currentModel)
         assertEquals(models, component.modelList.value)
     }
+
+    @Test
+    fun `chat planner rejects stale runs and emits only the appended delta`() {
+        val directory = Files.createTempDirectory("clawsses-chat-plan-test").toFile()
+        val component = OpenClawChatRunComponent(ChatAttachmentFileStore(directory)).apply {
+            activeRunId = "current"
+            activeMessageId = "message"
+            activeSessionKey = "agent:main:main"
+            streamingContent = "Hello"
+        }
+
+        val stale = component.plan(
+            ParsedChatEvent("delta", "old", "agent:main:main", "ignored", null),
+            "agent:main:main",
+        )
+        val delta = component.plan(
+            ParsedChatEvent("delta", "current", "agent:main:main", "Hello world", null),
+            "agent:main:main",
+        )
+
+        assertEquals(ChatEventPlan.Ignore, stale)
+        assertEquals(ChatEventPlan.Delta("message", "Hello world", " world"), delta)
+        directory.deleteRecursively()
+    }
+
+    @Test
+    fun `chat planner separates inactive terminal events and abort races`() {
+        val directory = Files.createTempDirectory("clawsses-chat-terminal-test").toFile()
+        val component = OpenClawChatRunComponent(ChatAttachmentFileStore(directory)).apply {
+            activeRunId = "run"
+            activeMessageId = "message"
+            activeSessionKey = "agent:main:old"
+            abortingRunId = "run"
+        }
+
+        val inactive = component.plan(
+            ParsedChatEvent("error", "run", "agent:main:old", "", "failed"),
+            "agent:main:new",
+        )
+        val abortedFinal = component.plan(
+            ParsedChatEvent("final", "run", "agent:main:new", "late", null),
+            "agent:main:new",
+        )
+
+        assertEquals(ChatEventPlan.InactiveSession("agent:main:old", true, "error"), inactive)
+        assertEquals(
+            ChatEventPlan.Terminal("message", "aborted", rememberAbortedRunId = "run"),
+            abortedFinal,
+        )
+        directory.deleteRecursively()
+    }
 }

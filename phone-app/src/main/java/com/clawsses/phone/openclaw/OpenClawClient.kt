@@ -1074,70 +1074,37 @@ class OpenClawClient(
      */
     private fun handleChatEvent(payload: JsonObject?) {
         val event = ChatEventParser.parse(payload) ?: return
-        val state = event.state
-        val runId = event.runId
-        val eventSessionKey = event.sessionKey
-
-        if (runId != null && completedAbortedRuns.containsKey(runId)) return
-
-        // Check if this event belongs to a different session than the currently active one.
-        // If so, mark that session as having unread messages and don't render into the current view.
-        val currentKey = _currentSessionKey.value
-        if (eventSessionKey != null && currentKey != null && eventSessionKey != currentKey) {
-            Log.d(TAG, "Chat event for inactive session (state=$state); marking unread")
-            _unreadSessions.value = _unreadSessions.value + eventSessionKey
-            // Still need to clean up our streaming state if this was our active run
-            // (user switched sessions mid-stream)
-            if (runId != null && runId == activeRunId) {
-                if (state == "final" || state == "aborted" || state == "error") {
+        when (val plan = chatRun.plan(event, _currentSessionKey.value)) {
+            ChatEventPlan.Ignore -> Unit
+            is ChatEventPlan.InactiveSession -> {
+                Log.d(TAG, "Chat event for inactive session; marking unread")
+                _unreadSessions.value = _unreadSessions.value + plan.sessionKey
+                if (plan.terminalActiveRun) {
                     Log.d(TAG, "Clearing stale active run for inactive session")
                     chatRun.resetActiveRun()
-                    updateRunState(if (state == "error") RunState.ERROR else RunState.IDLE)
+                    updateRunState(
+                        if (plan.terminalState == "error") RunState.ERROR else RunState.IDLE,
+                    )
                 }
             }
-            return
-        }
-
-        // Only process events for our active run
-        if (runId != null && activeRunId != null && runId != activeRunId) return
-
-        val msgId = activeMessageId ?: return
-
-        when (state) {
-            "delta" -> {
-                if (runId == abortingRunId) return
-                // Each delta contains the full accumulated text, not just the new chunk.
-                // Track only the prior length so growing responses are not copied twice per event.
-                val fullText = event.fullText
-                val previousLength = streamingContent.length
-                if (fullText.length > previousLength) {
-                    val newChunk = fullText.substring(previousLength)
-                    streamingContent = fullText
-                    clearAgentProgress()
-                    updateRunState(RunState.STREAMING)
-                    enqueueStreamingUpdate(msgId, fullText, newChunk)
-                }
+            is ChatEventPlan.Delta -> {
+                streamingContent = plan.fullText
+                clearAgentProgress()
+                updateRunState(RunState.STREAMING)
+                enqueueStreamingUpdate(plan.messageId, plan.fullText, plan.newChunk)
             }
-            "final" -> {
-                if (runId == abortingRunId) {
-                    rememberAbortedRun(runId)
-                    finalizeStreaming("aborted")
-                    return
-                }
-                val fullText = event.fullText
-                val previousLength = streamingContent.length
-                if (fullText.length > previousLength) {
-                    val newChunk = fullText.substring(previousLength)
-                    streamingContent = fullText
-                    enqueueStreamingUpdate(msgId, fullText, newChunk)
+            is ChatEventPlan.Final -> {
+                if (plan.newChunk != null) {
+                    streamingContent = plan.fullText
+                    enqueueStreamingUpdate(plan.messageId, plan.fullText, plan.newChunk)
                 }
                 flushPendingStreamingUpdate()
                 finalizeStreaming("final")
             }
-            "aborted", "error" -> {
-                if (state == "aborted" && runId != null) rememberAbortedRun(runId)
-                Log.w(TAG, "Chat run ended with state=$state")
-                finalizeStreaming(state, event.errorMessage)
+            is ChatEventPlan.Terminal -> {
+                rememberAbortedRun(plan.rememberAbortedRunId)
+                Log.w(TAG, "Chat run ended with state=${plan.state}")
+                finalizeStreaming(plan.state, plan.errorMessage)
             }
         }
     }

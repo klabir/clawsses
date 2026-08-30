@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## 1.3.108 (build 117)
+
+### Changed
+
+- Route gateway chat events through a tested chat-run planner before mutating streaming state.
+- Make stale-run rejection, inactive-session unread handling, abort races, and terminal cleanup
+  explicit decisions owned by the chat-run component.
+
 ## 1.3.107 (build 116)
 
 ### Changed
