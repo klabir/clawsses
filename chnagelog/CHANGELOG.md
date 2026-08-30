@@ -2,9 +2,28 @@
 
 ## [Unreleased]
 
+## 1.3.98 (build 107)
+
 ### Changed
 
+- Isolate the Rokid hotspot request and process-binding lifecycle behind tested app-owned contracts.
+- Require Android's local-network capability explicitly on API 35 and newer without changing the target SDK or permission model.
+
+### Fixed
+
+- Release hotspot callbacks and process bindings exactly once after failures, cancellation, timeout, or request replacement.
+- Prevent callbacks from replaced hotspot requests from rebinding the process after a newer attempt has started.
+
+## 1.3.97 (build 106)
+
+### Changed
+
+- Restrict CXR-M vendor logging to warnings and errors before initializing the SDK.
 - Update the README for Build 105 recovery and source-only release behavior.
+
+### Security
+
+- Prevent CXR-M 1.2.2 from writing credential-bearing account and Bluetooth arguments to Logcat at INFO level.
 
 ## 1.3.96 (build 105)
 
