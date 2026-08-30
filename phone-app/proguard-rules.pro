@@ -6,6 +6,10 @@
     native <methods>;
 }
 
+# sherpa-onnx reads its Kotlin configuration objects by exact JNI field name. Its official AAR
+# currently ships an empty consumer rule file, so retain this narrow native boundary explicitly.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+
 # Gson constructs these request/response models from fields carrying @SerializedName. Keep the
 # annotated field names and generic signatures, while allowing unrelated application code to shrink.
 -keepattributes Signature,*Annotation*

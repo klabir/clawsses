@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
+import com.clawsses.phone.voice.LocalWakeWordStatus
 import com.clawsses.phone.talk.TalkInteractionMode
 import com.clawsses.phone.talk.TalkModeState
 
@@ -59,6 +60,8 @@ import com.clawsses.phone.talk.TalkModeState
 fun VoiceSection(
     voiceLanguageManager: VoiceLanguageManager,
     voiceRecognitionManager: VoiceRecognitionManager? = null,
+    localWakeWordStatus: LocalWakeWordStatus? = null,
+    onLocalWakeWordChange: (Boolean) -> Unit = {},
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
     onTalkInteractionModeChange: (TalkInteractionMode) -> Unit = {},
@@ -101,6 +104,11 @@ fun VoiceSection(
         // OpenAI Voice Recognition settings
         if (voiceRecognitionManager != null) {
             OpenAIVoiceSettings(voiceRecognitionManager)
+            Spacer(Modifier.height(12.dp))
+        }
+
+        if (localWakeWordStatus != null) {
+            LocalWakeWordSettings(localWakeWordStatus, onLocalWakeWordChange)
             Spacer(Modifier.height(12.dp))
         }
 
@@ -157,6 +165,52 @@ fun VoiceSection(
             },
             onDismiss = { showSheet = false },
         )
+    }
+}
+
+@Composable
+private fun LocalWakeWordSettings(
+    status: LocalWakeWordStatus,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Experimental local wake word", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Say “Hey Clawsses” · processed locally · validation build",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = status.enabled, onCheckedChange = onEnabledChange)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "State: ${status.phase.name.lowercase()} · detections: ${status.detectionCount}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            status.error?.let { error ->
+                Spacer(Modifier.height(4.dp))
+                Text(error, style = MaterialTheme.typography.bodySmall, color = Color.Red)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Automatically pauses for Talk Mode, captions, dictation, TTS, and active runs.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -308,6 +362,9 @@ private fun OpenAIVoiceSettings(
     var apiKey by remember { mutableStateOf(voiceRecognitionManager.getOpenAIApiKey()) }
     var showApiKey by remember { mutableStateOf(false) }
     var isEnabled by remember { mutableStateOf(voiceRecognitionManager.isOpenAIVoiceEnabled()) }
+    var longDictationEnabled by remember {
+        mutableStateOf(voiceRecognitionManager.isLongDictationEnabled())
+    }
 
     val hasApiKey = apiKey.isNotEmpty()
     val isConfigured = hasApiKey && isEnabled
@@ -427,6 +484,40 @@ private fun OpenAIVoiceSettings(
             Text(
                 "OpenAI provides higher accuracy voice recognition using GPT-4o. " +
                     "Falls back to device recognition if unavailable.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider(thickness = 0.5.dp)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Long dictation", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Phone mic button only · tap once to record, tap again to transcribe · " +
+                            "maximum 5 minutes",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = longDictationEnabled,
+                    onCheckedChange = { enabled ->
+                        longDictationEnabled = enabled
+                        voiceRecognitionManager.setLongDictationEnabled(enabled)
+                    },
+                    enabled = isConfigured,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Talk Mode, live captions, and direct Rokid audio remain on the existing " +
+                    "Realtime path.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

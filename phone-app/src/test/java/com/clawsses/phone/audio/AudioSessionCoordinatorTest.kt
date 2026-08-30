@@ -67,6 +67,44 @@ class AudioSessionCoordinatorTest {
         assertNotNull(coordinator.beginCapture())
     }
 
+    @Test
+    fun `capture preempts wake word before taking ownership`() {
+        val coordinator = AudioSessionCoordinator(FakeFocusController())
+        var preemptions = 0
+        val wakeWord = requireNotNull(coordinator.beginWakeWord { preemptions += 1 })
+
+        val capture = requireNotNull(coordinator.beginCapture())
+
+        assertEquals(1, preemptions)
+        assertFalse(coordinator.isCurrent(wakeWord))
+        assertTrue(coordinator.isCurrent(capture))
+        assertEquals(AudioSessionOwner.CAPTURE, coordinator.activeOwner.value)
+    }
+
+    @Test
+    fun `playback preempts wake word but still requires focus`() {
+        val focus = FakeFocusController()
+        val coordinator = AudioSessionCoordinator(focus)
+        var preemptions = 0
+        coordinator.beginWakeWord { preemptions += 1 }
+
+        val playback = requireNotNull(coordinator.beginPlayback {})
+
+        assertEquals(1, preemptions)
+        assertEquals(AudioSessionOwner.PLAYBACK, coordinator.activeOwner.value)
+        assertTrue(coordinator.release(playback))
+        assertNull(coordinator.activeOwner.value)
+    }
+
+    @Test
+    fun `wake word never preempts foreground capture`() {
+        val coordinator = AudioSessionCoordinator(FakeFocusController())
+        val capture = requireNotNull(coordinator.beginCapture())
+
+        assertNull(coordinator.beginWakeWord {})
+        assertTrue(coordinator.isCurrent(capture))
+    }
+
     private class FakeFocusController(private val grant: Boolean = true) : SpeechAudioFocusController {
         private var loss: (() -> Unit)? = null
         var abandons = 0

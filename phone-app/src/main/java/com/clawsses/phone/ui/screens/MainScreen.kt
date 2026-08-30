@@ -125,6 +125,7 @@ fun MainScreen() {
     val ttsPlaybackState by ttsPlaybackManager.state.collectAsStateWithLifecycle()
     val ttsCanReplay by ttsPlaybackManager.canReplay.collectAsStateWithLifecycle()
     val liveCaptionState by liveCaptionManager.state.collectAsStateWithLifecycle()
+    val localWakeWordStatus by runtime.localWakeWordCoordinator.status.collectAsStateWithLifecycle()
 
     // Persist OpenClaw settings in Android Keystore-backed encrypted preferences.
     val prefs = remember { SecurePreferences.create(context, "clawsses") }
@@ -311,9 +312,14 @@ fun MainScreen() {
                         if (talkModeState.enabled) {
                             stopTalkMode(disable = true)
                         } else if (isListening) {
-                            voiceRecognitionManager.stopListening()
+                            if (voiceMode != VoiceRecognitionManager.RecognitionMode.TRANSCRIBING) {
+                                voiceRecognitionManager.stopListening()
+                            }
                         } else {
-                            voiceRecognitionManager.startListening(languageTag = voiceLanguageManager.getActiveLanguageTag()) { result ->
+                            voiceRecognitionManager.startListening(
+                                languageTag = voiceLanguageManager.getActiveLanguageTag(),
+                                inputMode = voiceRecognitionManager.manualInputMode(),
+                            ) { result ->
                                 when (result) {
                                     is VoiceCommandHandler.VoiceResult.Text -> {
                                         if (result.text.isNotEmpty()) {
@@ -337,6 +343,8 @@ fun MainScreen() {
                         talkModeState.enabled -> Color(0xFF4CAF50)
                         !isListening -> MaterialTheme.colorScheme.onSurface
                         voiceMode == VoiceRecognitionManager.RecognitionMode.OPENAI -> Color(0xFF2196F3)  // Blue for OpenAI
+                        voiceMode == VoiceRecognitionManager.RecognitionMode.LONG_DICTATION -> Color(0xFFFF9800)
+                        voiceMode == VoiceRecognitionManager.RecognitionMode.TRANSCRIBING -> Color(0xFF9C27B0)
                         else -> Color.Red  // Red for device/fallback
                     }
                     Icon(
@@ -345,6 +353,10 @@ fun MainScreen() {
                             talkModeState.enabled -> "Stop Talk Mode (${talkModeState.phase.name.lowercase()})"
                             !isListening -> "Voice input"
                             voiceMode == VoiceRecognitionManager.RecognitionMode.OPENAI -> "Listening (OpenAI)"
+                            voiceMode == VoiceRecognitionManager.RecognitionMode.LONG_DICTATION ->
+                                "Recording long dictation; tap to transcribe"
+                            voiceMode == VoiceRecognitionManager.RecognitionMode.TRANSCRIBING ->
+                                "Transcribing long dictation"
                             else -> "Listening (Device)"
                         },
                         tint = iconTint
@@ -501,6 +513,8 @@ fun MainScreen() {
             // Voice
             voiceLanguageManager = voiceLanguageManager,
             voiceRecognitionManager = voiceRecognitionManager,
+            localWakeWordStatus = localWakeWordStatus,
+            onLocalWakeWordChange = runtime.localWakeWordCoordinator::setEnabled,
             talkModeState = talkModeState,
             onTalkModeChange = { enabled ->
                 if (enabled) {

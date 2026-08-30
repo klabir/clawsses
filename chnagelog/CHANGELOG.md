@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## 1.3.122 (build 131)
+
+### Added
+
+- Add an opt-in experimental local `HEY CLAWSSES` wake word using the official Apache-2.0
+  sherpa-onnx 1.13.6 engine and pinned GigaSpeech KWS model assets.
+- Add visible wake-word phase, detection count, and fail-closed error state to Phone voice settings.
+- Add deterministic policy and audio-ownership tests covering capture/playback preemption.
+
+### Changed
+
+- Give local keyword spotting the lowest process-wide audio priority so Talk Mode, live captions,
+  foreground recognition, dictation, TTS, and active OpenClaw runs always pause it.
+- Keep debug builds multi-ABI for API-35 emulator CI while limiting the paired release Phone APK to
+  the deployed `arm64-v8a` architecture; the gated unsigned candidate is 41.8 MB.
+- Preserve sherpa-onnx JNI configuration fields through release minification and enforce the exact
+  branded `HEY CLAWSSES` token file with the same pinned provenance gate as the model assets.
+- Advance the paired Phone/HUD candidate to `1.3.122` / Build `131`.
+
+## 1.3.121 (build 130)
+
+### Added
+
+- Add an optional, bounded Phone-only long-dictation mode that records to a temporary WAV file and
+  submits it to OpenAI transcription without buffering the full recording in memory.
+- Add direct tests for the five-minute audio bound, WAV framing, language normalization, and
+  explicit mode-selection policy.
+
+### Changed
+
+- Advance the shared Phone/HUD candidate version to `1.3.121` / Build `130`.
+- Keep Talk Mode, live captions, and direct Rokid voice input on the existing realtime path; long
+  dictation remains an explicit manual Phone-microphone setting.
+
 ## 1.3.120 (build 129)
 
 ### Changed
