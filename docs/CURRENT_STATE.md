@@ -6,13 +6,14 @@ Committed source and fresh runtime evidence override conversational memory and h
 
 Last verified: 2026-08-30
 
-## Current release candidate
+## Current release
 
 - Version: `1.3.99` / Build `108`
 - Release commit: `12b4a82`
-- Branch: `build/108-unified-installer`
-- Base main merge: `1a06c1cc3a330028571d6bd643d417258b70b1b2`
-- Publication status: committed locally; not pushed or merged into `main`.
+- Handoff commit: `48e55c7`
+- Main merge: `9837c415995215b4bc8fe10e2b6d8e84e8daf508`
+- Release branch: `build/108-unified-installer` (pushed)
+- Publication status: source pushed and merged into `main`; private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
