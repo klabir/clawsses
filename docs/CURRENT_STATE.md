@@ -8,34 +8,36 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.109` / Build `118`
-- Release commit: `6d67977`
-- Main merge: `2a6851c`
-- Release branch: `build/118-hud-ui-components` (pushed)
-- Publication status: source pushed and merged into `main`; private APKs remain unpublished.
+- Version: `1.3.113` / Build `122`
+- Release commit: `c269283`
+- Base main: `f472f28`
+- Release branch: `build/122-openclaw-request-coordinator` (local only)
+- Publication status: Builds `119`–`122` are committed locally but are not pushed or merged;
+  private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
 ## Release commit stack
 
-- Builds `114`–`118` are cumulative release commits: `6af1bf9`, `0f32553`, `ac4949f`,
-  `1b2f137`, `6d67977`.
-- The complete public paired-release gate is green. Private Phone/HUD artifacts have matching
-  signers, and the embedded HUD APK is byte-identical to the standalone private HUD APK.
-- The final official CXR-L install, HUD launch, and fresh matching `118/118` runtime handshake are
-  verified. The release branch and merged `main` source are pushed.
+- Builds `119`–`122` are cumulative release commits: `277f4f7`, `d87cfb2`, `a9885b5`,
+  `c269283`.
+- The complete 220-task public paired-release gate passed at every candidate stage. Final private
+  Phone/HUD artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the
+  standalone private HUD APK.
+- The final official CXR-L install callbacks, HUD launch, and fresh matching `122/122` runtime
+  handshake are verified. The release branch remains local and unmerged.
 
 ## Verified hardware state
 
-- The connected Pixel phone and Rokid HUD both run private hardware-test build `1.3.109` / Build
-  `118` from local commit `6d67977`.
+- The connected Pixel phone and Rokid HUD both run private hardware-test build `1.3.113` / Build
+  `122` from local commit `c269283`.
 - The Phone installation, cold launch, resumed Activity, live process, official Hi Rokid/CXR-L HUD
-  upload, install, launch, and fresh matching `118/118` peer handshake were verified.
+  upload, install, launch, and fresh matching `122/122` peer handshake were verified.
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 118 source is pushed and merged into `main`; private APKs remain unpublished.
-- The Build-118 commits contain no APKs or credentials.
+- Build 122 source is committed locally but not pushed or merged; private APKs remain unpublished.
+- The Build-119–122 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
 
@@ -90,6 +92,37 @@ with `adb devices -l` and collect a fresh version handshake.
 - The release has 280 checked-in `@Test` cases across JVM and instrumentation sources. The full
   public `verifyPairedRelease` gate passed at every candidate stage.
 
+## Build 119–122 release changes
+
+- Build 119 moves deterministic Phone-to-HUD state effects out of `HudActivity` into the tested
+  `HudPhoneMessageEffectPlanner`; streaming, voice, camera, wake, ACK, and replay ownership remain
+  at their established runtime boundaries.
+- Build 120 moves thumbnails, staged input, menu navigation, clock, and battery telemetry into
+  `HudInputSurfaces.kt` with API-35 HUD instrumentation coverage.
+- Build 121 moves primary content/input/menu gesture decisions into the pure, tested
+  `HudInteractionPlanner`, leaving hardware and transport side effects in `HudActivity`.
+- Build 122 moves gateway request IDs, pending-response correlation, late-response rejection, and
+  disconnect failure into the tested `OpenClawRequestCoordinator` behind the stable client API.
+- `HudActivity.kt` is now 1,706 lines, `HudScreen.kt` 1,215 lines, and `OpenClawClient.kt` 1,335
+  lines. The repository has 310 checked-in `@Test` cases across JVM and instrumentation sources.
+- These builds are structural refactors with behavior gates; no runtime performance improvement is
+  claimed without a same-device benchmark.
+
+## Current code rating
+
+- Overall: **8.8/10**. Correctness and release safety are strong: typed protocol boundaries,
+  deterministic planners, public/private artifact isolation, 310 tests, the complete paired gate,
+  and a verified physical `122/122` deployment.
+- Architecture: **8.6/10**. The new planners and coordinator reduce mixed UI/transport state, but
+  `HudActivity` and `OpenClawClient` remain the principal orchestration hotspots.
+- Maintainability: **8.5/10**. Compose and interaction responsibilities are materially smaller and
+  directly testable; remaining risk is concentrated in lifecycle-heavy Activity and client flows.
+- Performance confidence: **8.4/10**. Hot-path allocations and invalidation boundaries have
+  improved over earlier releases, but Builds 119–122 were not followed by a fresh Macrobenchmark.
+- Security/release discipline: **9.4/10**. Public artifacts remain credential-free, private
+  artifacts stay unpublished, signer/hash/version gates match, and temporary Hi Rokid ownership is
+  restored after deployment.
+
 ## Platform contracts
 
 - Phone: compile SDK 35, target SDK 35, minimum SDK 28.
@@ -131,8 +164,8 @@ For source changes, run the narrowest modified tests and then:
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
 
-Build `118` has passed the final official CXR-L HUD installation and fresh matching `118/118`
-runtime handshake. Its release branch and `main` integration are pushed.
+Build `122` has passed the final official CXR-L HUD installation and fresh matching `122/122`
+runtime handshake. Its release branch is committed locally but is not pushed or merged.
 
 ## New-session resume prompt
 
