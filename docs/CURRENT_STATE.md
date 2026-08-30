@@ -14,6 +14,8 @@ Last verified: 2026-08-30
 - Release branch: `build/127-hud-catalog-interactions`, integrated into local `main`
 - Publication status: Builds 126-127 are merged and pushed on `main`; all private APKs remain
   unpublished.
+- GitHub release: source-only `v1.3.118` / Build 127, published from exact source commit `7a26d19`
+  with no binary assets.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
