@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
+## 1.3.97 (build 106)
+
 ### Changed
 
+- Restrict CXR-M vendor logging to warnings and errors before initializing the SDK.
 - Update the README for Build 105 recovery and source-only release behavior.
+
+### Security
+
+- Prevent CXR-M 1.2.2 from writing credential-bearing account and Bluetooth arguments to Logcat at INFO level.
 
 ## 1.3.96 (build 105)
 
