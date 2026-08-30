@@ -8,12 +8,12 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.116` / Build `125` source candidate
-- Release commit: none; Builds 124–125 remain uncommitted pending the final Build-125 gate
-- Base main: `7b6ec26`
-- Release branch: `build/124-session-identity` (local cumulative Builds 124–125 worktree)
-- Publication status: Build 123 source is merged and pushed on `main`; Builds 124–125 are
-  uncommitted local candidates and all private APKs remain unpublished.
+- Version: `1.3.116` / Build `125` source release
+- Release commit: `ed9e605`; merged to `main` by `f91cbd4`
+- Base main before release: `7b6ec26`
+- Release branch: `build/124-session-identity` (cumulative Builds 124–125 source)
+- Publication status: Build 125 source is merged and pushed on `main`; all private APKs remain
+  unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
@@ -21,6 +21,9 @@ Last verified: 2026-08-30
 
 - Builds `119`–`123` are integrated on `main` by merge commit `7b6ec26`; the Build-123 source commit
   is `3243648` and includes the cumulative Builds 119–122 commits.
+- Builds `124`–`125` are integrated by source commit `ed9e605` and merge commit `f91cbd4`.
+- The complete 220-task public paired-release source gate passed for Build 125. No Build-125 APK
+  was installed because device mutation was not authorized for this source release.
 - The complete 220-task public paired-release gate passed for Build 123. Its private Phone/HUD
   artifacts have matching v2 signers, and the embedded HUD APK is byte-identical to the standalone
   private HUD APK.
@@ -39,8 +42,8 @@ Last verified: 2026-08-30
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 123 source is merged and published on `main`; private APKs remain unpublished.
-- The Build-119–123 commits contain no APKs or credentials.
+- Build 125 source is merged and published on `main`; private APKs remain unpublished.
+- The Build-119–125 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
 
@@ -121,7 +124,7 @@ with `adb devices -l` and collect a fresh version handshake.
   transcript invalidations while coalescing duplicate refresh triggers.
 - The repository has 312 checked-in `@Test` cases across JVM and instrumentation sources.
 
-## Build 124 candidate changes
+## Build 124 release changes
 
 - Read persisted transcript identity, idempotency, and sequence from the gateway's canonical
   `message.__openclaw` metadata before using legacy direct fields or envelope fallbacks.
@@ -129,7 +132,7 @@ with `adb devices -l` and collect a fresh version handshake.
   replaced without a transient duplicate.
 - Test against the gateway's actual nested metadata shape instead of a simplified local fixture.
 
-## Build 125 candidate changes
+## Build 125 release changes
 
 - Retain exactly one trailing authoritative-history refresh when one or more invalidations arrive
   during an active refresh.
@@ -140,10 +143,10 @@ with `adb devices -l` and collect a fresh version handshake.
 
 ## Current code rating
 
-- Overall: **9.0/10** for the Build-123 source candidate. The confirmed cross-client correctness
-  gap is closed behind typed protocol and reconciliation boundaries, with 312 tests and the full
-  public paired gate green. Deployment confidence remains provisional until the fresh `123/123`
-  handshake is observed.
+- Overall: **9.0/10** for the Build-125 source release. Cross-client identity and refresh races are
+  contained behind typed, directly tested reconciliation boundaries, with 316 checked-in tests
+  and the full public paired source gate green. Deployment confidence remains tied to Build 123
+  until Build 125 receives a separately authorized paired-device gate.
 - Architecture: **8.7/10**. Session subscription, message identity, and refresh coalescing now live
   in a tested coordinator, but `HudActivity` and the 1,480-line `OpenClawClient` remain the principal
   orchestration hotspots.
@@ -196,9 +199,10 @@ For source changes, run the narrowest modified tests and then:
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
 
-Build `123` has passed the full public gate, private artifact checks, Phone deployment, and official
-CXR-L HUD installation callback. A fresh matching `123/123` runtime handshake remains required
-after physically waking the known deep-sleep CXR beacon. The candidate is uncommitted and local.
+Build `125` has passed the full public source gate and is merged on `main`. Build `123` remains the
+latest installed hardware-test pair and passed private artifact checks, Phone deployment, and the
+official CXR-L HUD installation callback. A fresh matching runtime handshake is still required
+after physically waking the known deep-sleep CXR beacon; Build 125 has not been installed.
 
 ## New-session resume prompt
 
