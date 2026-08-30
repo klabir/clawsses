@@ -6,8 +6,12 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 enum class AudioSessionOwner {
+    WAKE_WORD,
     CAPTURE,
     PLAYBACK,
 }
@@ -28,15 +32,27 @@ class AudioSessionCoordinator(
 ) {
     private var generation = 0L
     private var activeLease: AudioSessionLease? = null
+    private var wakeWordPreempt: (() -> Unit)? = null
+    private val mutableActiveOwner = MutableStateFlow<AudioSessionOwner?>(null)
+    val activeOwner: StateFlow<AudioSessionOwner?> = mutableActiveOwner.asStateFlow()
 
     @Synchronized
     fun beginCapture(): AudioSessionLease? {
+        preemptWakeWordLocked()?.invoke()
         if (activeLease != null) return null
         return newLease(AudioSessionOwner.CAPTURE)
     }
 
     @Synchronized
+    fun beginWakeWord(onPreempt: () -> Unit): AudioSessionLease? {
+        if (activeLease != null) return null
+        wakeWordPreempt = onPreempt
+        return newLease(AudioSessionOwner.WAKE_WORD)
+    }
+
+    @Synchronized
     fun beginPlayback(onFocusLost: () -> Unit): AudioSessionLease? {
+        preemptWakeWordLocked()?.invoke()
         if (activeLease != null) return null
         val lease = newLease(AudioSessionOwner.PLAYBACK)
         val granted = focusController.request {
@@ -44,6 +60,7 @@ class AudioSessionCoordinator(
                 if (activeLease != lease) false
                 else {
                     activeLease = null
+                    mutableActiveOwner.value = null
                     true
                 }
             }
@@ -64,6 +81,8 @@ class AudioSessionCoordinator(
         val abandonFocus = synchronized(this) {
             if (activeLease != lease) return false
             activeLease = null
+            if (lease.owner == AudioSessionOwner.WAKE_WORD) wakeWordPreempt = null
+            mutableActiveOwner.value = null
             lease.owner == AudioSessionOwner.PLAYBACK
         }
         if (abandonFocus) focusController.abandon()
@@ -71,19 +90,39 @@ class AudioSessionCoordinator(
     }
 
     fun clear() {
+        var preempt: (() -> Unit)? = null
         val abandonFocus = synchronized(this) {
             val hadPlayback = activeLease?.owner == AudioSessionOwner.PLAYBACK
+            if (activeLease?.owner == AudioSessionOwner.WAKE_WORD) {
+                preempt = wakeWordPreempt
+            }
+            wakeWordPreempt = null
             generation += 1
             activeLease = null
+            mutableActiveOwner.value = null
             hadPlayback
         }
+        preempt?.invoke()
         if (abandonFocus) focusController.abandon()
     }
 
     @Synchronized
     private fun newLease(owner: AudioSessionOwner): AudioSessionLease {
         generation += 1
-        return AudioSessionLease(owner, generation).also { activeLease = it }
+        return AudioSessionLease(owner, generation).also {
+            activeLease = it
+            mutableActiveOwner.value = owner
+        }
+    }
+
+    private fun preemptWakeWordLocked(): (() -> Unit)? {
+        if (activeLease?.owner != AudioSessionOwner.WAKE_WORD) return null
+        val callback = wakeWordPreempt
+        wakeWordPreempt = null
+        generation += 1
+        activeLease = null
+        mutableActiveOwner.value = null
+        return callback
     }
 }
 

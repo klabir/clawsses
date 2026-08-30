@@ -9,8 +9,11 @@ Last verified: 2026-08-30
 ## Current release
 
 - Version: `1.3.120` / Build `129`, source-published and paired-device verified
-- Current uncommitted candidate: `1.3.121` / Build `130` on
-  `build/130-dictation-kws-spike`; source-gated but not installed or hardware verified
+- Build 130: `1.3.121` / source commit `2c8544c` on `build/130-dictation-kws-spike`;
+  source-gated, locally committed, not pushed, and verified with a fresh temporary `130/130`
+  Phone/HUD deployment and runtime handshake
+- Current candidate: `1.3.122` / Build `131` on `build/131-local-wake-validation`;
+  source-gated and paired-device verified, but not merged into `main` or released
 - Release commits: Build 128 `c8d3a1a`; Build 129 `96a8192`; main integration merge `602f484`
 - Base main before integration: `d06ed1d`
 - Release branch: `build/129-orchestrator-boundaries`, integrated into local and remote `main`
@@ -40,8 +43,18 @@ Last verified: 2026-08-30
 
 ## Verified hardware state
 
-- The connected Pixel phone runs private hardware-test build `1.3.120` / Build `129`; data-preserving
-  installation, resumed Activity, live process, and restored OpenClaw connection are verified.
+- The connected Pixel phone currently runs private hardware-test build `1.3.122` / Build `131`;
+  data-preserving installation, resumed Activity, live process, and restored OpenClaw connection
+  are verified. The HUD also runs Build `131`; the official CXR-L installer returned successful
+  install and launch callbacks, and Clawsses verified the matching live peer build.
+- Build 130 was installed on both Phone and HUD through the official CXR-L path, returned true
+  install and launch callbacks, restored Clawsses ownership, and produced a fresh matching
+  `130/130` state handshake before the Phone advanced to Build 131.
+- Build 131's minified Phone release loads its pinned sherpa-onnx JNI runtime and model on the Pixel,
+  enters `listening`, opens a 16 kHz `VOICE_RECOGNITION` capture, and releases that capture when
+  disabled. Wake-phrase accuracy, false accepts, soak behavior, and power cost remain unverified.
+- After Build 131 installation, Hi Rokid was restored to `disabled-user`, Clawsses reconnected,
+  the SDK compatibility check passed, and the HUD foreground package was `com.clawsses.glasses`.
 - After a full firmware reboot, the standalone `com.rokidapks` helper completed the Build-129 HUD
   upload and installation through the official Hi Rokid/CXR-L CUSTOMAPP path. The successful run
   formed a fresh Wi-Fi Direct group, completed DHCP DISCOVER/OFFER/REQUEST/ACK, and returned a true
@@ -211,6 +224,26 @@ with `adb devices -l` and collect a fresh version handshake.
   production because runtime construction, device accuracy, false-accept rate, microphone
   coexistence, and power cost are not yet measured.
 
+## Build 131 candidate changes
+
+- Integrate the official Apache-2.0 sherpa-onnx `1.13.6` Android runtime and selected int8
+  GigaSpeech 3.3M KWS assets with fixed SHA-256 provenance checks; no fork binary is used.
+- Add an opt-in, default-off `HEY CLAWSSES` validation path owned by a process-scoped coordinator.
+- Extend the existing audio-session coordinator with a lowest-priority wake-word lease. Foreground
+  capture and playback preempt KWS, while KWS can never preempt Talk Mode, captions, dictation,
+  ordinary recognition, or TTS.
+- After detection, release the KWS microphone before starting the existing Realtime recognition
+  path; send non-empty recognized text through the existing OpenClaw client.
+- Expose phase, detection count, and fail-closed errors in Phone voice settings. Runtime model
+  construction, accuracy, false accepts, battery cost, and long-soak coexistence remain hardware
+  gates before the feature can graduate from experimental.
+- Advance both applications to `1.3.122` / Build `131`. The complete 266-task paired source gate
+  passes with pinned KWS provenance, credential/debug-transport isolation, matching Phone/HUD
+  versions, and a byte-identical embedded HUD. The release Phone APK is arm64-only and 41.8 MB;
+  debug remains multi-ABI for emulator CI. Private Phone/HUD artifacts have matching v2 signers;
+  the official CXR-L install, launch, foreground ownership, SDK check, and live Build-131 peer
+  verification all pass. The candidate remains unmerged and unreleased.
+
 ## Current code rating
 
 - Overall: **9.2/10** from the latest detailed assessment. Build 129 is now paired-device verified;
@@ -281,8 +314,14 @@ version, v2-signer, and embedded-HUD hash checks. Both apps are installed, the o
 returned a successful install callback after a full glasses reboot, and a fresh matching `129/129`
 runtime handshake is verified. No runtime-performance improvement is claimed without a same-device
 benchmark. Build `130` passes the 265-task public source gate with matching `130` / `1.3.121`
-Phone/HUD evidence and a byte-identical embedded HUD artifact; it is not committed, installed, or
-paired-device verified.
+Phone/HUD evidence and a byte-identical embedded HUD artifact; source commit `2c8544c` is local and
+not pushed. Its private Phone/HUD artifacts passed matching signer and embedded-HUD checks, the
+official CXR-L install and launch callbacks succeeded, and a fresh `130/130` runtime handshake was
+observed. Build `131` passes its expanded 266-task public source gate with matching `131` /
+`1.3.122` evidence, pinned official KWS artifacts, and a byte-identical embedded HUD. Its corrected
+minified Phone build is installed and initializes the local KWS engine on Pixel hardware. The HUD
+install and launch succeeded through the official CXR-L path, Clawsses verified the matching live
+Build-131 peer, and Hi Rokid was restored to disabled. Build 131 remains unmerged and unreleased.
 
 ## New-session resume prompt
 

@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
+import com.clawsses.phone.voice.LocalWakeWordStatus
 import com.clawsses.phone.talk.TalkInteractionMode
 import com.clawsses.phone.talk.TalkModeState
 
@@ -59,6 +60,8 @@ import com.clawsses.phone.talk.TalkModeState
 fun VoiceSection(
     voiceLanguageManager: VoiceLanguageManager,
     voiceRecognitionManager: VoiceRecognitionManager? = null,
+    localWakeWordStatus: LocalWakeWordStatus? = null,
+    onLocalWakeWordChange: (Boolean) -> Unit = {},
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
     onTalkInteractionModeChange: (TalkInteractionMode) -> Unit = {},
@@ -101,6 +104,11 @@ fun VoiceSection(
         // OpenAI Voice Recognition settings
         if (voiceRecognitionManager != null) {
             OpenAIVoiceSettings(voiceRecognitionManager)
+            Spacer(Modifier.height(12.dp))
+        }
+
+        if (localWakeWordStatus != null) {
+            LocalWakeWordSettings(localWakeWordStatus, onLocalWakeWordChange)
             Spacer(Modifier.height(12.dp))
         }
 
@@ -157,6 +165,52 @@ fun VoiceSection(
             },
             onDismiss = { showSheet = false },
         )
+    }
+}
+
+@Composable
+private fun LocalWakeWordSettings(
+    status: LocalWakeWordStatus,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Experimental local wake word", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Say “Hey Clawsses” · processed locally · validation build",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = status.enabled, onCheckedChange = onEnabledChange)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "State: ${status.phase.name.lowercase()} · detections: ${status.detectionCount}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            status.error?.let { error ->
+                Spacer(Modifier.height(4.dp))
+                Text(error, style = MaterialTheme.typography.bodySmall, color = Color.Red)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Automatically pauses for Talk Mode, captions, dictation, TTS, and active runs.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

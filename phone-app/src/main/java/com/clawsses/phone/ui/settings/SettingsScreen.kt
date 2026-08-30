@@ -33,6 +33,7 @@ import com.clawsses.phone.tts.TtsPlaybackState
 import com.clawsses.phone.util.isEmulator
 import com.clawsses.phone.voice.VoiceLanguageManager
 import com.clawsses.phone.voice.VoiceRecognitionManager
+import com.clawsses.phone.voice.LocalWakeWordStatus
 
 @Composable
 fun SettingsScreen(
@@ -77,6 +78,8 @@ fun SettingsScreen(
     // Voice
     voiceLanguageManager: VoiceLanguageManager,
     voiceRecognitionManager: VoiceRecognitionManager? = null,
+    localWakeWordStatus: LocalWakeWordStatus? = null,
+    onLocalWakeWordChange: (Boolean) -> Unit = {},
     talkModeState: TalkModeState? = null,
     onTalkModeChange: (Boolean) -> Unit = {},
     onTalkInteractionModeChange: (TalkInteractionMode) -> Unit = {},
@@ -178,6 +181,8 @@ fun SettingsScreen(
                 VoiceSection(
                     voiceLanguageManager = voiceLanguageManager,
                     voiceRecognitionManager = voiceRecognitionManager,
+                    localWakeWordStatus = localWakeWordStatus,
+                    onLocalWakeWordChange = onLocalWakeWordChange,
                     talkModeState = talkModeState,
                     onTalkModeChange = onTalkModeChange,
                     onTalkInteractionModeChange = onTalkInteractionModeChange,

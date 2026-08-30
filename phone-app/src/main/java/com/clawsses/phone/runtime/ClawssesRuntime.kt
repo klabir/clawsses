@@ -54,6 +54,16 @@ class ClawssesRuntime(context: Context) {
         ttsSettingsManager,
         audioSessionCoordinator,
     )
+    internal val localWakeWordCoordinator = LocalWakeWordRuntimeCoordinator(
+        context = appContext,
+        audioSessions = audioSessionCoordinator,
+        voiceRecognition = voiceRecognitionManager,
+        voiceLanguage = voiceLanguageManager,
+        talkMode = talkModeManager,
+        liveCaptions = liveCaptionManager,
+        ttsPlayback = ttsPlaybackManager,
+        openClaw = openClawClient,
+    )
 
     val pendingPhotoRepository = PendingPhotoRepository(appContext)
     val pendingPhotos = pendingPhotoRepository.photos
@@ -103,12 +113,14 @@ class ClawssesRuntime(context: Context) {
         }
         talkCoordinator.start()
         phoneGlassesBridge.start()
+        localWakeWordCoordinator.start()
     }
 
     fun cleanup() {
         apkInstaller.cleanup()
         phoneGlassesBridge.cleanup()
         talkCoordinator.cleanup()
+        localWakeWordCoordinator.cleanup()
         glassesManager.dispose()
         openClawClient.cleanup()
         audioSessionCoordinator.clear()

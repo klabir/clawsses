@@ -125,6 +125,7 @@ fun MainScreen() {
     val ttsPlaybackState by ttsPlaybackManager.state.collectAsStateWithLifecycle()
     val ttsCanReplay by ttsPlaybackManager.canReplay.collectAsStateWithLifecycle()
     val liveCaptionState by liveCaptionManager.state.collectAsStateWithLifecycle()
+    val localWakeWordStatus by runtime.localWakeWordCoordinator.status.collectAsStateWithLifecycle()
 
     // Persist OpenClaw settings in Android Keystore-backed encrypted preferences.
     val prefs = remember { SecurePreferences.create(context, "clawsses") }
@@ -512,6 +513,8 @@ fun MainScreen() {
             // Voice
             voiceLanguageManager = voiceLanguageManager,
             voiceRecognitionManager = voiceRecognitionManager,
+            localWakeWordStatus = localWakeWordStatus,
+            onLocalWakeWordChange = runtime.localWakeWordCoordinator::setEnabled,
             talkModeState = talkModeState,
             onTalkModeChange = { enabled ->
                 if (enabled) {

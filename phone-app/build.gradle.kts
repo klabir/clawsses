@@ -293,6 +293,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // The paired production Phone is arm64. Keep debug multi-ABI for API-35 emulator CI,
+            // but do not ship three unused copies of the experimental native KWS runtime.
+            ndk.abiFilters += "arm64-v8a"
             if (useDebugSigningForHardwareTest.get()) {
                 // Explicit opt-in for a local, data-preserving hardware gate. Public release
                 // builds remain unsigned unless the publishing environment supplies a signer.
@@ -387,6 +390,10 @@ androidComponents {
 
 dependencies {
     implementation(project(":shared"))
+
+    // Official Apache-2.0 local keyword-spotting runtime. The release task below pins the exact
+    // upstream AAR hash; model assets are independently pinned as well.
+    implementation("com.k2fsa.sherpa:sherpa-onnx-static-link-onnxruntime:1.13.6@aar")
 
     // Rokid CXR-M SDK (Phone side)
     implementation("com.rokid.cxr:client-m:1.2.2")
@@ -503,6 +510,57 @@ tasks.named("check").configure {
     if (!useDebugSigningForHardwareTest.get()) {
         dependsOn(verifyPublicReleaseHasNoRokidCredentials)
     }
+}
+
+val verifyLocalWakeWordProvenance = tasks.register("verifyLocalWakeWordProvenance") {
+    group = "verification"
+    description = "Pins the official sherpa-onnx AAR and bundled KWS model assets by SHA-256."
+    val sherpaArtifact = configurations.detachedConfiguration(
+        dependencies.create(
+            "com.k2fsa.sherpa:sherpa-onnx-static-link-onnxruntime:1.13.6@aar"
+        )
+    )
+    inputs.files(sherpaArtifact)
+    inputs.dir(layout.projectDirectory.dir("src/main/assets/kws-model"))
+    doLast {
+        fun digest(file: File): String {
+            val hash = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    hash.update(buffer, 0, count)
+                }
+            }
+            return hash.digest().joinToString("") { byte -> "%02x".format(byte) }
+        }
+
+        val expected = mapOf(
+            sherpaArtifact.singleFile to
+                "01e87037afca2ed49085062aace5c012e60321e8e23e3a72b6d9ac02c843f66c",
+            file("src/main/assets/kws-model/encoder.int8.onnx") to
+                "1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678",
+            file("src/main/assets/kws-model/decoder.int8.onnx") to
+                "e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a",
+            file("src/main/assets/kws-model/joiner.int8.onnx") to
+                "eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c",
+            file("src/main/assets/kws-model/tokens.txt") to
+                "fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53",
+            file("src/main/assets/kws-model/keywords.txt") to
+                "08325de3c22cd0ad23277e19cce052ac173e6c62463e6a4ab35ba2696702816d",
+        )
+        expected.forEach { (artifact, expectedHash) ->
+            check(artifact.isFile) { "Missing local wake-word artifact: ${artifact.name}" }
+            check(digest(artifact) == expectedHash) {
+                "Unexpected SHA-256 for local wake-word artifact: ${artifact.name}"
+            }
+        }
+    }
+}
+
+tasks.named("check").configure {
+    dependsOn(verifyLocalWakeWordProvenance)
 }
 
 val generatePairedReleaseEvidence = tasks.register<GeneratePairedReleaseEvidenceTask>(
