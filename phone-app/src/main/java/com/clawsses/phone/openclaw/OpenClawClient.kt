@@ -495,28 +495,7 @@ class OpenClawClient(
                     return@launch
                 }
 
-                val sessions = parseSessions(response.payload)
-                val requestLimit = SessionRequestFactory.pageRequestLimit(safeOffset)
-                val hasMore = response.payload?.get("hasMore")?.asBoolean
-                    ?: (sessions.size == requestLimit)
-                val nextOffset = response.payload?.get("nextOffset")
-                    ?.takeIf { !it.isJsonNull }
-                    ?.asInt
-                    ?: if (hasMore) safeOffset + sessions.size else null
-                val unread = _unreadSessions.value
-                onSessionList?.invoke(
-                    SessionListUpdate(
-                        sessions = SessionRequestFactory.pageItems(
-                            sessions = sessions,
-                            offset = safeOffset,
-                            homeSessionKey = homeSessionKey,
-                            unreadSessionKeys = unread,
-                        ),
-                        offset = safeOffset,
-                        nextOffset = nextOffset,
-                        hasMore = hasMore,
-                    )
-                )
+                onSessionList?.invoke(catalogSession.sessionPage(response.payload, safeOffset))
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting session page", e)
                 onSessionOperation?.invoke(
@@ -543,38 +522,7 @@ class OpenClawClient(
                     return@launch
                 }
 
-                val agents = response.payload?.getAsJsonArray("agents")
-                    ?.mapNotNull { element ->
-                        val obj = element.takeIf { it.isJsonObject }?.asJsonObject
-                            ?: return@mapNotNull null
-                        val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString
-                            ?.takeIf { it.isNotBlank() }
-                            ?: return@mapNotNull null
-                        val identity = obj.get("identity")?.takeIf { it.isJsonObject }?.asJsonObject
-                        val identityName = identity?.get("name")
-                            ?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
-                        val configuredName = obj.get("name")
-                            ?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
-                        val emoji = identity?.get("emoji")
-                            ?.takeIf { it.isJsonPrimitive }?.asString
-                            ?.takeIf { it.isNotBlank() && it != "(not set)" }
-                        var name = configuredName ?: identityName ?: id
-                        if (emoji != null && !name.contains(emoji)) name = "$emoji $name"
-                        val modelElement = obj.get("model")
-                        val model = when {
-                            modelElement == null -> null
-                            modelElement.isJsonPrimitive -> modelElement.asString
-                            modelElement.isJsonObject -> modelElement.asJsonObject.get("primary")
-                                ?.takeIf { it.isJsonPrimitive }?.asString
-                            else -> null
-                        }
-                        AgentInfo(id = id, name = name, model = model)
-                    }
-                    .orEmpty()
-
-                _agentList.value = agents
-                val defaultAgentId = response.payload?.get("defaultId")
-                    ?.takeIf { it.isJsonPrimitive }?.asString
+                val defaultAgentId = catalogSession.applyAgentCatalog(response.payload)
                 onAgentList?.invoke(currentAgentListUpdate(defaultAgentId))
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting agents", e)
@@ -618,17 +566,7 @@ class OpenClawClient(
                         null
                     }
                 }
-                val agentModel = _agentList.value
-                    .firstOrNull { it.id == agentIdFromSessionKey(sessionKey) }
-                    ?.model
-                    ?.takeIf { candidate -> models.any { it.ref == candidate } }
-                val catalog = ParsedModelCatalog(
-                    models = models,
-                    currentModel = sessionModel ?: agentModel ?: _currentModelRef.value,
-                )
-                _modelList.value = catalog.models
-                _currentModelRef.value = catalog.currentModel
-                _modelSelectionError.value = null
+                catalogSession.applyModelCatalog(models, sessionModel)
                 onAgentList?.invoke(currentAgentListUpdate())
             } catch (e: Exception) {
                 Log.e(TAG, "Error requesting models", e)
@@ -676,12 +614,7 @@ class OpenClawClient(
     }
 
     fun currentAgentListUpdate(defaultAgentId: String? = null): AgentListUpdate {
-        val currentAgentId = agentIdFromSessionKey(_currentSessionKey.value) ?: defaultAgentId
-        return buildAgentListUpdate(
-            agents = _agentList.value,
-            currentAgentId = currentAgentId,
-            currentModelRef = _currentModelRef.value,
-        )
+        return catalogSession.currentAgentListUpdate(defaultAgentId)
     }
 
     /** Select an agent's canonical main session, which is created lazily if needed. */

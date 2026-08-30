@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.107 (build 116)
+
+### Changed
+
+- Move session-page projection, agent catalog parsing, model fallback selection, and agent-list
+  projection into the catalog/session component behind the stable `OpenClawClient` facade.
+- Keep gateway methods and callback payloads unchanged while making catalog decisions directly
+  testable without a WebSocket.
+
 ## 1.3.106 (build 115)
 
 ### Changed

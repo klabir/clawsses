@@ -7,6 +7,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
+import com.google.gson.JsonParser
+import com.clawsses.shared.AgentInfo
+import com.clawsses.shared.ModelInfo
 
 class OpenClawComponentsTest {
     @Test
@@ -52,5 +55,40 @@ class OpenClawComponentsTest {
         assertFalse(component.completedAbortedRuns.containsKey("run-0"))
         assertTrue(component.completedAbortedRuns.containsKey("run-69"))
         directory.deleteRecursively()
+    }
+
+    @Test
+    fun `agent catalog applies identity labels and primary model`() {
+        val payload = JsonParser.parseString(
+            """{"defaultId":"main","agents":[
+                {"id":"main","name":"Bugl","identity":{"emoji":"tool"},"model":{"primary":"openai/codex"}},
+                {"id":"secondary","identity":{"name":"Second","emoji":"(not set)"},"model":"local/model"}
+            ]}""",
+        ).asJsonObject
+
+        val parsed = parseAgentCatalog(payload)
+
+        assertEquals("main", parsed.defaultAgentId)
+        assertEquals("tool Bugl", parsed.agents[0].name)
+        assertEquals("openai/codex", parsed.agents[0].model)
+        assertEquals("Second", parsed.agents[1].name)
+    }
+
+    @Test
+    fun `model catalog prefers session model then active agent fallback`() {
+        val component = OpenClawCatalogSessionComponent()
+        component.activateSession("agent:main:main")
+        component.agentList.value = listOf(AgentInfo("main", "Main", "local/fallback"))
+        val models = listOf(
+            ModelInfo("openai/current", "openai", "current", "Current", true),
+            ModelInfo("local/fallback", "local", "fallback", "Fallback", true),
+        )
+
+        val sessionCatalog = component.applyModelCatalog(models, "openai/current")
+        val fallbackCatalog = component.applyModelCatalog(models, null)
+
+        assertEquals("openai/current", sessionCatalog.currentModel)
+        assertEquals("local/fallback", fallbackCatalog.currentModel)
+        assertEquals(models, component.modelList.value)
     }
 }
