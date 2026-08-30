@@ -8,12 +8,12 @@ Last verified: 2026-08-30
 
 ## Current release
 
-- Version: `1.3.116` / Build `125` source release
-- Release commit: `ed9e605`; merged to `main` by `f91cbd4`
-- Base main before release: `7b6ec26`
-- Release branch: `build/124-session-identity` (cumulative Builds 124–125 source)
-- Publication status: Build 125 source is merged and pushed on `main`; all private APKs remain
-  unpublished.
+- Version: `1.3.117` / Build `126` source candidate
+- Release commit: none; Build 126 remains local pending its full source gate
+- Base main: `68580c6`
+- Release branch: `build/126-openclaw-active-session-runtime` (local only)
+- Publication status: Build 125 source is merged and pushed on `main`; Build 126 remains local and
+  all private APKs remain unpublished.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
   credentials, private endpoints, or unsanitized vendor logs.
 
@@ -141,12 +141,20 @@ with `adb devices -l` and collect a fresh version handshake.
 - Cover the real gateway payload through parsing, optimistic correlation, and bounded-store
   replacement in one regression test.
 
+## Build 126 candidate changes
+
+- Move active-session subscription, authoritative history reconciliation, refresh ownership, and
+  bounded pagination into `OpenClawActiveSessionRuntime` behind the stable client API.
+- Preserve session epochs and gateway contracts while directly testing subscription replacement,
+  stale history rejection, and bounded expanded-history claims.
+- Reduce `OpenClawClient.kt` from 1,485 to 1,342 lines without changing Phone/HUD protocol or
+  Rokid ownership.
+
 ## Current code rating
 
-- Overall: **9.0/10** for the Build-125 source release. Cross-client identity and refresh races are
-  contained behind typed, directly tested reconciliation boundaries, with 316 checked-in tests
-  and the full public paired source gate green. Deployment confidence remains tied to Build 123
-  until Build 125 receives a separately authorized paired-device gate.
+- Overall: **9.0/10** for the Build-126 source candidate. Active-session lifecycle and history work
+  now have a dedicated tested owner, with 319 checked-in tests. Deployment confidence remains tied
+  to Build 123 until the final improvement release receives its paired-device gate.
 - Architecture: **8.7/10**. Session subscription, message identity, and refresh coalescing now live
   in a tested coordinator, but `HudActivity` and the 1,480-line `OpenClawClient` remain the principal
   orchestration hotspots.
@@ -199,10 +207,10 @@ For source changes, run the narrowest modified tests and then:
 For a paired release, additionally require matching Phone/HUD versions, signatures, embedded-HUD
 hash equality, install completion, fresh HUD launch, and a matching runtime state handshake.
 
-Build `125` has passed the full public source gate and is merged on `main`. Build `123` remains the
-latest installed hardware-test pair and passed private artifact checks, Phone deployment, and the
-official CXR-L HUD installation callback. A fresh matching runtime handshake is still required
-after physically waking the known deep-sleep CXR beacon; Build 125 has not been installed.
+Build `126` must pass the full public source gate before its local intermediate commit. Build `123`
+remains the latest installed hardware-test pair and passed private artifact checks, Phone
+deployment, and the official CXR-L HUD installation callback. Build 126 will not be installed;
+paired deployment is reserved for the final Build-127 improvement release.
 
 ## New-session resume prompt
 

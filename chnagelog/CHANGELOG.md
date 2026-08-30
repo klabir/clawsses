@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.117 (build 126)
+
+### Changed
+
+- Move active-session subscription, authoritative history reconciliation, and bounded pagination
+  from `OpenClawClient` into a dedicated runtime behind the existing client API.
+- Preserve session epochs, refresh claims, gateway methods, callbacks, and history limits while
+  directly testing stale responses and subscription replacement.
+
 ## 1.3.116 (build 125)
 
 ### Fixed
