@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## 1.3.109 (build 118)
+
+### Changed
+
+- Split session, model, and agent picker overlays from the primary HUD chat surface into a
+  dedicated Compose component file.
+- Preserve picker layout, focus, navigation labels, and visible state contracts while reducing
+  the primary `HudScreen` source by more than four hundred lines.
+
 ## 1.3.108 (build 117)
 
 ### Changed
