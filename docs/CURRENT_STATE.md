@@ -19,12 +19,14 @@ Last verified: 2026-08-30
 
 ## Verified hardware state
 
-- The connected Pixel phone runs the private hardware-test build `1.3.104` / Build `113` from
-  local commit `76e00ef`; installation, cold launch, resumed Activity, and live process were verified.
-- No HUD was connected for Builds 109–113. Its last paired verified state remains `1.3.99` / Build
-  `108`, so the current devices must be treated as version-mismatched until a fresh paired gate.
-- Build 113 is a local cumulative candidate only. It is not pushed, merged, published, or a verified
-  paired release.
+- The connected Pixel phone and Rokid HUD both run the private hardware-test build `1.3.104` /
+  Build `113` from local commit `76e00ef`.
+- The Phone installation, cold launch, resumed Activity, live process, official Hi Rokid/CXR-L HUD
+  upload, install, launch, and fresh matching `113/113` peer handshake were verified.
+- Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
+  connection and the HUD foreground package is `com.clawsses.glasses`.
+- Build 113 is a hardware-verified local cumulative candidate only. It is not pushed, merged, or
+  published, so Build 108 remains the current repository release until explicit integration.
 - The Build-108 commit contains no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
@@ -61,8 +63,8 @@ with `adb devices -l` and collect a fresh version handshake.
 - Local commits, in order: `0d0a60f`, `cf6ba5c`, `010bc9a`, `47c5fdc`, `76e00ef`.
 - The private Build-113 Phone APK contains a HUD artifact whose SHA-256 matches the standalone
   private HUD APK, and its embedded manifest reports package `com.clawsses.glasses`, Build `113`,
-  version `1.3.104`, with a match-host signer policy. This is artifact evidence, not HUD runtime
-  evidence.
+  version `1.3.104`, with a match-host signer policy. The matching runtime handshake was confirmed
+  after the official CXR-L installation.
 
 ## Platform contracts
 
