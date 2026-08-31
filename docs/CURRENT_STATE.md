@@ -4,21 +4,26 @@ This file is the canonical handoff for a new agent session or model. Read it tog
 `AGENTS.md`, then verify every mutable fact against Git and the connected devices before acting.
 Committed source and fresh runtime evidence override conversational memory and historical notes.
 
-Last verified: 2026-08-30
+Last verified: 2026-08-31
 
 ## Current release
 
-- Version: `1.3.120` / Build `129`, source-published and paired-device verified
-- Build 130: `1.3.121` / source commit `2c8544c` on `build/130-dictation-kws-spike`;
-  source-gated, locally committed, not pushed, and verified with a fresh temporary `130/130`
-  Phone/HUD deployment and runtime handshake
-- Current candidate: `1.3.122` / Build `131` on `build/131-local-wake-validation`;
-  source-gated and paired-device verified, but not merged into `main` or released
-- Release commits: Build 128 `c8d3a1a`; Build 129 `96a8192`; main integration merge `602f484`
+- Latest published source release: `1.3.120` / Build `129`, paired-device verified
+- Builds 130-131 are integrated on local and remote `main` by merge commit `61d6d46`; Build 131
+  remains unreleased and its private APKs remain unpublished.
+- Installed paired build: `1.3.123` / Build `132`, with a fresh matching Phone/HUD runtime
+  handshake and successful official CXR-L install and launch callbacks.
+- Current candidate: `1.3.123` / Build `132` on `build/132-canonical-session-patch`; it replaces
+  the local `sessions.model.select` dependency with canonical write-scoped `sessions.patch`. The
+  266-task source gate and private artifact checks pass. Private Phone/HUD artifacts are installed
+  and a fresh matching `132/132` runtime handshake is verified; the candidate remains unmerged and
+  unreleased.
+- Release commits: Build 128 `c8d3a1a`; Build 129 `96a8192`; Build 130 `2c8544c`; Build 131
+  `44f3120`; latest main integration merge `61d6d46`
 - Base main before integration: `d06ed1d`
 - Release branch: `build/129-orchestrator-boundaries`, integrated into local and remote `main`
-- Publication status: Builds 128-129 are merged and pushed on `main`; all private APKs remain
-  unpublished. GitHub Actions source/release and API-35 instrumentation jobs passed on `602f484`.
+- Publication status: Builds 128-131 are merged and pushed on `main`; all private APKs remain
+  unpublished. GitHub Actions paired-release and API-35 instrumentation jobs passed on `61d6d46`.
 - GitHub release: source-only `v1.3.120` / Build 129, published from exact source merge `602f484`
   with no binary assets.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
@@ -43,10 +48,15 @@ Last verified: 2026-08-30
 
 ## Verified hardware state
 
-- The connected Pixel phone currently runs private hardware-test build `1.3.122` / Build `131`;
-  data-preserving installation, resumed Activity, live process, and restored OpenClaw connection
-  are verified. The HUD also runs Build `131`; the official CXR-L installer returned successful
-  install and launch callbacks, and Clawsses verified the matching live peer build.
+- The connected Pixel and Rokid HUD now run private hardware-test build `1.3.123` / Build `132`.
+  Phone installation preserved app data; the official CXR-L bridge returned successful install
+  and launch callbacks after one transient P2P formation failure. After Hi Rokid was restored to
+  `disabled-user`, Clawsses reconnected, the HUD foreground package was `com.clawsses.glasses`,
+  and a fresh request/peer-state exchange reported matching Build `132` on both sides.
+- Before Build 132, private hardware-test build `1.3.122` / Build `131` passed data-preserving
+  Phone installation, resumed Activity, live process, and restored OpenClaw connection. The HUD
+  also ran Build `131`; the official CXR-L installer returned successful install and launch
+  callbacks, and Clawsses verified the matching live peer build.
 - Build 130 was installed on both Phone and HUD through the official CXR-L path, returned true
   install and launch callbacks, restored Clawsses ownership, and produced a fresh matching
   `130/130` state handshake before the Phone advanced to Build 131.
@@ -62,9 +72,9 @@ Last verified: 2026-08-30
 - Hi Rokid was restored to its original disabled state; Clawsses reclaimed the active glasses
   connection and the HUD foreground package is `com.clawsses.glasses`.
 - The unrelated `com.rokidapks` utility also remains disabled.
-- Build 129 source is merged and pushed on `main`; private APKs remain unpublished. Build 129 Phone
+- Build 131 source is merged and pushed on `main`; private APKs remain unpublished. Build 131 Phone
   and HUD are installed. After Clawsses reclaimed ownership, the HUD foreground package was
-  `com.clawsses.glasses` and a fresh `129/129` state handshake plus SDK compatibility check passed.
+  `com.clawsses.glasses` and a fresh `131/131` state handshake plus SDK compatibility check passed.
 - The Build-119–129 commits contain no APKs or credentials.
 - The public paired-release evidence records a byte-identical embedded and standalone HUD APK.
 - The verified Rokid firmware line is `1.24.012`; paired behavior remains firmware-sensitive.
@@ -242,7 +252,24 @@ with `adb devices -l` and collect a fresh version handshake.
   versions, and a byte-identical embedded HUD. The release Phone APK is arm64-only and 41.8 MB;
   debug remains multi-ABI for emulator CI. Private Phone/HUD artifacts have matching v2 signers;
   the official CXR-L install, launch, foreground ownership, SDK check, and live Build-131 peer
-  verification all pass. The candidate remains unmerged and unreleased.
+  verification all pass. The source is merged; the candidate remains unreleased.
+
+## Build 132 candidate changes
+
+- Replace the Clawsses-only `sessions.model.select` Gateway dependency with OpenClaw's canonical
+  write-scoped `sessions.patch` model mutation.
+- Construct the request through a directly tested factory that emits exactly `key` and `model`;
+  existing catalog, availability, active-session, and idle-run guards remain unchanged.
+- Replace the legacy `openclaw-control-ui` handshake identity with canonical `openclaw-android`
+  `ui` mode and the real app version, as required by OpenClaw 2.0 native-client admission.
+- After paired installation, exercise the real model picker against the production Gateway after
+  removing `sessions.model.select`: switching to GPT-5.5 and restoring GPT-5.6-sol both succeed
+  through canonical `sessions.patch`; the removed custom method now returns `unknown method`.
+- Advance both applications to `1.3.123` / Build `132`. The complete 266-task paired source gate
+  passes, private Phone/HUD artifacts report matching versions and v2 signers, and the embedded HUD
+  is byte-identical to the standalone HUD APK. Private Phone/HUD installation, official CXR-L
+  install/launch callbacks, HUD foreground ownership, and the live matching `132/132` handshake
+  are verified; the candidate remains unmerged and unreleased.
 
 ## Current code rating
 
@@ -314,14 +341,15 @@ version, v2-signer, and embedded-HUD hash checks. Both apps are installed, the o
 returned a successful install callback after a full glasses reboot, and a fresh matching `129/129`
 runtime handshake is verified. No runtime-performance improvement is claimed without a same-device
 benchmark. Build `130` passes the 265-task public source gate with matching `130` / `1.3.121`
-Phone/HUD evidence and a byte-identical embedded HUD artifact; source commit `2c8544c` is local and
-not pushed. Its private Phone/HUD artifacts passed matching signer and embedded-HUD checks, the
+Phone/HUD evidence and a byte-identical embedded HUD artifact; source commit `2c8544c` is integrated
+on local and remote `main`. Its private Phone/HUD artifacts passed matching signer and embedded-HUD
+checks, the
 official CXR-L install and launch callbacks succeeded, and a fresh `130/130` runtime handshake was
 observed. Build `131` passes its expanded 266-task public source gate with matching `131` /
 `1.3.122` evidence, pinned official KWS artifacts, and a byte-identical embedded HUD. Its corrected
 minified Phone build is installed and initializes the local KWS engine on Pixel hardware. The HUD
 install and launch succeeded through the official CXR-L path, Clawsses verified the matching live
-Build-131 peer, and Hi Rokid was restored to disabled. Build 131 remains unmerged and unreleased.
+Build-131 peer, and Hi Rokid was restored to disabled. Build 131 is merged and remains unreleased.
 
 ## New-session resume prompt
 

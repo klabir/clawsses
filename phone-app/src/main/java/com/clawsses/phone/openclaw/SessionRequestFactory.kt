@@ -50,4 +50,10 @@ internal object SessionRequestFactory {
     fun createParams(sessionKey: String?): JsonObject = JsonObject().apply {
         addProperty("agentId", agentIdFromSessionKey(sessionKey) ?: "main")
     }
+
+    /** Builds the canonical write-scoped OpenClaw model-selection patch. */
+    fun modelPatchParams(sessionKey: String, modelRef: String): JsonObject = JsonObject().apply {
+        addProperty("key", sessionKey)
+        addProperty("model", modelRef)
+    }
 }

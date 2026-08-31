@@ -1,6 +1,7 @@
 package com.clawsses.phone.openclaw
 
 import android.util.Log
+import com.clawsses.phone.BuildConfig
 import com.clawsses.phone.media.ChatAttachmentFileStore
 import com.clawsses.shared.*
 import com.google.gson.JsonArray
@@ -602,7 +603,7 @@ class OpenClawClient(
         }
     }
 
-    /** Select one configured model through the narrow write-scoped gateway method. */
+    /** Select one configured model through canonical write-scoped sessions.patch. */
     fun selectModel(model: ModelInfo) {
         if (!model.available || _isSelectingModel.value) return
         val sessionKey = _currentSessionKey.value
@@ -616,11 +617,8 @@ class OpenClawClient(
         scope.launch {
             try {
                 val response = sendRequest(
-                    OpenClawMethods.SESSION_MODEL_SELECT,
-                    JsonObject().apply {
-                        addProperty("key", sessionKey)
-                        addProperty("model", model.ref)
-                    }
+                    OpenClawMethods.SESSION_PATCH,
+                    SessionRequestFactory.modelPatchParams(sessionKey, model.ref),
                 )
                 if (response.ok) {
                     _currentModelRef.value = model.ref
@@ -940,6 +938,7 @@ class OpenClawClient(
                 } ?: return@launch
                 val params = OpenClawAuthRequestFactory.create(
                     protocolVersion = PROTOCOL_VERSION,
+                    appVersion = BuildConfig.VERSION_NAME,
                     token = authToken,
                     nonce = nonce,
                     deviceIdentity = deviceIdentity,

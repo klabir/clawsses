@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 1.3.123 (build 132)
+
+### Changed
+
+- Select the active session model through OpenClaw's canonical write-scoped `sessions.patch`
+  contract instead of the locally added `sessions.model.select` compatibility method.
+- Keep the model-selection request bounded to exactly `key` and `model`, preserving the existing
+  catalog, availability, active-session, and idle-run validation on the Phone.
+- Identify the Phone as the canonical native `openclaw-android` UI client and report the actual app
+  version, avoiding OpenClaw 2.0's same-origin Control UI build-admission policy.
+- Advance the paired Phone/HUD candidate to `1.3.123` / Build `132`.
+
 ## 1.3.122 (build 131)
 
 ### Added
