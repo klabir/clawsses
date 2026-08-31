@@ -30,6 +30,17 @@ class OpenClawWireCodecTest {
     }
 
     @Test
+    fun `advertises the canonical native Android client identity`() {
+        val client = OpenClawAuthRequestFactory.clientInfo("1.3.123")
+
+        assertEquals("openclaw-android", client.get("id").asString)
+        assertEquals("1.3.123", client.get("version").asString)
+        assertEquals("android", client.get("platform").asString)
+        assertEquals("ui", client.get("mode").asString)
+        assertEquals(setOf("id", "version", "platform", "mode"), client.keySet())
+    }
+
+    @Test
     fun parsesChatTextBlocksWithoutTrustingOtherContent() {
         val event = ChatEventParser.parse(
             com.google.gson.JsonParser.parseString(

@@ -14,6 +14,19 @@ class SessionRequestFactoryTest {
     }
 
     @Test
+    fun `model selection uses canonical write-scoped sessions patch`() {
+        val params = SessionRequestFactory.modelPatchParams(
+            sessionKey = "agent:main:main",
+            modelRef = "openai/gpt-5.6-sol",
+        )
+
+        assertEquals("sessions.patch", OpenClawMethods.SESSION_PATCH)
+        assertEquals(setOf("key", "model"), params.keySet())
+        assertEquals("agent:main:main", params.get("key").asString)
+        assertEquals("openai/gpt-5.6-sol", params.get("model").asString)
+    }
+
+    @Test
     fun `glasses session pages request a bounded offset page`() {
         val params = SessionRequestFactory.listPageParams(6)
 

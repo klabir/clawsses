@@ -74,7 +74,7 @@ object OpenClawMethods {
     const val CONFIG_GET = "config.get"
     const val AGENTS_LIST = "agents.list"
     const val MODELS_LIST = "models.list"
-    const val SESSION_MODEL_SELECT = "sessions.model.select"
+    const val SESSION_PATCH = "sessions.patch"
     const val SESSIONS_SUBSCRIBE = "sessions.subscribe"
     const val SESSIONS_UNSUBSCRIBE = "sessions.unsubscribe"
     const val SESSION_MESSAGES_SUBSCRIBE = "sessions.messages.subscribe"

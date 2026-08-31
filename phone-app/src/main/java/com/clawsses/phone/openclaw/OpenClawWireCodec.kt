@@ -89,13 +89,21 @@ internal object ChatEventParser {
 }
 
 internal object OpenClawAuthRequestFactory {
-    private const val CLIENT_ID = "openclaw-control-ui"
+    private const val CLIENT_ID = "openclaw-android"
     private const val CLIENT_MODE = "ui"
     private const val ROLE = "operator"
     private val SCOPES = listOf("operator.read", "operator.write")
 
+    fun clientInfo(appVersion: String): JsonObject = JsonObject().apply {
+        addProperty("id", CLIENT_ID)
+        addProperty("version", appVersion)
+        addProperty("platform", "android")
+        addProperty("mode", CLIENT_MODE)
+    }
+
     fun create(
         protocolVersion: Int,
+        appVersion: String,
         token: String,
         nonce: String,
         deviceIdentity: DeviceIdentity,
@@ -103,12 +111,7 @@ internal object OpenClawAuthRequestFactory {
     ): JsonObject = JsonObject().apply {
         addProperty("minProtocol", protocolVersion)
         addProperty("maxProtocol", protocolVersion)
-        add("client", JsonObject().apply {
-            addProperty("id", CLIENT_ID)
-            addProperty("version", "1.0.0")
-            addProperty("platform", "android")
-            addProperty("mode", CLIENT_MODE)
-        })
+        add("client", clientInfo(appVersion))
         addProperty("role", ROLE)
         add("scopes", JsonArray().apply { SCOPES.forEach(::add) })
         add("caps", JsonArray().apply { add("session-scoped-events") })
@@ -133,6 +136,6 @@ internal object OpenClawAuthRequestFactory {
             deviceIdentity.deviceToken?.let { addProperty("deviceToken", it) }
         })
         addProperty("locale", "nl-NL")
-        addProperty("userAgent", "clawsses-android/1.0.0")
+        addProperty("userAgent", "clawsses-android/$appVersion")
     }
 }
