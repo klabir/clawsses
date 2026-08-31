@@ -9,21 +9,21 @@ Last verified: 2026-08-31
 ## Current release
 
 - Latest published source release: `1.3.120` / Build `129`, paired-device verified
-- Builds 130-131 are integrated on local and remote `main` by merge commit `61d6d46`; Build 131
-  remains unreleased and its private APKs remain unpublished.
+- Builds 130-132 are integrated on local and remote `main`; Build 132 was integrated by merge
+  commit `886aaf4` and remains unreleased with its private APKs unpublished.
 - Installed paired build: `1.3.123` / Build `132`, with a fresh matching Phone/HUD runtime
   handshake and successful official CXR-L install and launch callbacks.
-- Current candidate: `1.3.123` / Build `132` on `build/132-canonical-session-patch`; it replaces
+- Current merged build: `1.3.123` / Build `132`; it replaces
   the local `sessions.model.select` dependency with canonical write-scoped `sessions.patch`. The
   266-task source gate and private artifact checks pass. Private Phone/HUD artifacts are installed
-  and a fresh matching `132/132` runtime handshake is verified; the candidate remains unmerged and
+  and a fresh matching `132/132` runtime handshake is verified; the source is merged and remains
   unreleased.
 - Release commits: Build 128 `c8d3a1a`; Build 129 `96a8192`; Build 130 `2c8544c`; Build 131
-  `44f3120`; latest main integration merge `61d6d46`
+  `44f3120`; Build 132 `8f2cd64`; latest main integration merge `886aaf4`
 - Base main before integration: `d06ed1d`
 - Release branch: `build/129-orchestrator-boundaries`, integrated into local and remote `main`
-- Publication status: Builds 128-131 are merged and pushed on `main`; all private APKs remain
-  unpublished. GitHub Actions paired-release and API-35 instrumentation jobs passed on `61d6d46`.
+- Publication status: Builds 128-132 are merged and pushed on `main`; all private APKs remain
+  unpublished. GitHub Actions paired-release and API-35 instrumentation jobs passed on `886aaf4`.
 - GitHub release: source-only `v1.3.120` / Build 129, published from exact source merge `602f484`
   with no binary assets.
 - Public release policy: source only; never publish Phone/HUD APKs, signing material, Rokid
@@ -269,7 +269,7 @@ with `adb devices -l` and collect a fresh version handshake.
   passes, private Phone/HUD artifacts report matching versions and v2 signers, and the embedded HUD
   is byte-identical to the standalone HUD APK. Private Phone/HUD installation, official CXR-L
   install/launch callbacks, HUD foreground ownership, and the live matching `132/132` handshake
-  are verified; the candidate remains unmerged and unreleased.
+  are verified; the source is merged and remains unreleased.
 
 ## Current code rating
 
