@@ -6,7 +6,11 @@ Connect to your [OpenClaw](https://github.com/openclaw/openclaw) server 🦞 wit
   <img src="docs/images/clawsses-hero.jpg" width="700" alt="Clawsses - wearable AI on Rokid Glasses">
 </p>
 
-> **Current source release:** Clawsses 1.3.99 / Build 108. Builds 106–108 suppress credential-bearing vendor INFO logs before SDK initialization, harden Android local-hotspot request cleanup across API 29–36, and unify the verified HUD installation routes behind a durable transaction. Public releases contain source only; APKs built with Rokid credentials are private device artifacts.
+> **Latest published source release:** Clawsses 1.3.120 / Build 129. The current `main`
+> branch is 1.3.123 / Build 132 and remains unreleased. Builds 130–132 add bounded long
+> dictation, an experimental local `HEY CLAWSSES` wake word, and an OpenClaw 2.0-compatible
+> native-client handshake and model selection through canonical `sessions.patch`. Public
+> releases contain source only; APKs built with Rokid credentials are private device artifacts.
 
 For the current verified engineering checkpoint and new-session handoff, see
 [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
@@ -20,10 +24,11 @@ For the current verified engineering checkpoint and new-session handoff, see
 
 Clawsses connects your Rokid glasses to an OpenClaw Gateway, via your Android phone, giving you a wearable AI interface:
 
-- **Voice-first interaction** - Long-press to speak, or enable persistent Talk Mode for automatic send and listen-after-reply
+- **Voice-first interaction** - Long-press to speak, enable Talk Mode for automatic follow-ups, use bounded Phone-only long dictation, or opt into the experimental local `HEY CLAWSSES` wake word
 - **Live streaming** - AI responses stream token-by-token onto the glasses display
 - **Camera input** - Send a 1280x720 photo by itself or attach it to a later message; optionally save captures to Android Gallery
-- **Agent and session management** - Switch between OpenClaw agents and sessions from the phone or glasses
+- **Agent, session, and model management** - Browse and switch OpenClaw agents, sessions, and configured models from the phone or glasses
+- **Cross-client transcript sync** - Reconcile active-session messages and history from Clawsses, WebChat, and other OpenClaw clients
 - **Text-to-speech** - Hear responses through ElevenLabs or OpenAI, with stop and replay controls
 - **Run control** - See thinking/streaming status and cancel the exact active OpenClaw run
 - **Wake-on-message** - Glasses display wakes automatically when new messages arrive
@@ -57,6 +62,7 @@ OpenClaw Gateway ←─ WebSocket ──→ Phone App (Android) ←─ Bluetooth
 | **phone-app/** | Android companion app. Connects to OpenClaw Gateway via WebSocket and to glasses via Rokid CXR-M SDK (Bluetooth). Handles voice recognition, TTS playback, wake signal coordination, and glasses APK sideloading. |
 | **glasses-app/** | HUD app running on Rokid glasses. Renders chat UI with Jetpack Compose on the 480x640 monochrome green micro-LED display. Handles touchpad gestures and camera capture. |
 | **shared/** | Protocol definitions (Gson-serialized data classes) used by both apps. |
+| **benchmark/** | Android Macrobenchmark and baseline-profile tests for isolated Phone startup and chat-rendering measurements. |
 
 ## Setup
 
@@ -185,11 +191,22 @@ The phone app bundles the glasses APK and can push it to the glasses over WiFi P
 
 Long-press on the glasses temple to start voice recognition.
 
-Two speech recognition backends are supported:
+The manual input path supports these modes:
 - **OpenAI Realtime API** (primary) - streaming transcription with `gpt-live-transcribe`, local speech-end detection, and audio pre-buffering for immediate capture. The final text appears after you stop speaking.
+- **OpenAI long dictation** (optional) - Phone-microphone recording streamed to a temporary WAV file, limited to five minutes, then uploaded for batch transcription. Tap the Phone microphone button once to record and again to transcribe.
 - **Android SpeechRecognizer** (fallback) - used automatically when no OpenAI API key is configured; shows speech while you talk, but recognition isn't as great.
 
-Configure your OpenAI API key in Settings > Voice to enable the primary backend.
+Configure your OpenAI API key in **Settings → Voice** to enable the OpenAI modes. Long dictation
+is an explicit Phone-only option; Talk Mode, live captions, and direct Rokid voice input continue
+to use the realtime path.
+
+### Experimental Local Wake Word
+
+Enable **Settings → Voice → Experimental local wake word** to validate `HEY CLAWSSES` on the
+Phone with the bundled sherpa-onnx model. Recognition is processed locally and the feature is off
+by default. It releases the microphone before starting normal OpenAI recognition and pauses for
+Talk Mode, live captions, long dictation, TTS, and active runs. Accuracy, false accepts, battery
+cost, and long-soak behavior are still experimental.
 
 ### Talk Mode
 
@@ -225,7 +242,7 @@ The glasses touchpad has two focus areas that change what gestures do:
 | 📷 Photo | Capture a photo to attach to your next message (up to 4) |
 | ◎ Session | Open session picker - browse, switch, or create sessions |
 | █ Size | Cycle HUD position: Full → Bottom Half → Top Half |
-| … More | Talk Mode, agent selection, font size, slash commands, TTS stop/replay, and active-run cancellation |
+| … More | Talk Mode, agent and model selection, font size, slash commands, TTS stop/replay, and active-run cancellation |
 
 <p align="center">
   <img src="docs/images/glasses-session-picker.png" width="240" alt="Session picker">
@@ -286,19 +303,19 @@ You can develop without physical glasses by using the built-in debug mode. In de
 The phone app implements the [OpenClaw Gateway protocol](https://docs.openclaw.ai):
 
 - **Transport:** TLS-only `wss://`; plaintext WebSocket endpoints are rejected
-- **Authentication:** Token auth + Ed25519 device identity (keypair stored in Android Keystore)
-- **Chat:** Sends `chat.send`, receives streaming `chat` events with accumulated text (client diffs to extract new content)
+- **Authentication:** Token auth + Ed25519 device identity (keypair stored in Android Keystore), identifying as the canonical `openclaw-android` native UI client
+- **Chat:** Sends `chat.send`, receives streaming `chat` events, and reconciles authoritative `chat.history`
 - **Run control:** Cancels only the frozen active `sessionKey` + `runId` through `chat.abort`
-- **Agents and sessions:** Lists and switches agents with `agents.list`, plus session list/switch/create/reset
+- **Agents, sessions, and models:** Uses `agents.list`, `sessions.list`, `models.list`, and canonical write-scoped `sessions.patch`; subscribes to broad session changes and active-session messages for cross-client synchronization
 - **Auto-reconnect:** 3-second backoff on disconnect
 
 ## Phone-Glasses Protocol
 
 Communication between phone and glasses uses JSON messages over the CXR SDK bridge (or WebSocket in debug mode):
 
-**Phone → Glasses:** `chat_message`, `agent_thinking`, `chat_stream`, `chat_stream_end`, `connection_update`, `session_list`, `agent_list`, `voice_state`, `voice_result`, `wake_signal`, `tts_state`, `run_state`, `talk_mode_state`
+**Phone → Glasses:** chat/history and stream updates; privacy-filtered agent progress; connection and paired-build state; paged session, agent, and model catalogs; voice, caption, wake, TTS, run, Talk Mode, photo, and ambient-card state
 
-**Glasses → Phone:** `user_input` (text + optional photo), `list_sessions`, `switch_session`, `list_agents`, `switch_agent`, `slash_command`, `start_voice`, `cancel_voice`, `request_more_history`, `wake_ack`, `tts_toggle`, `tts_control`, `abort_run`, `talk_mode_toggle`
+**Glasses → Phone:** typed commands for text/photo input; session create/switch/history; agent and model selection; slash commands; voice, captions, TTS, Talk Mode, run cancellation, wake acknowledgements, and ambient-card actions
 
 ## Security Notes
 
